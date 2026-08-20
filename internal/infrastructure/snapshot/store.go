@@ -274,13 +274,15 @@ func (s *Store) Map(query scan.MapQuery) (scan.MapResult, error) {
 		visibleLimit = 256
 	}
 	if total > query.Offset+visibleLimit {
-		visibleLimit--
+		if visibleLimit > 1 {
+			visibleLimit--
+		}
 	}
 	nodes, err := s.children(query.SnapshotID, query.ParentID, visibleLimit, query.Offset)
 	if err != nil {
 		return scan.MapResult{}, err
 	}
-	remaining := scan.MapEntry{Kind: "aggregate", Name: "其他项目", SizeBasis: "map_remaining_v1"}
+	remaining := scan.MapEntry{Kind: "aggregate", Name: "较小对象", VirtualType: "smaller_objects", DisplayState: "partial", Capabilities: []string{"enter"}, SizeBasis: "map_remaining_v1"}
 	tailOffset := query.Offset + len(nodes)
 	if total > tailOffset {
 		row := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(logical_size), 0), COALESCE(SUM(allocated_size), 0), COALESCE(SUM(owned_allocated), 0) FROM (SELECT logical_size, allocated_size, owned_allocated FROM scan_nodes WHERE snapshot_id = ? AND parent_id = ? ORDER BY owned_allocated DESC, node_id LIMIT -1 OFFSET ?)`, query.SnapshotID, query.ParentID, tailOffset)
@@ -300,7 +302,103 @@ func (s *Store) Map(query scan.MapQuery) (scan.MapResult, error) {
 		}
 		entries = append(entries, scan.MapEntry{Kind: "node", Node: node, Name: node.Name, LogicalSize: node.LogicalSize, AllocatedSize: node.AllocatedSize, OwnedAllocated: node.OwnedAllocated, Confidence: node.Confidence, SizeBasis: node.SizeBasis})
 	}
-	return scan.MapResult{SnapshotID: query.SnapshotID, SnapshotVersion: version, Parent: parent, Entries: entries, Total: total, Limit: query.Limit, Offset: query.Offset, HasMore: total > tailOffset, Remaining: remaining, Confidence: mergeMapConfidence(parent.Confidence, remaining.Confidence)}, nil
+	projectionTruncated := false
+	if query.Depth > 0 {
+		budget := query.ProjectionLimit
+		if budget <= 0 {
+			budget = 384
+		}
+		if budget > 512 {
+			budget = 512
+		}
+		for index := range entries {
+			if budget <= 0 {
+				projectionTruncated = true
+				break
+			}
+			if entries[index].Kind != "node" || entries[index].Node.Kind != "directory" {
+				continue
+			}
+			children, childTotal, childHasMore, childTruncated, err := s.projectChildren(query.SnapshotID, entries[index].Node.ID, query.Depth-1, &budget)
+			if err != nil {
+				return scan.MapResult{}, err
+			}
+			entries[index].Children = children
+			entries[index].ChildrenTotal = childTotal
+			entries[index].ChildrenHasMore = childHasMore
+			projectionTruncated = projectionTruncated || childTruncated
+		}
+	}
+	return scan.MapResult{SnapshotID: query.SnapshotID, SnapshotVersion: version, Parent: parent, Entries: entries, Total: total, Limit: query.Limit, Offset: query.Offset, HasMore: total > tailOffset, Remaining: remaining, Confidence: mergeMapConfidence(parent.Confidence, remaining.Confidence), ProjectionTruncated: projectionTruncated}, nil
+}
+
+func (s *Store) projectChildren(snapshotID, parentID int64, depth int, budget *int) ([]scan.MapEntry, int, bool, bool, error) {
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM scan_nodes WHERE snapshot_id = ? AND parent_id = ?`, snapshotID, parentID).Scan(&total); err != nil {
+		return nil, 0, false, false, err
+	}
+	if total == 0 {
+		return nil, 0, false, false, nil
+	}
+	if *budget <= 0 {
+		return nil, total, true, true, nil
+	}
+	visibleLimit := total
+	if visibleLimit > *budget {
+		visibleLimit = *budget
+		if visibleLimit > 1 {
+			visibleLimit--
+		}
+	}
+	nodes, err := s.children(snapshotID, parentID, visibleLimit, 0)
+	if err != nil {
+		return nil, 0, false, false, err
+	}
+	entries := make([]scan.MapEntry, 0, len(nodes)+1)
+	truncated := false
+	for _, node := range nodes {
+		if *budget <= 0 {
+			truncated = true
+			break
+		}
+		*budget--
+		entry := scan.MapEntry{Kind: "node", Node: node, Name: node.Name, LogicalSize: node.LogicalSize, AllocatedSize: node.AllocatedSize, OwnedAllocated: node.OwnedAllocated, Confidence: node.Confidence, SizeBasis: node.SizeBasis}
+		if node.Kind == "directory" {
+			if depth > 0 {
+				childEntries, childTotal, childHasMore, childTruncated, childErr := s.projectChildren(snapshotID, node.ID, depth-1, budget)
+				if childErr != nil {
+					return nil, 0, false, false, childErr
+				}
+				entry.Children = childEntries
+				entry.ChildrenTotal = childTotal
+				entry.ChildrenHasMore = childHasMore
+				truncated = truncated || childTruncated
+			} else if node.HasChildren {
+				truncated = true
+			}
+		}
+		entries = append(entries, entry)
+	}
+	hasMore := total > len(nodes)
+	if hasMore {
+		remaining, err := s.aggregateChildren(snapshotID, parentID, len(nodes))
+		if err != nil {
+			return nil, 0, false, false, err
+		}
+		entries = append(entries, remaining)
+		truncated = true
+	}
+	return entries, total, hasMore, truncated, nil
+}
+
+func (s *Store) aggregateChildren(snapshotID, parentID int64, offset int) (scan.MapEntry, error) {
+	remaining := scan.MapEntry{Kind: "aggregate", Name: "较小对象", VirtualType: "smaller_objects", DisplayState: "partial", Capabilities: []string{"enter"}, SizeBasis: "map_projection_remaining_v1"}
+	row := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(logical_size), 0), COALESCE(SUM(allocated_size), 0), COALESCE(SUM(owned_allocated), 0) FROM (SELECT logical_size, allocated_size, owned_allocated FROM scan_nodes WHERE snapshot_id = ? AND parent_id = ? ORDER BY owned_allocated DESC, node_id LIMIT -1 OFFSET ?)`, snapshotID, parentID, offset)
+	if err := row.Scan(&remaining.Count, &remaining.LogicalSize, &remaining.AllocatedSize, &remaining.OwnedAllocated); err != nil {
+		return scan.MapEntry{}, err
+	}
+	remaining.Confidence = "estimated"
+	return remaining, nil
 }
 
 func (s *Store) children(snapshotID, parentID int64, limit, offset int) ([]Node, error) {

@@ -4,10 +4,11 @@ Marmot 是一个 macOS 本地磁盘空间分析与安全清理工具，目标体
 
 ## 当前阶段
 
-文档基准、技术预研和核心架构决策已完成，目录结构切片和扫描/清理基础 P0 已落地。
-当前已确认下一条 UI 切片必须先完成 DaisyDisk 原生交互状态模型：悬停 Inspector、单击下钻、
-键盘焦点、浏览历史、虚拟空间对象和 Collector 状态机。真实签名/TCC、Quick Look 原生窗口、
-跨卷废纸篓和真实全盘样本仍是发布前验证项。
+文档基准、技术预研和核心架构决策已完成，目录结构切片、扫描/清理基础 P0 和
+DaisyDisk 交互状态模型已落地；依据本机原版实测的原生布局和多层 Sunburst 正在重做。当前实现已包含
+悬停上下文、单击下钻、键盘焦点、
+有限浏览历史、聚合/虚拟对象能力边界和 Collector 状态机。真实签名/TCC、Quick Look
+原生窗口、跨卷废纸篓和真实全盘样本仍是发布前验证项。
 
 ## 已确定方案
 
@@ -20,10 +21,12 @@ Marmot 是一个 macOS 本地磁盘空间分析与安全清理工具，目标体
 - 扫描方式：后台分层扫描、受限并发、渐进发布、缓存和按需加载；不跟随符号链接，按卷隔离。
 - 扫描阶段：`Catalog -> VolumeOverview -> TopLevelPublish -> DeepScan -> Finalize`；全局 worker 8 个，按设备画像限制并发。
 - 快照存储：SQLite WAL，10,000 节点批量写入，子节点分页最多 1,000 项。
-- 空间图：`MapQuery`/`MapResult` 只传当前层，默认 256 项，截断结果使用不可操作的空间聚合项。
+- 空间图：`MapQuery`/`MapResult` 默认传当前层 256 项和有界多层投影，深度/投影预算由
+  [ADR-0017](docs/adr/0017-有界多层空间图投影.md) 锁定，截断结果使用不可操作的空间聚合项。
 - macOS 体验：Quick Look 预览、NSWorkspace Finder 定位；Collector 只生成可审查清理计划候选。
 - 交互基线：DaisyDisk 原生交互状态由 [ADR-0016](docs/adr/0016-DaisyDisk原生交互状态模型.md) 锁定，
-  实现顺序由 [R-013](docs/research/R-013-DaisyDisk原生交互与开源参考复核.md) 的差距矩阵约束。
+  本机实测由 [R-014](docs/research/R-014-DaisyDisk本机实机交互复核.md) 固化；多层空间图由
+  [ADR-0017](docs/adr/0017-有界多层空间图投影.md) 锁定。
 - 数据模型：逻辑大小、实际占用、去重后占用和结果可信度分开记录。
 - APFS：完整克隆使用公开 `getattrlist` metadata；部分共享块保留未知，不伪造精确值。
 - Mole：只复用固定的 MIT 版本 `V1.40.0` 中与扫描相关的代码，并放在 Infrastructure 层；当前 `main` 不使用。
@@ -59,6 +62,8 @@ Marmot 是一个 macOS 本地磁盘空间分析与安全清理工具，目标体
 - [技术预研](docs/research/README.md)
 - [产品体验与交互基线](docs/research/R-009-DaisyDisk产品体验与交互基线.md)
 - [DaisyDisk 交互与开源参考复核](docs/research/R-013-DaisyDisk原生交互与开源参考复核.md)
+- [DaisyDisk 本机实机交互复核](docs/research/R-014-DaisyDisk本机实机交互复核.md)
+- [有界多层空间图投影预研](docs/research/R-015-有界多层空间图投影预研.md)
 - [分阶段扫描预研](docs/research/R-010-分阶段扫描与设备感知并发.md)
 - [空间图数据契约预研](docs/research/R-011-Sunburst空间图与渐进查询数据契约.md)
 - [macOS 预览与收集区预研](docs/research/R-012-macOS预览Finder定位与收集区边界.md)
@@ -70,8 +75,8 @@ Marmot 是一个 macOS 本地磁盘空间分析与安全清理工具，目标体
 [文档基准](docs/BASELINE.md) 以及 [技术预研队列](docs/research/README.md)。
 
 文档基线固定后，基础 P0 已按“扫描阶段与卷目录 -> 空间图查询与 Sunburst -> Quick Look/Finder ->
-Collector 到 CleanupPlan”完成实现。DaisyDisk 原生交互重做是下一条已冻结切片，后续仍必须先满足
-对应 SDD 契约和 ADR 验收标准。
+Collector 到 CleanupPlan -> 交互状态模型”完成实现；原生布局和多层 Sunburst 必须按 R-014/R-015
+先完成契约实现再宣称对齐。后续修改仍必须先满足对应 SDD 契约和 ADR 验收标准。
 
 ## 当前不做
 

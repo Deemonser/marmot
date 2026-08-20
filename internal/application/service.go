@@ -112,36 +112,45 @@ type VolumeOverview struct {
 }
 
 type MapQuery struct {
-	SnapshotID int64  `json:"snapshotId"`
-	ParentID   int64  `json:"parentId"`
-	Limit      int    `json:"limit"`
-	Offset     int    `json:"offset"`
-	Measure    string `json:"measure"`
+	SnapshotID      int64  `json:"snapshotId"`
+	ParentID        int64  `json:"parentId"`
+	Limit           int    `json:"limit"`
+	Offset          int    `json:"offset"`
+	Measure         string `json:"measure"`
+	Depth           int    `json:"depth"`
+	ProjectionLimit int    `json:"projectionLimit"`
 }
 
 type MapEntry struct {
-	Kind           string    `json:"kind"`
-	Node           scan.Node `json:"node"`
-	Name           string    `json:"name"`
-	Count          int64     `json:"count"`
-	LogicalSize    int64     `json:"logicalSize"`
-	AllocatedSize  int64     `json:"allocatedSize"`
-	OwnedAllocated int64     `json:"ownedAllocated"`
-	Confidence     string    `json:"confidence"`
-	SizeBasis      string    `json:"sizeBasis"`
+	Kind            string     `json:"kind"`
+	Node            scan.Node  `json:"node"`
+	Name            string     `json:"name"`
+	VirtualType     string     `json:"virtualType"`
+	DisplayState    string     `json:"displayState"`
+	Capabilities    []string   `json:"capabilities"`
+	Count           int64      `json:"count"`
+	LogicalSize     int64      `json:"logicalSize"`
+	AllocatedSize   int64      `json:"allocatedSize"`
+	OwnedAllocated  int64      `json:"ownedAllocated"`
+	Confidence      string     `json:"confidence"`
+	SizeBasis       string     `json:"sizeBasis"`
+	Children        []MapEntry `json:"children,omitempty"`
+	ChildrenTotal   int        `json:"childrenTotal,omitempty"`
+	ChildrenHasMore bool       `json:"childrenHasMore,omitempty"`
 }
 
 type MapResult struct {
-	SnapshotID      int64      `json:"snapshotId"`
-	SnapshotVersion int64      `json:"snapshotVersion"`
-	Parent          scan.Node  `json:"parent"`
-	Entries         []MapEntry `json:"entries"`
-	Total           int        `json:"total"`
-	Limit           int        `json:"limit"`
-	Offset          int        `json:"offset"`
-	HasMore         bool       `json:"hasMore"`
-	Remaining       MapEntry   `json:"remaining"`
-	Confidence      string     `json:"confidence"`
+	SnapshotID          int64      `json:"snapshotId"`
+	SnapshotVersion     int64      `json:"snapshotVersion"`
+	Parent              scan.Node  `json:"parent"`
+	Entries             []MapEntry `json:"entries"`
+	Total               int        `json:"total"`
+	Limit               int        `json:"limit"`
+	Offset              int        `json:"offset"`
+	HasMore             bool       `json:"hasMore"`
+	Remaining           MapEntry   `json:"remaining"`
+	Confidence          string     `json:"confidence"`
+	ProjectionTruncated bool       `json:"projectionTruncated"`
 }
 
 type NodeActionResult struct {
@@ -475,7 +484,19 @@ func (s *Service) GetMap(query MapQuery) (MapResult, error) {
 	if query.Measure != "owned_allocated" {
 		return MapResult{}, errors.New("unsupported map measure")
 	}
-	result, err := s.store.Map(scan.MapQuery{SnapshotID: query.SnapshotID, ParentID: query.ParentID, Limit: query.Limit, Offset: query.Offset, Measure: query.Measure})
+	if query.Depth < 0 {
+		return MapResult{}, errors.New("map depth cannot be negative")
+	}
+	if query.Depth > 4 {
+		query.Depth = 4
+	}
+	if query.ProjectionLimit <= 0 {
+		query.ProjectionLimit = 384
+	}
+	if query.ProjectionLimit > 512 {
+		query.ProjectionLimit = 512
+	}
+	result, err := s.store.Map(scan.MapQuery{SnapshotID: query.SnapshotID, ParentID: query.ParentID, Limit: query.Limit, Offset: query.Offset, Measure: query.Measure, Depth: query.Depth, ProjectionLimit: query.ProjectionLimit})
 	if err != nil {
 		return MapResult{}, err
 	}
@@ -654,9 +675,45 @@ func (t *scanTask) statusLocked() ScanStatus {
 func mapResult(result scan.MapResult) MapResult {
 	entries := make([]MapEntry, 0, len(result.Entries))
 	for _, entry := range result.Entries {
-		entries = append(entries, MapEntry{Kind: entry.Kind, Node: entry.Node, Name: entry.Name, Count: entry.Count, LogicalSize: entry.LogicalSize, AllocatedSize: entry.AllocatedSize, OwnedAllocated: entry.OwnedAllocated, Confidence: entry.Confidence, SizeBasis: entry.SizeBasis})
+		entries = append(entries, mapEntry(entry))
 	}
-	return MapResult{SnapshotID: result.SnapshotID, SnapshotVersion: result.SnapshotVersion, Parent: result.Parent, Entries: entries, Total: result.Total, Limit: result.Limit, Offset: result.Offset, HasMore: result.HasMore, Remaining: MapEntry{Kind: result.Remaining.Kind, Name: result.Remaining.Name, Count: result.Remaining.Count, LogicalSize: result.Remaining.LogicalSize, AllocatedSize: result.Remaining.AllocatedSize, OwnedAllocated: result.Remaining.OwnedAllocated, Confidence: result.Remaining.Confidence, SizeBasis: result.Remaining.SizeBasis}, Confidence: result.Confidence}
+	return MapResult{SnapshotID: result.SnapshotID, SnapshotVersion: result.SnapshotVersion, Parent: result.Parent, Entries: entries, Total: result.Total, Limit: result.Limit, Offset: result.Offset, HasMore: result.HasMore, Remaining: mapEntry(result.Remaining), Confidence: result.Confidence, ProjectionTruncated: result.ProjectionTruncated}
+}
+
+func mapEntry(entry scan.MapEntry) MapEntry {
+	displayState := entry.DisplayState
+	if displayState == "" {
+		displayState = "current"
+		if entry.Confidence == "partial" {
+			displayState = "partial"
+		}
+	}
+	virtualType := entry.VirtualType
+	capabilities := append([]string(nil), entry.Capabilities...)
+	if entry.Kind == "aggregate" {
+		if virtualType == "" {
+			virtualType = "smaller_objects"
+		}
+		if len(capabilities) == 0 {
+			capabilities = []string{"enter"}
+		}
+		if displayState == "current" {
+			displayState = "partial"
+		}
+	}
+	if entry.Kind == "node" && len(capabilities) == 0 {
+		if entry.Node.Kind == "directory" {
+			capabilities = append(capabilities, "enter")
+		}
+		if entry.Node.Kind == "file" || entry.Node.Kind == "directory" || entry.Node.Kind == "symlink" {
+			capabilities = append(capabilities, "preview", "reveal", "collect")
+		}
+	}
+	children := make([]MapEntry, 0, len(entry.Children))
+	for _, child := range entry.Children {
+		children = append(children, mapEntry(child))
+	}
+	return MapEntry{Kind: entry.Kind, Node: entry.Node, Name: entry.Name, VirtualType: virtualType, DisplayState: displayState, Capabilities: capabilities, Count: entry.Count, LogicalSize: entry.LogicalSize, AllocatedSize: entry.AllocatedSize, OwnedAllocated: entry.OwnedAllocated, Confidence: entry.Confidence, SizeBasis: entry.SizeBasis, Children: children, ChildrenTotal: entry.ChildrenTotal, ChildrenHasMore: entry.ChildrenHasMore}
 }
 
 func matchesSnapshotNode(node scan.Node, item cleanup.Item) bool {

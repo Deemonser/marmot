@@ -51,12 +51,18 @@ export interface MapEntry {
     "kind": string;
     "node": NodeView;
     "name": string;
+    "virtualType": string;
+    "displayState": string;
+    "capabilities": string[] | null;
     "count": number;
     "logicalSize": number;
     "allocatedSize": number;
     "ownedAllocated": number;
     "confidence": string;
     "sizeBasis": string;
+    "children"?: MapEntry[] | null;
+    "childrenTotal"?: number;
+    "childrenHasMore"?: boolean;
 }
 
 export interface MapQuery {
@@ -65,6 +71,8 @@ export interface MapQuery {
     "limit": number;
     "offset": number;
     "measure": string;
+    "depth": number;
+    "projectionLimit": number;
 }
 
 export interface MapResult {
@@ -78,6 +86,7 @@ export interface MapResult {
     "hasMore": boolean;
     "remaining": MapEntry;
     "confidence": string;
+    "projectionTruncated": boolean;
 }
 
 export interface NodeActionResult {

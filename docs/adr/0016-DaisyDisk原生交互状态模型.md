@@ -4,6 +4,10 @@
 
 日期：2026-08-20
 
+实施状态：P0 状态模型和安全边界已落地；依据本机实测新增的原生布局重做进行中。TypeScript、
+Go 测试、go vet、Wails macOS 构建和 Chrome DOM 交互验证已通过。真实签名/TCC、原生
+Quick Look/Finder、跨卷废纸篓和全盘样本仍属于发布前验证。
+
 ## 背景
 
 R-009 的基础体验切片已经让 Marmot 能扫描、查询空间图、预览对象和创建清理计划，但前端仍以
@@ -16,6 +20,7 @@ R-009 的基础体验切片已经让 Marmot 能扫描、查询空间图、预览
 ## 预研依据
 
 - [R-013 DaisyDisk 原生交互与开源参考复核](../research/R-013-DaisyDisk原生交互与开源参考复核.md)
+- [R-014 DaisyDisk 本机实机交互复核](../research/R-014-DaisyDisk本机实机交互复核.md)
 - [R-009 DaisyDisk 产品体验与交互基线](../research/R-009-DaisyDisk产品体验与交互基线.md)
 - [ADR-0013 DaisyDisk 空间图与渐进查询数据契约](0013-DaisyDisk空间图与渐进查询数据契约.md)
 - [ADR-0015 macOS 预览、Finder 定位与收集区平台边界](0015-macOS预览Finder定位与收集区平台边界.md)
@@ -27,13 +32,14 @@ R-009 的基础体验切片已经让 Marmot 能扫描、查询空间图、预览
 扫描结果页固定由四个互相协作的区域组成：
 
 ```text
-范围/卷入口 -> 当前空间图 -> Inspector/侧栏
+范围/卷入口 -> 当前空间图 -> 当前目录列表/上下文动作
                            |
                        Collector
 ```
 
-卷概览仍是启动入口，但进入结果后不再用营销式 Hero 或相互孤立的卡片承载主要工作流。布局、
-颜色和资产由 Marmot 自己定义，目标是信息密度和连续操作，不复制 DaisyDisk 的品牌外观。
+卷概览仍是启动入口，但进入结果后不再用营销式 Hero、卷卡片或常驻 Inspector 卡片承载主要工作流。
+结果首屏必须是 Sunburst、当前目录标题/排序列表和底部 Collector 的连续桌面结构；布局、颜色和
+资产由 Marmot 自己定义，目标是信息密度和连续操作，不复制 DaisyDisk 的品牌外观。
 
 ### 2. 分离悬停、焦点和选中
 
@@ -46,8 +52,9 @@ R-009 的基础体验切片已经让 Marmot 能扫描、查询空间图、预览
 | `selectedEntry` | 用户明确选中的对象，供预览、Finder 和 Collector 操作 | 点击、键盘确认或导航后更新 |
 | `staleEntry` | 快照对象已变化，仍保留用于解释和重扫提示 | 查询或平台校验发现变化 |
 
-悬停和焦点只操作当前已加载的 DTO，不调用 Wails。Inspector 的展示优先级为
-`hoveredEntry -> focusedEntry -> selectedEntry -> currentParent`；鼠标离开后恢复焦点或选中对象。
+悬停和焦点只操作当前已加载的 DTO，不调用 Wails。当前目录列表始终显示 `currentParent` 的直接子项；
+上下文动作的展示优先级为 `hoveredEntry -> focusedEntry -> selectedEntry -> currentParent`。鼠标离开后
+恢复焦点或选中对象，不能把上下文动作区误做成替代当前目录列表的常驻 Inspector。
 
 ### 3. 固定空间图命令
 
@@ -55,8 +62,8 @@ R-009 的基础体验切片已经让 Marmot 能扫描、查询空间图、预览
 
 | 输入 | 行为 |
 | --- | --- |
-| 文件夹单击/Return | 进入该目录并把当前位置写入历史 |
-| 文件单击 | 更新焦点和选中对象，不进入目录 |
+| 文件夹单击/Return | 进入该目录并把当前位置写入历史；右侧列表和 Sunburst 共用命令 |
+| 文件单击 | 更新焦点和选中对象，不进入目录；右侧列表保持蓝灰高亮 |
 | 中心单击/`Command + Up` | 回到父目录 |
 | `smaller objects` 单击/Return | 展开虚拟聚合项，使用分页查询，不伪造节点 |
 | 上下方向键 | 在当前稳定排序条目中移动焦点 |
@@ -137,20 +144,24 @@ Closed -> Open -> Staged -> Reviewing -> PlanValidated -> PlanConfirmed -> Apply
 
 ## 后果
 
-- 前端需要重做结果工作区，而不是继续小范围调色；
+- 结果工作区需要以统一状态模型实现，并按 R-014 实测重做布局；状态模型和安全边界已完成，
+  原生布局重做仍是当前 P0 工作；
 - Wails DTO 需要补充虚拟类型、显示状态和能力集合，但不改变文件操作只接受真实节点的安全契约；
 - Application 需要提供有界历史所需的查询和失效语义；
-- 需要增加前端交互测试，至少覆盖 hover 回退、单击下钻、键盘移动、历史分支、聚合展开、Collector
-  拖出和虚拟对象拒绝；
+- 需要增加前端交互测试，至少覆盖目录列表与 Sunburst 同步、文件单击选中、hover 回退、键盘移动、
+  历史分支、聚合展开、Collector 拖出和虚拟对象拒绝；
 - 收藏、全树搜索、扫描比较、快照导出等能力暂列 P1，不得插入 P0 重做范围。
 
 ## 验收标准
 
 - 悬停真实条目能在不调用 Wails 的情况下更新 Inspector，离开后恢复焦点/选中对象；
-- 单击目录进入，中心和 `Command + Up` 返回，`Command + [ / ]` 可在 32 条以内历史中前进后退；
+- 当前目录列表和 Sunburst 同时呈现同一批稳定排序条目；目录单击进入，文件单击只高亮，不改变目录；
+- 中心和 `Command + Up` 返回，`Command + [ / ]` 可在 32 条以内历史中前进后退；
 - 键盘方向键、Page Up/Page Down、Home/End、Return、Space 和 `Command + Delete` 对同一当前条目生效；
 - `smaller_objects`、hidden、purgeable、other volumes、snapshot、restricted 和 stale 在 UI 中
   有独立显示和能力限制；
 - Collector 能展开、逐项预览、移除和拖出，加入/移除阶段不发生文件操作；
+- 启动入口为紧凑卷行；扫描进行中在卷行内显示进度、扫描中和取消；已有结果可通过查看下拉重扫、
+  放弃或在 Finder 中显示；
 - 计划必须经过校验和精确版本确认，执行仍只能移入废纸篓；
 - 前端交互测试证明不会一次加载百万级节点，也不会对每次 hover 产生 Wails 调用。

@@ -174,6 +174,8 @@ MapQuery
   limit       默认 256，最大 1000
   offset      默认 0
   measure     owned_allocated（第一阶段固定）
+  depth       前端默认 3，最大 4；0 表示兼容浅层模式，只查当前层
+  projectionLimit  默认 384，最大 512
 ```
 
 ```text
@@ -194,6 +196,14 @@ MapResult
 purgeable、other volumes、snapshot 等对象不能伪装成真实节点。
 `remaining`、聚合项和虚拟项必须保留三种大小及可信度口径。单次 Wails 返回不得超过 256 KB。
 
+当 `depth > 0` 时，目录 `MapEntry` 可以带有有界 `children[]`、`childrenTotal` 和 `childrenHasMore`，
+供 Sunburst 渲染真实的多层后代；投影共享同一 `snapshotVersion`、大小口径和能力集合，不创建新的
+扫描事实。默认三层、整棵投影 384 个节点，硬上限 512；响应接近 256 KB 或预算耗尽时必须提前截断并
+标记 `projectionTruncated`，不能无限递归或由前端为每个扇区单独查询。Application 负责深度/节点预算
+钳制，Wails DTO 层在序列化前负责最终字节裁剪。Wails 调用方必须显式发送
+`depth=3` 才使用多层默认投影；省略整数零值按 `depth=0` 处理。具体契约由
+[ADR-0017](adr/0017-有界多层空间图投影.md) 锁定。
+
 目标 DTO 语义如下：
 
 ```text
@@ -211,6 +221,7 @@ Domain/Platform 负责提供虚拟类型、文件身份、权限和可信度事�
 前端只保存当前层、面包屑和最近最多 32 个目录页的可丢弃 DTO 缓存。D3 只负责布局和交互；当前层
 收到受影响父节点事件后以 250 ms 防抖重新查询，响应版本过期则丢弃旧页。该数据契约由
 [ADR-0013](adr/0013-DaisyDisk空间图与渐进查询数据契约.md) 锁定。
+多层 Sunburst 的有界真实后代投影由 [ADR-0017](adr/0017-有界多层空间图投影.md) 补充锁定。
 
 ## 8. 用例接口
 
@@ -294,8 +305,9 @@ R-004、R-005、R-007 和 R-008 已完成本机验证，R-006 已完成 ad-hoc �
 smoke test、跨卷废纸篓验证和真实只读全盘样本完成前，不宣称达到发布级全盘目标。
 
 本轮 P0 已完成：固定 Go/Wails 构建环境和 bundle identity、SnapshotStore schema migration、
-分阶段扫描与首层发布、Map 查询和聚合、macOS 卷/权限/Trash/Quick Look/Finder 适配，以及
-取消、部分结果、重启恢复和清理计划版本的自动化验证。
+分阶段扫描与首层发布、Map 查询和聚合、macOS 卷/权限/Trash/Quick Look/Finder 适配、
+交互状态模型，以及取消、部分结果、重启恢复和清理计划版本的自动化验证。依据本机原版实测的
+紧凑卷入口、当前目录列表和底部 Collector 布局仍在重做，不得宣称原生体验已完成。
 
 发布前仍必须完成真实签名/TCC、真实 Wails 窗口中的 Quick Look/Finder smoke test、跨卷废纸篓
 验证和只读全盘样本性能验证；这些验证不能由本机 ad-hoc 构建替代。
@@ -305,17 +317,23 @@ smoke test、跨卷废纸篓验证和真实只读全盘样本完成前，不宣�
 ## 12. 产品体验与交互契约
 
 产品和交互以 [R-009 DaisyDisk 产品体验与交互基线](research/R-009-DaisyDisk产品体验与交互基线.md)
-为参考基线，差距和社区许可证复核以 [R-013](research/R-013-DaisyDisk原生交互与开源参考复核.md)
+为参考基线，公开资料和社区许可证复核以 [R-013](research/R-013-DaisyDisk原生交互与开源参考复核.md)，
+本机原版交互以 [R-014](research/R-014-DaisyDisk本机实机交互复核.md)
 为准。Marmot 对齐其“先概览、渐进扫描、空间图下钻、预览、删除前复核”的体验链路，但不复制
 第三方源码、品牌素材、文案或永久删除策略。
 
-基础 P0 UI 实现已满足扫描和清理链路的以下契约；DaisyDisk 原生交互完整状态以
-[ADR-0016](adr/0016-DaisyDisk原生交互状态模型.md) 为准，当前实现仍需整体重做结果工作区：
+基础 P0 状态模型已满足扫描、清理和以下交互契约；原生布局重做完成前，不能把当前 UI 视为 DaisyDisk
+体验完成；
+[ADR-0016](adr/0016-DaisyDisk原生交互状态模型.md) 仍是后续修改的依据：
 
-- 启动后先展示本机挂载卷、容量口径、权限状态和扫描入口；
+- 启动后先展示紧凑的本机挂载卷行、容量口径、权限状态和扫描入口；已有结果提供查看/重扫/放弃/Finder
+  操作，扫描文件夹使用原生 Open 面板；
 - 扫描必须先发布可用的顶层/首批结果，后台继续补齐，并提供取消和部分结果；
 - 空间图按 `owned_allocated` 导航，单层懒加载、排序、聚合和分页，不能一次传输百万节点；
-- 选中对象可以预览，清理必须先进入可审查的计划，再确认、复核和执行；
+- 结果首屏必须是 Sunburst、当前目录标题/排序列表和底部 Collector；不能以 Hero、卷卡片和常驻
+  Inspector 卡片替代该结构；
+- 目录列表和 Sunburst 共享同一批 `MapEntry`：目录单击下钻，文件单击只高亮，中心圆返回父目录；
+- 选中对象可以通过 Space 预览，清理必须先进入可审查的计划，再确认、复核和执行；
 - 权限不足、隐藏空间、聚合对象、文件变化和大小不确定性必须显式表达；
 - 悬停、键盘焦点、选中和失效对象必须分离；悬停详情只能读取当前 DTO，不能每次触发 Wails；
 - 文件夹单击下钻、中心/`Command + Up` 返回，`Command + [ / ]` 历史，方向键和 `Return` 必须共享同一
@@ -325,7 +343,8 @@ smoke test、跨卷废纸篓验证和真实只读全盘样本完成前，不宣�
 - Collector 必须支持展开、预览、移除和拖出；加入/移除只改变会话状态，不执行文件操作；
 - 设备感知并发、扫描阶段、缓存、空间图数据载荷和 Quick Look 能力已经分别由
   [ADR-0014](adr/0014-分阶段扫描与设备感知并发.md)、[ADR-0013](adr/0013-DaisyDisk空间图与渐进查询数据契约.md)
-  和 [ADR-0015](adr/0015-macOS预览Finder定位与收集区平台边界.md) 锁定，后续实现不得绕过这些边界。
+  和 [ADR-0015](adr/0015-macOS预览Finder定位与收集区平台边界.md) 锁定；多层空间图投影由
+  [ADR-0017](adr/0017-有界多层空间图投影.md) 锁定，后续实现不得绕过这些边界。
 
 参考产品允许永久删除，Marmot 不采用该差异：Marmot 的默认动作仍是移入 macOS 废纸篓，
 执行前必须重新校验文件身份和计划版本。R-009 的 P0 清单是首个体验垂直切片的验收入口，
@@ -333,16 +352,20 @@ P1/P2 能力不得在没有对应 SDD 条目和 ADR 的情况下直接实现。
 
 ## 13. 原生交互状态和开源参考
 
-R-013 对 DaisyDisk 官方指南、当前 Marmot 前端和社区实现做了差距与许可证复核，ADR-0016 已接受
+R-013 对 DaisyDisk 官方指南、当前 Marmot 前端和社区实现做了差距与许可证复核，R-014 对本机原版
+进行了实际操作复核，ADR-0016 已接受
 以下系统契约：
 
-- 结果工作区由范围/卷入口、空间图、Inspector 和 Collector 组成，不能用局部按钮堆叠替代状态模型；
-- 前端区分 `hoveredEntry`、`focusedEntry`、`selectedEntry` 和 `staleEntry`，Inspector 展示优先级和
-  导航后的恢复规则固定；
+- 结果工作区由紧凑范围/卷入口、空间图、当前目录列表、上下文动作和 Collector 组成，不能用局部按钮
+  堆叠替代状态模型；
+- 前端区分 `hoveredEntry`、`focusedEntry`、`selectedEntry` 和 `staleEntry`；当前目录列表不被上下文
+  Inspector 替代，展示优先级和导航后的恢复规则固定；
 - 导航历史最多 32 条，历史项保存 `snapshotId`、`parentId`、口径和页偏移，前进/后退重新查询；
 - `MapEntry` 目标取值为 `node | aggregate | virtual`，虚拟项带 `virtualType`、可信度和能力集合；
+- 多层空间图只能使用后端有界 `children` 投影，不能重复绘制当前层或向 WebView 发送完整树；
 - 前端只保留当前层、有限历史页和 Collector DTO，不能为了键盘导航恢复百万级完整树；
 - 只有 MIT 项目在固定提交、保留版权/许可证声明并经过独立适配后，才可能进入代码复用评估；GPL、
   非商用或无确认许可证的项目只能阅读和提取设计结论；
-- 后续实现必须以 [R-013](research/R-013-DaisyDisk原生交互与开源参考复核.md) 的 P0/P1/P2 分层和
+- 后续实现必须以 [R-013](research/R-013-DaisyDisk原生交互与开源参考复核.md)、
+  [R-014](research/R-014-DaisyDisk本机实机交互复核.md) 的 P0/P1/P2 分层和
   [ADR-0016](adr/0016-DaisyDisk原生交互状态模型.md) 的验收标准为门禁。

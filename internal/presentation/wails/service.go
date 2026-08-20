@@ -1,6 +1,8 @@
 package wails
 
 import (
+	"encoding/json"
+
 	"example.com/marmot/internal/application"
 	"example.com/marmot/internal/domain/scan"
 )
@@ -94,36 +96,45 @@ type ChildrenResult struct {
 }
 
 type MapQuery struct {
-	SnapshotID int64  `json:"snapshotId"`
-	ParentID   int64  `json:"parentId"`
-	Limit      int    `json:"limit"`
-	Offset     int    `json:"offset"`
-	Measure    string `json:"measure"`
+	SnapshotID      int64  `json:"snapshotId"`
+	ParentID        int64  `json:"parentId"`
+	Limit           int    `json:"limit"`
+	Offset          int    `json:"offset"`
+	Measure         string `json:"measure"`
+	Depth           int    `json:"depth"`
+	ProjectionLimit int    `json:"projectionLimit"`
 }
 
 type MapEntry struct {
-	Kind           string   `json:"kind"`
-	Node           NodeView `json:"node"`
-	Name           string   `json:"name"`
-	Count          int64    `json:"count"`
-	LogicalSize    int64    `json:"logicalSize"`
-	AllocatedSize  int64    `json:"allocatedSize"`
-	OwnedAllocated int64    `json:"ownedAllocated"`
-	Confidence     string   `json:"confidence"`
-	SizeBasis      string   `json:"sizeBasis"`
+	Kind            string     `json:"kind"`
+	Node            NodeView   `json:"node"`
+	Name            string     `json:"name"`
+	VirtualType     string     `json:"virtualType"`
+	DisplayState    string     `json:"displayState"`
+	Capabilities    []string   `json:"capabilities"`
+	Count           int64      `json:"count"`
+	LogicalSize     int64      `json:"logicalSize"`
+	AllocatedSize   int64      `json:"allocatedSize"`
+	OwnedAllocated  int64      `json:"ownedAllocated"`
+	Confidence      string     `json:"confidence"`
+	SizeBasis       string     `json:"sizeBasis"`
+	Children        []MapEntry `json:"children,omitempty"`
+	ChildrenTotal   int        `json:"childrenTotal,omitempty"`
+	ChildrenHasMore bool       `json:"childrenHasMore,omitempty"`
 }
 
 type MapResult struct {
-	SnapshotID      int64      `json:"snapshotId"`
-	SnapshotVersion int64      `json:"snapshotVersion"`
-	Parent          NodeView   `json:"parent"`
-	Entries         []MapEntry `json:"entries"`
-	Total           int        `json:"total"`
-	Limit           int        `json:"limit"`
-	Offset          int        `json:"offset"`
-	HasMore         bool       `json:"hasMore"`
-	Remaining       MapEntry   `json:"remaining"`
-	Confidence      string     `json:"confidence"`
+	SnapshotID          int64      `json:"snapshotId"`
+	SnapshotVersion     int64      `json:"snapshotVersion"`
+	Parent              NodeView   `json:"parent"`
+	Entries             []MapEntry `json:"entries"`
+	Total               int        `json:"total"`
+	Limit               int        `json:"limit"`
+	Offset              int        `json:"offset"`
+	HasMore             bool       `json:"hasMore"`
+	Remaining           MapEntry   `json:"remaining"`
+	Confidence          string     `json:"confidence"`
+	ProjectionTruncated bool       `json:"projectionTruncated"`
 }
 
 type NodeActionResult struct {
@@ -211,7 +222,7 @@ func (s *Service) GetChildren(query ChildrenQuery) (ChildrenResult, error) {
 }
 
 func (s *Service) GetMap(query MapQuery) (MapResult, error) {
-	result, err := s.application.GetMap(application.MapQuery{SnapshotID: query.SnapshotID, ParentID: query.ParentID, Limit: query.Limit, Offset: query.Offset, Measure: query.Measure})
+	result, err := s.application.GetMap(application.MapQuery{SnapshotID: query.SnapshotID, ParentID: query.ParentID, Limit: query.Limit, Offset: query.Offset, Measure: query.Measure, Depth: query.Depth, ProjectionLimit: query.ProjectionLimit})
 	if err != nil {
 		return MapResult{}, err
 	}
@@ -219,7 +230,83 @@ func (s *Service) GetMap(query MapQuery) (MapResult, error) {
 	for _, entry := range result.Entries {
 		entries = append(entries, mapEntry(entry))
 	}
-	return MapResult{SnapshotID: result.SnapshotID, SnapshotVersion: result.SnapshotVersion, Parent: nodeView(result.Parent), Entries: entries, Total: result.Total, Limit: result.Limit, Offset: result.Offset, HasMore: result.HasMore, Remaining: mapEntry(result.Remaining), Confidence: result.Confidence}, nil
+	return trimMapPayload(MapResult{SnapshotID: result.SnapshotID, SnapshotVersion: result.SnapshotVersion, Parent: nodeView(result.Parent), Entries: entries, Total: result.Total, Limit: result.Limit, Offset: result.Offset, HasMore: result.HasMore, Remaining: mapEntry(result.Remaining), Confidence: result.Confidence, ProjectionTruncated: result.ProjectionTruncated}), nil
+}
+
+const maxMapPayloadBytes = 256 * 1024
+
+func trimMapPayload(result MapResult) MapResult {
+	encoded, err := json.Marshal(result)
+	if err == nil && len(encoded) <= maxMapPayloadBytes {
+		return result
+	}
+	result.ProjectionTruncated = true
+	for index := range result.Entries {
+		if len(result.Entries[index].Children) == 0 {
+			continue
+		}
+		result.Entries[index].Children = nil
+		result.Entries[index].ChildrenHasMore = true
+	}
+	encoded, err = json.Marshal(result)
+	if err == nil && len(encoded) <= maxMapPayloadBytes {
+		return result
+	}
+
+	realEntries := make([]MapEntry, 0, len(result.Entries))
+	for _, entry := range result.Entries {
+		if entry.Kind != "aggregate" {
+			realEntries = append(realEntries, entry)
+		}
+	}
+	low, high, best := 0, len(realEntries), -1
+	for low <= high {
+		middle := (low + high) / 2
+		candidate := compactMapResult(result, realEntries, middle)
+		encoded, err := json.Marshal(candidate)
+		if err == nil && len(encoded) <= maxMapPayloadBytes {
+			best = middle
+			low = middle + 1
+		} else {
+			high = middle - 1
+		}
+	}
+	if best >= 0 {
+		return compactMapResult(result, realEntries, best)
+	}
+	result.Entries = nil
+	return result
+}
+
+func compactMapResult(result MapResult, entries []MapEntry, keep int) MapResult {
+	candidate := result
+	candidate.Entries = append([]MapEntry(nil), entries[:keep]...)
+	omitted := append([]MapEntry(nil), entries[keep:]...)
+	if result.Remaining.Count > 0 || len(omitted) > 0 {
+		tail := append(omitted, result.Remaining)
+		aggregate := aggregateMapEntries(tail)
+		candidate.Entries = append(candidate.Entries, aggregate)
+		candidate.Remaining = aggregate
+		candidate.HasMore = true
+	}
+	return candidate
+}
+
+func aggregateMapEntries(entries []MapEntry) MapEntry {
+	aggregate := MapEntry{Kind: "aggregate", Name: "较小对象", VirtualType: "smaller_objects", DisplayState: "partial", Capabilities: []string{"enter"}, Confidence: "estimated", SizeBasis: "map_payload_trim_v1"}
+	for _, entry := range entries {
+		if entry.Kind == "aggregate" && entry.Count == 0 {
+			continue
+		}
+		aggregate.Count += entry.Count
+		aggregate.LogicalSize += entry.LogicalSize
+		aggregate.AllocatedSize += entry.AllocatedSize
+		aggregate.OwnedAllocated += entry.OwnedAllocated
+		if entry.Kind == "node" {
+			aggregate.Count++
+		}
+	}
+	return aggregate
 }
 
 func (s *Service) PreviewNode(snapshotID, nodeID int64) (NodeActionResult, error) {
@@ -280,5 +367,9 @@ func cleanupPlan(plan application.CleanupPlan) CleanupPlan {
 }
 
 func mapEntry(entry application.MapEntry) MapEntry {
-	return MapEntry{Kind: entry.Kind, Node: nodeView(entry.Node), Name: entry.Name, Count: entry.Count, LogicalSize: entry.LogicalSize, AllocatedSize: entry.AllocatedSize, OwnedAllocated: entry.OwnedAllocated, Confidence: entry.Confidence, SizeBasis: entry.SizeBasis}
+	children := make([]MapEntry, 0, len(entry.Children))
+	for _, child := range entry.Children {
+		children = append(children, mapEntry(child))
+	}
+	return MapEntry{Kind: entry.Kind, Node: nodeView(entry.Node), Name: entry.Name, VirtualType: entry.VirtualType, DisplayState: entry.DisplayState, Capabilities: append([]string(nil), entry.Capabilities...), Count: entry.Count, LogicalSize: entry.LogicalSize, AllocatedSize: entry.AllocatedSize, OwnedAllocated: entry.OwnedAllocated, Confidence: entry.Confidence, SizeBasis: entry.SizeBasis, Children: children, ChildrenTotal: entry.ChildrenTotal, ChildrenHasMore: entry.ChildrenHasMore}
 }

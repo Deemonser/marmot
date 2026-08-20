@@ -124,7 +124,7 @@ func TestStoreMapReturnsStableEntriesAndRemainingAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Entries) != 2 || result.Entries[0].Kind != "node" || result.Entries[0].OwnedAllocated != 400 || result.Entries[1].Kind != "aggregate" {
+	if len(result.Entries) != 2 || result.Entries[0].Kind != "node" || result.Entries[0].OwnedAllocated != 400 || result.Entries[1].Kind != "aggregate" || result.Entries[1].VirtualType != "smaller_objects" {
 		t.Fatalf("unexpected map entries: %#v", result.Entries)
 	}
 	if result.Remaining.Count != 2 || result.Remaining.OwnedAllocated != 500 || !result.HasMore || result.SnapshotVersion <= 1 {
@@ -132,5 +132,57 @@ func TestStoreMapReturnsStableEntriesAndRemainingAggregate(t *testing.T) {
 	}
 	if result.Entries[1].Node.ID != 0 {
 		t.Fatal("aggregate entry must not carry a real snapshot node")
+	}
+	single, err := store.Map(scan.MapQuery{SnapshotID: snapshotID, ParentID: 1, Limit: 1, Measure: "owned_allocated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(single.Entries) != 2 || single.Entries[0].Kind != "node" || single.Entries[0].OwnedAllocated != 400 || single.Entries[1].Kind != "aggregate" {
+		t.Fatalf("limit one must retain one real entry: %#v", single.Entries)
+	}
+}
+
+func TestStoreMapBuildsBoundedProjection(t *testing.T) {
+	store, err := Open(t.TempDir() + "/snapshots.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	snapshotID, err := store.CreateSnapshot("projection-task", "/tmp/projection-root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := []Node{
+		{ID: 1, Path: "/tmp/projection-root", Name: "projection-root", Kind: "directory", Confidence: "exact"},
+		{ID: 2, ParentID: 1, Path: "/tmp/projection-root/a", Name: "a", Kind: "directory", OwnedAllocated: 600, HasChildren: true, Confidence: "exact"},
+		{ID: 3, ParentID: 1, Path: "/tmp/projection-root/b", Name: "b", Kind: "directory", OwnedAllocated: 400, HasChildren: true, Confidence: "exact"},
+		{ID: 4, ParentID: 2, Path: "/tmp/projection-root/a/file", Name: "file", Kind: "file", OwnedAllocated: 500, Confidence: "exact"},
+		{ID: 5, ParentID: 2, Path: "/tmp/projection-root/a/nested", Name: "nested", Kind: "directory", OwnedAllocated: 100, HasChildren: true, Confidence: "exact"},
+		{ID: 6, ParentID: 5, Path: "/tmp/projection-root/a/nested/deep", Name: "deep", Kind: "file", OwnedAllocated: 100, Confidence: "exact"},
+		{ID: 7, ParentID: 3, Path: "/tmp/projection-root/b/file", Name: "file", Kind: "file", OwnedAllocated: 400, Confidence: "exact"},
+	}
+	if err := store.InsertNodes(snapshotID, nodes); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.Map(scan.MapQuery{SnapshotID: snapshotID, ParentID: 1, Limit: 2, Depth: 2, ProjectionLimit: 3, Measure: "owned_allocated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) != 2 || len(result.Entries[0].Children) == 0 {
+		t.Fatalf("expected projected children: %#v", result.Entries)
+	}
+	if result.Entries[0].Children[0].Node.ID != 4 || result.Entries[0].Children[1].Node.ID != 5 {
+		t.Fatalf("unexpected first projection level: %#v", result.Entries[0].Children)
+	}
+	if len(result.Entries[0].Children[1].Children) != 1 || result.Entries[0].Children[1].Children[0].Node.ID != 6 {
+		t.Fatalf("unexpected nested projection: %#v", result.Entries[0].Children[1].Children)
+	}
+	if !result.ProjectionTruncated {
+		t.Fatal("projection should report budget truncation")
+	}
+	if result.Entries[0].Children[0].Node.ID == result.Entries[0].Children[1].Node.ID {
+		t.Fatal("projection duplicated a node")
 	}
 }

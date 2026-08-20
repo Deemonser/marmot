@@ -1,6 +1,6 @@
 # ADR-0013 DaisyDisk 空间图与渐进查询数据契约
 
-状态：Accepted
+状态：Accepted；多层 Sunburst 投影由 [ADR-0017](0017-有界多层空间图投影.md) 补充
 
 日期：2026-08-20
 
@@ -15,6 +15,7 @@ DaisyDisk 的核心体验是先看到当前目录的空间分布，再进入子�
 - [R-004 百万级节点性能与快照存储](../research/R-004-百万级节点性能与快照存储.md)
 - [ADR-0007 SQLite 快照存储与性能门槛](0007-SQLite快照存储与性能门槛.md)
 - [ADR-0003 全盘扫描与快照架构](0003-全盘扫描与快照架构.md)
+- [ADR-0017 有界多层空间图投影](0017-有界多层空间图投影.md)
 
 ## 决策
 
@@ -47,7 +48,9 @@ MapResult
   confidence
 ```
 
-`entries` 按 `owned_allocated DESC, nodeId` 稳定排序。返回值只包含当前父节点的直接项，不包含嵌套 `children`；单次 Wails 绑定返回不得超过 256 KB。
+`entries` 按 `owned_allocated DESC, nodeId` 稳定排序。基础查询只包含当前父节点的直接项，不包含嵌套
+`children`；需要复刻多层 Sunburst 时，按 [ADR-0017](0017-有界多层空间图投影.md) 请求有界投影。
+单次 Wails 绑定返回不得超过 256 KB。
 
 ### 2. 区分真实节点和空间聚合项
 

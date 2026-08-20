@@ -57,36 +57,45 @@ type DirectorySize struct {
 }
 
 type MapQuery struct {
-	SnapshotID int64
-	ParentID   int64
-	Limit      int
-	Offset     int
-	Measure    string
+	SnapshotID      int64
+	ParentID        int64
+	Limit           int
+	Offset          int
+	Measure         string
+	Depth           int
+	ProjectionLimit int
 }
 
 type MapEntry struct {
-	Kind           string
-	Node           Node
-	Name           string
-	Count          int64
-	LogicalSize    int64
-	AllocatedSize  int64
-	OwnedAllocated int64
-	Confidence     string
-	SizeBasis      string
+	Kind            string
+	Node            Node
+	Name            string
+	VirtualType     string
+	DisplayState    string
+	Capabilities    []string
+	Count           int64
+	LogicalSize     int64
+	AllocatedSize   int64
+	OwnedAllocated  int64
+	Confidence      string
+	SizeBasis       string
+	Children        []MapEntry
+	ChildrenTotal   int
+	ChildrenHasMore bool
 }
 
 type MapResult struct {
-	SnapshotID      int64
-	SnapshotVersion int64
-	Parent          Node
-	Entries         []MapEntry
-	Total           int
-	Limit           int
-	Offset          int
-	HasMore         bool
-	Remaining       MapEntry
-	Confidence      string
+	SnapshotID          int64
+	SnapshotVersion     int64
+	Parent              Node
+	Entries             []MapEntry
+	Total               int
+	Limit               int
+	Offset              int
+	HasMore             bool
+	Remaining           MapEntry
+	Confidence          string
+	ProjectionTruncated bool
 }
 
 type Emitter func(Node) error

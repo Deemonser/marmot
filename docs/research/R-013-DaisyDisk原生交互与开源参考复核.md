@@ -1,6 +1,6 @@
 # R-013 DaisyDisk 原生交互与开源参考复核
 
-状态：已完成，结论由 ADR-0016 接受；前端状态模型待按新基线实现
+状态：已完成，结论由 ADR-0016 接受；P0 状态模型已实现，原生布局重做以 R-014 实测为准
 
 日期：2026-08-20
 
@@ -17,6 +17,13 @@ R-009 已经确定了 Marmot 要复刻的产品闭环，但 P0 实现完成后�
 
 本记录不复制 DaisyDisk 的源码、商标、图片、文案或界面资产，也不把任何社区仓库自动变成
 Marmot 的运行时依赖。
+
+### 2.3 本机实机补充
+
+本记录原先主要依据公开指南和社区实现。对本机原版的直接操作结果已单独记录在
+[R-014 DaisyDisk 本机实机交互复核](R-014-DaisyDisk本机实机交互复核.md)。当公开资料与实机
+表现存在差异时，启动布局、列表点击语义、Quick Look、Collector 和较小文件展开以 R-014 为准；
+空间大小口径、权限和安全边界仍以本记录及对应 ADR 为准。
 
 ## 2. 方法和证据
 
@@ -43,11 +50,12 @@ Marmot 的运行时依赖。
 
 核对了 `frontend/src/App.tsx`、`frontend/src/styles.css`、Wails DTO 和本地 Vite DOM。当前事实是：
 
-- 已有卷概览、容量 gauge、分阶段扫描、取消、部分结果、分页 Map、Sunburst、Inspector、
+- 已有卷概览、容量 gauge、分阶段扫描、取消、部分结果、分页 Map、Sunburst、上下文 Inspector、
   Quick Look/Finder 入口、Collector 和 CleanupPlan 链路；
 - Sunburst 的 `pointerenter` 只用于设置拖放属性，Inspector 只绑定 `selected`，没有独立的
   hover 对象；
-- 目录通过双击进入，单击只选中对象；当前实现没有 DaisyDisk 的单击下钻语义；
+- 目录已通过单击进入，文件单击只选中对象；但当前页面仍把 Inspector 卡片作为右侧主结构，
+  没有复刻 DaisyDisk 的“当前目录列表 + Sunburst”连续布局；
 - 面包屑可以回到父级，但没有独立的前进/后退历史游标；
 - 全局快捷键覆盖返回父级、预览、加入 Collector、进入目录和当前目录刷新，但没有上下选择、
   Page Up/Page Down、Home/End、历史前进后退或全盘重扫；
@@ -112,13 +120,13 @@ Marmot 的运行时依赖。
 
 | 能力 | DaisyDisk 行为 | Marmot 当前 | 结论 |
 | --- | --- | --- | --- |
-| 工作区结构 | 概览、空间图、侧栏和 Collector 连续工作 | 通过 Hero、卷卡片和面板拼接，能工作但偏 Web Dashboard | P0 重做工作区层级 |
-| 悬停解释 | 悬停即更新侧栏 | 只有点击后 Inspector 才更新 | P0 增加 `hovered` 状态 |
-| 下钻语义 | 单击文件夹进入，中心返回 | 单击选择、双击进入 | P0 统一点击/键盘命令 |
+| 工作区结构 | 紧凑卷入口、空间图、当前目录列表和 Collector 连续工作 | 仍通过 Hero、卷卡片、地图面板和 Inspector 拼接 | P0 按 R-014 重做布局 |
+| 悬停解释 | 当前层对象说明随指针变化 | 已有独立 `hovered` 状态，但右侧仍是 Inspector 卡片 | P0 保留状态，重做呈现 |
+| 下钻语义 | 单击文件夹进入，文件单击高亮，中心返回 | 状态命令已统一，布局尚未对齐 | P0 在列表和图上共用命令 |
 | 小对象 | `smaller objects` 虚拟项，展开后分页 | 只有通用 `aggregate`，点击后直接跳下一页 | P0 显式建模和显示能力 |
 | 历史导航 | `Command + [ / ]`、父级和面包屑一致 | 只有面包屑，没有历史游标 | P0 增加有限历史栈 |
 | 键盘选择 | 方向键、分页、Home/End、Return、Space | 缺少连续选择和大部分快捷键 | P0 使用 roving focus |
-| Collector | 可拖入、展开、预览、拖出、移除 | 可加入、清空、建计划，不能拖出 | P0 完成会话状态机 |
+| Collector | 可拖入、展开、预览、拖出、移除 | 已支持加入、展开、预览、移除和计划，但布局仍偏 Dock | P0 改为底部紧凑投放区 |
 | 失效对象 | 移动/删除后保留失效样式 | 没有 stale 显示状态 | P0 增加刷新和失效表达 |
 | 虚拟空间 | hidden/purgeable/other volumes/snapshot/restricted | DTO 和 UI 没有类型能力 | P0 先锁契约，按范围实现 |
 | 收藏入口 | 常用目录重启后保留 | 没有持久化收藏 | P1 |

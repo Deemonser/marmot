@@ -11,6 +11,7 @@
 - Marmot 采用五阶段扫描、设备感知并发、有限缓存和摘要事件；结论已由 ADR-0014 接受。
 - Marmot 采用 `MapQuery`/`MapResult` 的当前层渐进查询，空间聚合项不能执行文件操作；结论已由 ADR-0013 接受。
 - macOS 预览使用 Quick Look、Finder 定位使用 NSWorkspace，Collector 只映射为清理计划候选；结论已由 ADR-0015 接受。
+- DaisyDisk 本机实机复核确认紧凑卷入口、当前目录列表、多层 Sunburst 和底部 Collector；结论已由 ADR-0016/0017 接受。
 - Windows 暂不研究实现，只保留平台抽象。
 
 ## 预研队列
@@ -101,6 +102,20 @@
 并核对 Radix、OpenDisk、Disk Bloom、StorageScope、Flare Scan 等 MIT 项目的固定提交和
 GPL/非商用/无许可证项目的排除边界。详见 [R-013 记录](R-013-DaisyDisk原生交互与开源参考复核.md)
 和 [ADR-0016](../adr/0016-DaisyDisk原生交互状态模型.md)。
+
+### R-014 DaisyDisk 本机实机交互复核
+
+状态：已完成（本机 DaisyDisk 可逆交互复核）
+
+固化原版卷入口、结果工作区、单击语义、较小对象、Quick Look、导航和 Collector 行为，作为
+Marmot 结果工作区重做的实测基线。详见 [R-014 记录](R-014-DaisyDisk本机实机交互复核.md)。
+
+### R-015 有界多层空间图投影预研
+
+状态：已完成（有界后端投影方案；ADR 已接受）
+
+确定 Sunburst 多层 `children` 投影、深度/节点预算、聚合语义、载荷上限和降级边界。详见
+[R-015 记录](R-015-有界多层空间图投影预研.md) 和 [ADR-0017](../adr/0017-有界多层空间图投影.md)。
 
 ## 记录要求
 
