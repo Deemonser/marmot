@@ -5,8 +5,9 @@ Marmot 是一个 macOS 本地磁盘空间分析与安全清理工具，目标体
 ## 当前阶段
 
 文档基准、技术预研和核心架构决策已完成，目录结构切片已完成，当前进入
-受门禁控制的业务垂直切片阶段。真实签名/TCC、
-跨卷废纸篓和真实全盘样本仍是发布前验证项。
+P0 业务垂直切片已落地：卷概览、分阶段扫描、渐进 Map/Sunburst、对象检查、
+Collector 和清理计划已连通。真实签名/TCC、Quick Look 原生窗口、跨卷废纸篓和真实全盘样本
+仍是发布前验证项。
 
 ## 已确定方案
 
@@ -65,8 +66,8 @@ Marmot 是一个 macOS 本地磁盘空间分析与安全清理工具，目标体
 当前门禁、已接受 ADR 和验证结果详见 [SDD](docs/SDD.md)、[DDD](docs/DDD.md)、
 [文档基准](docs/BASELINE.md) 以及 [技术预研队列](docs/research/README.md)。
 
-文档基线固定后，P0 实现顺序为：扫描阶段与卷目录、空间图查询与 Sunburst、Quick Look/Finder、
-Collector 到 CleanupPlan 的交互闭环。每一项实现都必须先满足对应 SDD 契约和 ADR 验收标准。
+文档基线固定后，P0 已按“扫描阶段与卷目录 -> 空间图查询与 Sunburst -> Quick Look/Finder ->
+Collector 到 CleanupPlan”完成实现。后续切片仍必须先满足对应 SDD 契约和 ADR 验收标准。
 
 ## 当前不做
 
