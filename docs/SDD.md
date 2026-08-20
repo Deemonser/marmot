@@ -187,10 +187,26 @@ MapResult
   confidence
 ```
 
-`entries[]` 按 `owned_allocated DESC, nodeId` 稳定排序，单项为真实节点 `kind=node` 或空间聚合项
-`kind=aggregate`。真实节点可以进入、预览、Finder 定位或进入清理计划，但每个操作仍由 Application
-按快照和节点 ID 重新校验。聚合项只允许展开，不允许预览、定位、清理，也不写入 `scan_nodes`。
-`remaining` 和聚合项必须保留三种大小及可信度口径。单次 Wails 返回不得超过 256 KB。
+`entries[]` 按 `owned_allocated DESC, nodeId` 稳定排序，目标契约允许真实节点 `kind=node`、空间聚合项
+`kind=aggregate` 和解释性虚拟项 `kind=virtual`。真实节点可以进入、预览、Finder 定位或进入清理
+计划，但每个操作仍由 Application 按快照和节点 ID 重新校验。聚合项只允许展开，不允许预览、定位、
+清理，也不写入 `scan_nodes`。虚拟项必须带 `virtualType`、可信度和能力集合；hidden/restricted、
+purgeable、other volumes、snapshot 等对象不能伪装成真实节点。
+`remaining`、聚合项和虚拟项必须保留三种大小及可信度口径。单次 Wails 返回不得超过 256 KB。
+
+目标 DTO 语义如下：
+
+```text
+MapEntry.kind          node | aggregate | virtual
+MapEntry.virtualType   smaller_objects | hidden_space | purgeable_space | other_volumes |
+                       snapshot | restricted（仅 aggregate/virtual）
+MapEntry.displayState  current | stale | partial
+MapEntry.capabilities  enter | preview | reveal | collect | rescan 的子集
+```
+
+Domain/Platform 负责提供虚拟类型、文件身份、权限和可信度事实；Application 根据快照状态和平台能力
+计算 `displayState`/`capabilities`，Wails 只做 DTO 转换。前端可以隐藏不适用的按钮，但不能新增能力；
+每次 Preview、Reveal 或 Cleanup 仍必须回到 Application 重新校验。
 
 前端只保存当前层、面包屑和最近最多 32 个目录页的可丢弃 DTO 缓存。D3 只负责布局和交互；当前层
 收到受影响父节点事件后以 250 ms 防抖重新查询，响应版本过期则丢弃旧页。该数据契约由
@@ -289,16 +305,24 @@ smoke test、跨卷废纸篓验证和真实只读全盘样本完成前，不宣�
 ## 12. 产品体验与交互契约
 
 产品和交互以 [R-009 DaisyDisk 产品体验与交互基线](research/R-009-DaisyDisk产品体验与交互基线.md)
-为参考基线。Marmot 对齐其“先概览、渐进扫描、空间图下钻、预览、删除前复核”的体验链路，
-但不复制第三方源码、品牌素材、文案或永久删除策略。
+为参考基线，差距和社区许可证复核以 [R-013](research/R-013-DaisyDisk原生交互与开源参考复核.md)
+为准。Marmot 对齐其“先概览、渐进扫描、空间图下钻、预览、删除前复核”的体验链路，但不复制
+第三方源码、品牌素材、文案或永久删除策略。
 
-P0 UI 实现已满足以下契约，后续修改仍必须保持这些边界：
+基础 P0 UI 实现已满足扫描和清理链路的以下契约；DaisyDisk 原生交互完整状态以
+[ADR-0016](adr/0016-DaisyDisk原生交互状态模型.md) 为准，当前实现仍需整体重做结果工作区：
 
 - 启动后先展示本机挂载卷、容量口径、权限状态和扫描入口；
 - 扫描必须先发布可用的顶层/首批结果，后台继续补齐，并提供取消和部分结果；
 - 空间图按 `owned_allocated` 导航，单层懒加载、排序、聚合和分页，不能一次传输百万节点；
 - 选中对象可以预览，清理必须先进入可审查的计划，再确认、复核和执行；
 - 权限不足、隐藏空间、聚合对象、文件变化和大小不确定性必须显式表达；
+- 悬停、键盘焦点、选中和失效对象必须分离；悬停详情只能读取当前 DTO，不能每次触发 Wails；
+- 文件夹单击下钻、中心/`Command + Up` 返回，`Command + [ / ]` 历史，方向键和 `Return` 必须共享同一
+  导航命令；
+- `smaller objects`、hidden space、purgeable space、other volumes、snapshot 和 restricted 必须是
+  有能力限制的聚合/虚拟项，不能进入文件操作；
+- Collector 必须支持展开、预览、移除和拖出；加入/移除只改变会话状态，不执行文件操作；
 - 设备感知并发、扫描阶段、缓存、空间图数据载荷和 Quick Look 能力已经分别由
   [ADR-0014](adr/0014-分阶段扫描与设备感知并发.md)、[ADR-0013](adr/0013-DaisyDisk空间图与渐进查询数据契约.md)
   和 [ADR-0015](adr/0015-macOS预览Finder定位与收集区平台边界.md) 锁定，后续实现不得绕过这些边界。
@@ -306,3 +330,19 @@ P0 UI 实现已满足以下契约，后续修改仍必须保持这些边界：
 参考产品允许永久删除，Marmot 不采用该差异：Marmot 的默认动作仍是移入 macOS 废纸篓，
 执行前必须重新校验文件身份和计划版本。R-009 的 P0 清单是首个体验垂直切片的验收入口，
 P1/P2 能力不得在没有对应 SDD 条目和 ADR 的情况下直接实现。
+
+## 13. 原生交互状态和开源参考
+
+R-013 对 DaisyDisk 官方指南、当前 Marmot 前端和社区实现做了差距与许可证复核，ADR-0016 已接受
+以下系统契约：
+
+- 结果工作区由范围/卷入口、空间图、Inspector 和 Collector 组成，不能用局部按钮堆叠替代状态模型；
+- 前端区分 `hoveredEntry`、`focusedEntry`、`selectedEntry` 和 `staleEntry`，Inspector 展示优先级和
+  导航后的恢复规则固定；
+- 导航历史最多 32 条，历史项保存 `snapshotId`、`parentId`、口径和页偏移，前进/后退重新查询；
+- `MapEntry` 目标取值为 `node | aggregate | virtual`，虚拟项带 `virtualType`、可信度和能力集合；
+- 前端只保留当前层、有限历史页和 Collector DTO，不能为了键盘导航恢复百万级完整树；
+- 只有 MIT 项目在固定提交、保留版权/许可证声明并经过独立适配后，才可能进入代码复用评估；GPL、
+  非商用或无确认许可证的项目只能阅读和提取设计结论；
+- 后续实现必须以 [R-013](research/R-013-DaisyDisk原生交互与开源参考复核.md) 的 P0/P1/P2 分层和
+  [ADR-0016](adr/0016-DaisyDisk原生交互状态模型.md) 的验收标准为门禁。

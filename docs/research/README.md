@@ -93,6 +93,15 @@
 确定 Quick Look、Finder、Collector、拖放 scope 和快照节点校验边界。详见
 [R-012 记录](R-012-macOS预览Finder定位与收集区边界.md) 和 [ADR-0015](../adr/0015-macOS预览Finder定位与收集区平台边界.md)。
 
+### R-013 DaisyDisk 原生交互与开源参考复核
+
+状态：已完成（官方交互黑盒复核、Marmot 差距矩阵、社区项目许可证复核）
+
+补齐悬停/焦点/选中、单击下钻、有限历史、键盘选择、虚拟空间对象和 Collector 状态机，
+并核对 Radix、OpenDisk、Disk Bloom、StorageScope、Flare Scan 等 MIT 项目的固定提交和
+GPL/非商用/无许可证项目的排除边界。详见 [R-013 记录](R-013-DaisyDisk原生交互与开源参考复核.md)
+和 [ADR-0016](../adr/0016-DaisyDisk原生交互状态模型.md)。
+
 ## 记录要求
 
 每份记录必须包含问题、假设、环境、方法、证据、结论、限制、对 DDD/SDD 的影响和建议 ADR。
