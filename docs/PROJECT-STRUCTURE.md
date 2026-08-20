@@ -1,6 +1,6 @@
 # 项目目录规范
 
-状态：目标目录已冻结；现有首个切片目录仍是过渡状态
+状态：目标目录已冻结；目录结构切片已完成，业务职责仍按垂直切片继续细化
 
 本项目采用轻量 DDD + 分层架构。目录表达职责边界，不要求为了形式创建没有业务内容的
 空包；但一个模块不得跨层持有另一层的业务职责。
@@ -52,20 +52,20 @@ presentation/wails -> application -> domain
 
 ## 当前目录审计
 
-当前目录可以运行首个实验切片，但不符合上述长期标准：
+当前目录已按目标边界完成第一轮结构切片：
 
 | 当前路径 | 当前问题 | 基准后的归属 |
 | --- | --- | --- |
-| `main.go` | 同时包含组合根和窗口配置，暂时可接受 | 保留为组合根，业务逻辑移出 |
-| `service.go` | Wails DTO、用例编排、扫描收尾和清理规则混在一个文件 | 拆到 `presentation/wails`、`application`、`domain` |
-| `internal/scanner` | 扫描技术实现未标明 Infrastructure 归属 | `internal/infrastructure/scanner` |
-| `internal/snapshot` | SQLite 实现直接被服务依赖，缺少端口隔离 | `internal/ports` + `internal/infrastructure/snapshot` |
-| `internal/platform` | macOS 能力适配基本符合职责 | 保留，按能力继续拆分 |
-| `greetservice.go` | Wails 模板残留，不属于 Marmot 业务 | 基准清理阶段移除 |
+| `main.go` | 只负责组合根、资源嵌入和窗口生命周期 | 保留在仓库根目录 |
+| `internal/application` | 承载扫描/清理用例、任务生命周期和端口编排 | 当前第一阶段应用层 |
+| `internal/presentation/wails` | 承载 Wails DTO、绑定入口和事件转换 | 当前第一阶段展示适配层 |
+| `internal/domain`、`internal/ports` | 领域模型和技术无关契约已建立，Recommendation 只保留边界 | 后续按领域切片细化 |
+| `internal/infrastructure/*` | 扫描器和 SQLite 已归入基础设施并实现端口 | 保留，Mole 只能在此隔离 |
+| `internal/platform` | macOS 权限、文件身份和废纸篓适配 | 保留，按平台能力继续拆分 |
 | `build/*` | 含 Wails 生成的非 macOS 平台资源 | 作为构建资产保留，不视为当前业务实现 |
 
-因此，当前代码目录是“过渡目录”，不是“标准目录”。文档基准提交只冻结目标，不在本次
-文档提交中移动业务代码；目录重构必须作为独立、可验证的结构切片完成。
+因此，当前目录已经符合轻量 DDD + 分层架构的第一轮结构标准；这不表示所有领域行为都已实现。
+扫描并发、APFS 语义、权限和清理安全仍必须按 SDD、预研和 ADR 逐项完成。
 
 ## 生成物规则
 
