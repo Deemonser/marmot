@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { DragEvent as ReactDragEvent } from "react";
 import { arc } from "d3-shape";
-import { Dialogs, Events } from "@wailsio/runtime";
+import { Dialogs, Events, Window } from "@wailsio/runtime";
 import { Service as MarmotService } from "../bindings/example.com/marmot/internal/presentation/wails";
 import type * as Models from "../bindings/example.com/marmot/internal/presentation/wails/models";
 
@@ -28,6 +28,8 @@ type Page = {
 const defaultRoot = "/";
 const pageSize = 256;
 const maxHistory = 32;
+const sourceWindowSize = { width: 968, height: 151 };
+const resultWindowSize = { width: 968, height: 715 };
 const phaseLabels: Record<string, string> = {
   catalog: "准备卷",
   volume_overview: "读取概览",
@@ -183,10 +185,11 @@ function Sunburst({
       const next = cursor + (weight / levelTotal) * (endAngle - startAngle);
       const key = entryKey(entry);
       const renderKey = key + ":" + depth + ":" + slices.length;
-      slices.push({ entry, key, renderKey, rootIndex, depth, path: makeArc({ startAngle: cursor, endAngle: next }) ?? "" });
+      const branchIndex = depth === 0 ? index : rootIndex;
+      slices.push({ entry, key, renderKey, rootIndex: branchIndex, depth, path: makeArc({ startAngle: cursor, endAngle: next }) ?? "" });
       const children = (entry.children ?? []).filter(Boolean);
       if (children.length > 0 && entry.kind === "node" && entry.node.kind === "directory") {
-        appendLevel(children, cursor, next, depth + 1, rootIndex);
+        appendLevel(children, cursor, next, depth + 1, branchIndex);
       }
       cursor = next;
       if (index === levelEntries.length - 1) cursor = endAngle;
@@ -273,7 +276,27 @@ function Sunburst({
   );
 }
 
-function VolumeTile({ volume, onScan }: { volume: VolumeOverview; onScan: (path: string) => void }) {
+function VolumeTile({
+  volume,
+  hasResult,
+  scanning,
+  scanLocked,
+  onScan,
+  onView,
+  onCancel,
+  onForget,
+}: {
+  volume: VolumeOverview;
+  hasResult: boolean;
+  scanning: boolean;
+  scanLocked: boolean;
+  onScan: (path: string) => void;
+  onView: () => void;
+  onCancel: () => void;
+  onForget: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const disabled = !volume.scannable || (scanLocked && !scanning);
   const ratio = volume.totalBytes ? Math.min(100, (volume.usedBytes / volume.totalBytes) * 100) : 0;
   return (
     <article className={"volume-tile" + (volume.scannable ? "" : " is-disabled")}>
@@ -281,7 +304,7 @@ function VolumeTile({ volume, onScan }: { volume: VolumeOverview; onScan: (path:
         <div className="volume-icon">{volume.path === "/" ? "HD" : "V"}</div>
         <div className="volume-name">
           <strong>{volume.name}</strong>
-          <span>{volume.path} · {volume.kind}</span>
+          <span>{scanning ? "扫描中…" : volume.path + " · " + volume.kind}</span>
         </div>
         <span className={"volume-permission " + volume.permission}>{volume.permission === "available" ? "可访问" : volume.permission}</span>
       </div>
@@ -293,7 +316,29 @@ function VolumeTile({ volume, onScan }: { volume: VolumeOverview; onScan: (path:
       </div>
       <div className="volume-tile-foot">
         <span>{volume.message}</span>
-        <button className="text-button" onClick={() => onScan(volume.path)} disabled={!volume.scannable}>扫描</button>
+        <div className="volume-action">
+          <button className="volume-action-main" onClick={scanning ? onCancel : hasResult ? onView : () => onScan(volume.path)} disabled={disabled}>
+            {scanning ? "取消" : hasResult ? "查看" : "扫描"}
+          </button>
+          <button
+            className="volume-action-menu"
+            onClick={() => setMenuOpen((open) => !open)}
+            disabled={disabled}
+            aria-label={volume.name + "操作菜单"}
+            aria-expanded={menuOpen}
+          >
+            ⌄
+          </button>
+          {menuOpen && (
+            <div className="volume-menu" role="menu">
+              <button role="menuitem" onClick={() => { setMenuOpen(false); if (hasResult) onView(); else onScan(volume.path); }}>
+                {hasResult ? "查看" : "扫描"}
+              </button>
+              <button role="menuitem" onClick={() => { setMenuOpen(false); onScan(volume.path); }}>重扫</button>
+              {hasResult && <button role="menuitem" onClick={() => { setMenuOpen(false); onForget(); }}>放弃当前结果</button>}
+            </div>
+          )}
+        </div>
       </div>
     </article>
   );
@@ -448,6 +493,7 @@ export default function App() {
   const loadMapRef = useRef<((target: Page, mode?: NavigationMode, targetIndex?: number) => Promise<boolean>) | null>(null);
 
   const scanActive = status?.state === "running";
+  const showResult = Boolean(status?.snapshotId && !scanActive);
   const currentPage = pages[pageIndex] ?? null;
   const currentParent = map?.parent ?? null;
   const entries = map?.entries ?? [];
@@ -566,6 +612,15 @@ export default function App() {
       if (refreshTimer.current !== undefined) window.clearTimeout(refreshTimer.current);
     };
   }, []);
+
+  useEffect(() => {
+    const size = showResult ? resultWindowSize : sourceWindowSize;
+    try {
+      void Window.SetSize(size.width, size.height).catch(() => undefined);
+    } catch {
+      // The ordinary browser preview does not expose the Wails window bridge.
+    }
+  }, [showResult]);
 
   async function startScan(nextRoot = root) {
     setBusy(true);
@@ -702,6 +757,22 @@ export default function App() {
 
   function refreshCurrent() {
     if (currentPage) void goToPage(currentPage, "replace");
+  }
+
+  function forgetResult() {
+    window.localStorage.removeItem("marmot.scanTaskId");
+    setStatus(null);
+    setMap(null);
+    setPages([]);
+    setPageIndex(-1);
+    setHoveredEntry(null);
+    setFocusedEntry(null);
+    setSelectedEntry(null);
+    setStaleEntry(null);
+    setCollector([]);
+    setPlan(null);
+    setValidation(null);
+    setNotice("已放弃当前结果视图；快照仍保留在本地缓存中。");
   }
 
   function markStale(entry: MapEntry) {
@@ -877,8 +948,8 @@ export default function App() {
   });
 
   return (
-    <div className="app-shell" onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
-      <header className="topbar">
+    <div className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
+      <header className={"topbar " + (showResult ? "topbar-result" : "topbar-source")}>
         <div className="brand-lockup">
           <span className="brand-mark">M</span>
           <div><strong>Marmot</strong><span>本地空间分析</span></div>
@@ -887,9 +958,13 @@ export default function App() {
           <span className="status-dot" />
           {permission?.state === "available" ? "基础目录可访问" : permission?.message ?? "正在读取权限"}
         </div>
+        <div className="license-actions" aria-label="授权">
+          <button className="license-button" onClick={() => setNotice("试用版功能已启用。")}>试用版</button>
+          <button className="license-button emphasis" onClick={() => setNotice("购买入口将在发布版接入。")}>购买</button>
+        </div>
       </header>
 
-      <main className={"workspace " + (status?.snapshotId ? "has-result" : "has-source")}>
+      <main className={"workspace " + (showResult ? "has-result" : "has-source")}>
         <section className="workspace-head">
           <div className="workspace-title">
             <p className="eyebrow">SPACE ANALYSIS</p>
@@ -906,7 +981,19 @@ export default function App() {
         <section className="volume-strip" aria-label="磁盘范围">
           <div className="strip-label"><span>范围</span><strong>已挂载卷</strong></div>
           <div className="volume-list">
-            {volumes.map((volume) => <VolumeTile key={volume.id} volume={volume} onScan={(path) => { setRoot(path); void startScan(path); }} />)}
+            {volumes.map((volume) => (
+              <VolumeTile
+                key={volume.id}
+                volume={volume}
+                hasResult={Boolean(showResult && status?.root === volume.path)}
+                scanning={Boolean(scanActive && status?.root === volume.path)}
+                scanLocked={scanActive}
+                onScan={(path) => { setRoot(path); void startScan(path); }}
+                onView={() => setNotice("当前结果已打开。")}
+                onCancel={() => void cancelScan()}
+                onForget={forgetResult}
+              />
+            ))}
             {volumes.length === 0 && <div className="volume-loading">正在读取卷...</div>}
           </div>
         </section>
@@ -941,7 +1028,7 @@ export default function App() {
           </section>
         )}
 
-        {status?.snapshotId ? (
+        {showResult ? (
           <>
             <nav className="breadcrumb-bar" aria-label="目录路径">
               <span className="breadcrumb-history">

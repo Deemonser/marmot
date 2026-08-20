@@ -69,15 +69,17 @@ func main() {
 	}
 
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:  "Marmot",
-		Width:  1180,
-		Height: 760,
+		Title:     "Marmot",
+		Width:     968,
+		Height:    151,
+		MinWidth:  760,
+		MinHeight: 145,
 		Mac: application.MacWindow{
 			InvisibleTitleBarHeight: 50,
 			Backdrop:                application.MacBackdropTranslucent,
 			TitleBar:                application.MacTitleBarHiddenInset,
 		},
-		BackgroundColour: application.NewRGB(16, 20, 24),
+		BackgroundColour: application.NewRGB(43, 44, 49),
 		URL:              "/",
 	})
 	window.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {

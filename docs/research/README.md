@@ -12,6 +12,7 @@
 - Marmot 采用 `MapQuery`/`MapResult` 的当前层渐进查询，空间聚合项不能执行文件操作；结论已由 ADR-0013 接受。
 - macOS 预览使用 Quick Look、Finder 定位使用 NSWorkspace，Collector 只映射为清理计划候选；结论已由 ADR-0015 接受。
 - DaisyDisk 本机实机复核确认紧凑卷入口、当前目录列表、多层 Sunburst 和底部 Collector；结论已由 ADR-0016/0017 接受。
+- DaisyDisk 视觉版式基线确认启动态与结果态必须使用不同窗口骨架；结论已由 ADR-0018 接受。
 - Windows 暂不研究实现，只保留平台抽象。
 
 ## 预研队列
@@ -116,6 +117,13 @@ Marmot 结果工作区重做的实测基线。详见 [R-014 记录](R-014-DaisyD
 
 确定 Sunburst 多层 `children` 投影、深度/节点预算、聚合语义、载荷上限和降级边界。详见
 [R-015 记录](R-015-有界多层空间图投影预研.md) 和 [ADR-0017](../adr/0017-有界多层空间图投影.md)。
+
+### R-016 DaisyDisk 视觉版式与窗口状态基线
+
+状态：已完成（截图、本机复核和当前 DOM 差距核对；ADR 已接受）
+
+锁定紧凑卷入口、结果工作区比例、Sunburst 视觉参数、上下文动作和左下 Collector 的版式边界。
+详见 [R-016 记录](R-016-DaisyDisk视觉版式与窗口状态基线.md) 和 [ADR-0018](../adr/0018-DaisyDisk视觉版式与窗口状态重做.md)。
 
 ## 记录要求
 

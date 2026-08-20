@@ -229,6 +229,7 @@ Collector -> CleanupPlan -> 校验 -> 确认 -> 废纸篓
 - 多层 Sunburst 投影、深度/预算和载荷边界由 [ADR-0017](adr/0017-有界多层空间图投影.md) 锁定；
 - Quick Look、Finder 定位和收集区边界由 [ADR-0015](adr/0015-macOS预览Finder定位与收集区平台边界.md) 锁定；
 - DaisyDisk 原生交互状态、有限历史、虚拟对象和 Collector 状态机由 [ADR-0016](adr/0016-DaisyDisk原生交互状态模型.md) 锁定；
+- 启动态与结果态的视觉状态边界、空间图与当前目录列表的呈现关系由 [ADR-0018](adr/0018-DaisyDisk视觉版式与窗口状态重做.md) 锁定；
 - 进程退出后的任务和计划语义由 R-008、ADR-0011 锁定；
 - 跨卷废纸篓、真实 Developer ID/TCC、FileProvider 特定行为和真实全盘样本仍需 smoke test。
 

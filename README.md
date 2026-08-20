@@ -5,7 +5,7 @@ Marmot 是一个 macOS 本地磁盘空间分析与安全清理工具，目标体
 ## 当前阶段
 
 文档基准、技术预研和核心架构决策已完成，目录结构切片、扫描/清理基础 P0 和
-DaisyDisk 交互状态模型已落地；依据本机原版实测的原生布局和多层 Sunburst 正在重做。当前实现已包含
+DaisyDisk 交互状态模型和 ADR-0018 视觉版式第一版已落地；当前实现已包含
 悬停上下文、单击下钻、键盘焦点、
 有限浏览历史、聚合/虚拟对象能力边界和 Collector 状态机。真实签名/TCC、Quick Look
 原生窗口、跨卷废纸篓和真实全盘样本仍是发布前验证项。
@@ -64,6 +64,7 @@ DaisyDisk 交互状态模型已落地；依据本机原版实测的原生布局�
 - [DaisyDisk 交互与开源参考复核](docs/research/R-013-DaisyDisk原生交互与开源参考复核.md)
 - [DaisyDisk 本机实机交互复核](docs/research/R-014-DaisyDisk本机实机交互复核.md)
 - [有界多层空间图投影预研](docs/research/R-015-有界多层空间图投影预研.md)
+- [DaisyDisk 视觉版式与窗口状态基线](docs/research/R-016-DaisyDisk视觉版式与窗口状态基线.md)
 - [分阶段扫描预研](docs/research/R-010-分阶段扫描与设备感知并发.md)
 - [空间图数据契约预研](docs/research/R-011-Sunburst空间图与渐进查询数据契约.md)
 - [macOS 预览与收集区预研](docs/research/R-012-macOS预览Finder定位与收集区边界.md)
@@ -75,8 +76,8 @@ DaisyDisk 交互状态模型已落地；依据本机原版实测的原生布局�
 [文档基准](docs/BASELINE.md) 以及 [技术预研队列](docs/research/README.md)。
 
 文档基线固定后，基础 P0 已按“扫描阶段与卷目录 -> 空间图查询与 Sunburst -> Quick Look/Finder ->
-Collector 到 CleanupPlan -> 交互状态模型”完成实现；原生布局和多层 Sunburst 必须按 R-014/R-015
-先完成契约实现再宣称对齐。后续修改仍必须先满足对应 SDD 契约和 ADR 验收标准。
+Collector 到 CleanupPlan -> 交互状态模型 -> DaisyDisk 视觉版式”完成第一版实现；R-014/R-015/R-016
+的验收标准和真实原生窗口 smoke test 仍是后续门禁。后续修改仍必须先满足对应 SDD 契约和 ADR 验收标准。
 
 ## 当前不做
 

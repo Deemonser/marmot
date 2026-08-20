@@ -40,6 +40,8 @@ DDD 领域规则
 - macOS 预览、Finder 定位和 Collector 边界以 [ADR-0015](adr/0015-macOS预览Finder定位与收集区平台边界.md) 为准。
 - DaisyDisk 原生交互状态、有限导航历史、虚拟空间对象和 Collector 状态机以
   [ADR-0016](adr/0016-DaisyDisk原生交互状态模型.md) 为准；当前基础 UI 切片不能替代该交互基线。
+- DaisyDisk 启动态与结果态的不同视觉骨架、Sunburst 比例和左下 Collector 位置以
+  [ADR-0018](adr/0018-DaisyDisk视觉版式与窗口状态重做.md) 为准。
 - 当前相关 ADR 均已接受；实现发现冲突时必须先更新预研/ADR/SDD/DDD，再修改代码。
 
 ## 首个切片的领域语义

@@ -4,7 +4,7 @@
 
 日期：2026-08-20
 
-实施状态：P0 状态模型和安全边界已落地；依据本机实测新增的原生布局重做进行中。TypeScript、
+实施状态：P0 状态模型、安全边界和依据本机实测的视觉版式第一版已落地。TypeScript、
 Go 测试、go vet、Wails macOS 构建和 Chrome DOM 交互验证已通过。真实签名/TCC、原生
 Quick Look/Finder、跨卷废纸篓和全盘样本仍属于发布前验证。
 
