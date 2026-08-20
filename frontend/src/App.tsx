@@ -3,7 +3,7 @@ import { Events } from "@wailsio/runtime";
 import { Service as MarmotService } from "../bindings/example.com/marmot/internal/presentation/wails";
 
 type PermissionStatus = { platform: string; state: string; message: string };
-type ScanStatus = { taskId: string; snapshotId: number; root: string; state: string; nodes: number; files: number; directories: number; bytes: number; issues: string[]; error: string };
+type ScanStatus = { taskId: string; snapshotId: number; root: string; state: string; phase?: string; nodes: number; files: number; directories: number; bytes: number; issues?: string[] | null; error: string };
 type NodeView = { id: number; parentId: number; path: string; name: string; kind: string; logicalSize: number; allocatedSize: number; ownedAllocated: number; confidence: string; sizeBasis: string; hasChildren: boolean };
 type CleanupPlan = { id: string; snapshotId: number; version: number; state: string; items: number; results?: { path: string; state: string; reason: string }[] };
 type CleanupValidation = { planId: string; version: number; valid: boolean; items: { path: string; valid: boolean; reason: string }[] };
@@ -23,6 +23,10 @@ function stateLabel(state: string): string {
   return ({ running: "扫描中", completed: "已完成", completed_with_issues: "部分完成", cancelled: "已取消", interrupted: "上次中断", failed: "失败" } as Record<string, string>)[state] ?? state;
 }
 
+function phaseLabel(phase?: string): string {
+  return ({ catalog: "准备卷", volume_overview: "读取概览", top_level_publish: "发布首层", deep_scan: "深入扫描", finalize: "整理结果" } as Record<string, string>)[phase ?? ""] ?? "";
+}
+
 export default function App() {
   const [permission, setPermission] = useState<PermissionStatus | null>(null);
   const [root, setRoot] = useState(defaultRoot);
@@ -39,6 +43,7 @@ export default function App() {
   const rootLoadInFlight = useRef(false);
 
   const scanActive = status?.state === "running";
+  const issueCount = status?.issues?.length ?? 0;
   const selectedBytes = useMemo(() => nodes.filter((node) => selectedPaths.includes(node.path)).reduce((sum, node) => sum + node.ownedAllocated, 0), [nodes, selectedPaths]);
 
   useEffect(() => {
@@ -62,6 +67,7 @@ export default function App() {
         files: event.data.files,
         directories: event.data.directories,
         bytes: event.data.bytes,
+        phase: event.data.phase ?? current?.phase,
         issues: event.data.issues ?? current?.issues ?? [],
         error: event.data.error ?? current?.error ?? "",
       }));
@@ -149,7 +155,7 @@ export default function App() {
         </section>
 
         <section className="metrics-band" aria-label="扫描状态">
-          <div><span>状态</span><strong>{status ? stateLabel(status.state) : "未开始"}</strong></div><div><span>节点</span><strong>{status?.nodes.toLocaleString() ?? "0"}</strong></div><div><span>文件</span><strong>{status?.files.toLocaleString() ?? "0"}</strong></div><div><span>已占用</span><strong>{formatBytes(status?.bytes ?? 0)}</strong></div><div className="metrics-note">{status?.issues.length ? `${status.issues.length} 个问题` : "结果会保留可信度和权限限制"}</div>
+          <div><span>状态</span><strong>{status ? `${stateLabel(status.state)}${phaseLabel(status.phase) ? ` · ${phaseLabel(status.phase)}` : ""}` : "未开始"}</strong></div><div><span>节点</span><strong>{status?.nodes.toLocaleString() ?? "0"}</strong></div><div><span>文件</span><strong>{status?.files.toLocaleString() ?? "0"}</strong></div><div><span>已占用</span><strong>{formatBytes(status?.bytes ?? 0)}</strong></div><div className="metrics-note">{issueCount ? `${issueCount} 个问题` : "结果会保留可信度和权限限制"}</div>
         </section>
 
         <section className="content-grid">

@@ -43,6 +43,7 @@ type scanTask struct {
 	snapshotID  int64
 	root        string
 	state       string
+	phase       string
 	nodes       int64
 	files       int64
 	directories int64
@@ -61,6 +62,7 @@ type ScanStatus struct {
 	SnapshotID  int64    `json:"snapshotId"`
 	Root        string   `json:"root"`
 	State       string   `json:"state"`
+	Phase       string   `json:"phase"`
 	Nodes       int64    `json:"nodes"`
 	Files       int64    `json:"files"`
 	Directories int64    `json:"directories"`
@@ -74,6 +76,7 @@ type ScanProgress struct {
 	SnapshotID  int64    `json:"snapshotId"`
 	Root        string   `json:"root"`
 	State       string   `json:"state"`
+	Phase       string   `json:"phase"`
 	Nodes       int64    `json:"nodes"`
 	Files       int64    `json:"files"`
 	Directories int64    `json:"directories"`
@@ -169,7 +172,7 @@ func (s *Service) StartScan(options ScanOptions) (ScanStatus, error) {
 		cancel()
 		return ScanStatus{}, err
 	}
-	task := &scanTask{taskID: taskID, snapshotID: snapshotID, root: root, state: "running", cancel: cancel}
+	task := &scanTask{taskID: taskID, snapshotID: snapshotID, root: root, state: "running", phase: string(scan.PhaseCatalog), cancel: cancel}
 	s.mu.Lock()
 	s.tasks[taskID] = task
 	s.mu.Unlock()
@@ -217,6 +220,12 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 		return nil
 	}
 	lastProgress := time.Time{}
+	emitProgressIfDue := func() {
+		if lastProgress.IsZero() || time.Since(lastProgress) >= 200*time.Millisecond {
+			s.emitProgress(task)
+			lastProgress = time.Now()
+		}
+	}
 	result, scanErr := s.scanner.Scan(ctx, task.root, func(node scan.Node) error {
 		batch = append(batch, node)
 		parents[node.ID] = node.ParentID
@@ -254,11 +263,22 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 				return err
 			}
 		}
-		if time.Since(lastProgress) > 100*time.Millisecond {
-			s.emitProgress(task)
-			lastProgress = time.Now()
-		}
+		emitProgressIfDue()
 		return nil
+	}, func(phase scan.Phase) error {
+		task.mu.Lock()
+		task.phase = string(phase)
+		task.mu.Unlock()
+		if err := s.store.UpdateSnapshotPhase(task.snapshotID, string(phase)); err != nil {
+			return err
+		}
+		if phase == scan.PhaseTopLevelPublish {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+		emitProgressIfDue()
+		return ctx.Err()
 	})
 	if scanErr == nil {
 		if err := flush(); err != nil {
@@ -328,7 +348,7 @@ func (s *Service) GetScanStatus(taskID string) (ScanStatus, error) {
 		if snapshot.Issues > 0 {
 			issues = []string{fmt.Sprintf("%d scan issues preserved", snapshot.Issues)}
 		}
-		return ScanStatus{TaskID: snapshot.TaskID, SnapshotID: snapshot.ID, Root: snapshot.Root, State: snapshot.State, Nodes: snapshot.NodeCount, Files: snapshot.FileCount, Directories: snapshot.DirCount, Bytes: snapshot.Bytes, Issues: issues, Error: snapshot.Error}, nil
+		return ScanStatus{TaskID: snapshot.TaskID, SnapshotID: snapshot.ID, Root: snapshot.Root, State: snapshot.State, Phase: snapshot.Phase, Nodes: snapshot.NodeCount, Files: snapshot.FileCount, Directories: snapshot.DirCount, Bytes: snapshot.Bytes, Issues: issues, Error: snapshot.Error}, nil
 	}
 	return task.status(), nil
 }
@@ -466,7 +486,7 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 
 func (s *Service) emitProgress(task *scanTask) {
 	status := task.status()
-	s.emit("scan-progress", ScanProgress{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: status.Issues, Error: status.Error})
+	s.emit("scan-progress", ScanProgress{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: status.Issues, Error: status.Error})
 }
 
 func (t *scanTask) status() ScanStatus {
@@ -476,7 +496,7 @@ func (t *scanTask) status() ScanStatus {
 }
 
 func (t *scanTask) statusLocked() ScanStatus {
-	return ScanStatus{TaskID: t.taskID, SnapshotID: t.snapshotID, Root: t.root, State: t.state, Nodes: t.nodes, Files: t.files, Directories: t.directories, Bytes: t.bytes, Issues: append([]string(nil), t.issues...), Error: t.error}
+	return ScanStatus{TaskID: t.taskID, SnapshotID: t.snapshotID, Root: t.root, State: t.state, Phase: t.phase, Nodes: t.nodes, Files: t.files, Directories: t.directories, Bytes: t.bytes, Issues: append([]string(nil), t.issues...), Error: t.error}
 }
 
 func matchesSnapshotNode(node scan.Node, item cleanup.Item) bool {

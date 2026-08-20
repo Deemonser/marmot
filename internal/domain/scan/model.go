@@ -37,6 +37,7 @@ type Snapshot struct {
 	TaskID    string
 	ID        int64
 	State     string
+	Phase     string
 	Root      string
 	NodeCount int64
 	FileCount int64
@@ -55,8 +56,17 @@ type DirectorySize struct {
 }
 
 type Emitter func(Node) error
+type PhaseEmitter func(Phase) error
+
+type Phase string
 
 const (
+	PhaseCatalog         Phase = "catalog"
+	PhaseVolumeOverview  Phase = "volume_overview"
+	PhaseTopLevelPublish Phase = "top_level_publish"
+	PhaseDeepScan        Phase = "deep_scan"
+	PhaseFinalize        Phase = "finalize"
+
 	JobRunning             = "running"
 	JobCompleted           = "completed"
 	JobCompletedWithIssues = "completed_with_issues"

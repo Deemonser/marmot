@@ -193,6 +193,47 @@ func TestCancelScanKeepsCommittedPartialResults(t *testing.T) {
 	}
 }
 
+func TestTopLevelPublishCommitsBeforeDeepScan(t *testing.T) {
+	store, err := snapshot.Open(filepath.Join(t.TempDir(), "snapshots.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter := platform.Adapter{}
+	fakeScanner := &stagedScanner{topLevelReady: make(chan struct{}), continueDeep: make(chan struct{})}
+	service := NewService(Dependencies{Store: store, Scanner: fakeScanner, FileSystem: adapter, Permissions: adapter, Trash: adapter})
+
+	root := t.TempDir()
+	started, err := service.StartScan(ScanOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-fakeScanner.topLevelReady:
+	case <-time.After(time.Second):
+		t.Fatal("scanner did not publish the top level")
+	}
+	children, err := service.GetChildren(ChildrenQuery{SnapshotID: started.SnapshotID, ParentID: 1, Limit: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children.Nodes) != 1 || children.Nodes[0].Name != "top-level.txt" {
+		t.Fatalf("top-level batch was not committed before deep scan: %#v", children.Nodes)
+	}
+	close(fakeScanner.continueDeep)
+	status := started
+	for i := 0; i < 200 && status.State == "running"; i++ {
+		time.Sleep(5 * time.Millisecond)
+		status, err = service.GetScanStatus(started.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status.State != "completed" || status.Phase != string(scan.PhaseFinalize) {
+		t.Fatalf("unexpected staged scan status: %#v", status)
+	}
+}
+
 type recordingTrash struct {
 	paths []string
 }
@@ -206,7 +247,7 @@ type blockingScanner struct {
 	flushed chan struct{}
 }
 
-func (s *blockingScanner) Scan(ctx context.Context, root string, emit scan.Emitter) (scan.Result, error) {
+func (s *blockingScanner) Scan(ctx context.Context, root string, emit scan.Emitter, _ scan.PhaseEmitter) (scan.Result, error) {
 	if err := emit(scan.Node{ID: 1, Path: root, Name: filepath.Base(root), Kind: "directory", HasChildren: true}); err != nil {
 		return scan.Result{}, err
 	}
@@ -218,6 +259,42 @@ func (s *blockingScanner) Scan(ctx context.Context, root string, emit scan.Emitt
 	close(s.flushed)
 	<-ctx.Done()
 	return scan.Result{}, ctx.Err()
+}
+
+type stagedScanner struct {
+	topLevelReady chan struct{}
+	continueDeep  chan struct{}
+}
+
+func (s *stagedScanner) Scan(ctx context.Context, root string, emit scan.Emitter, phase scan.PhaseEmitter) (scan.Result, error) {
+	if err := phase(scan.PhaseCatalog); err != nil {
+		return scan.Result{}, err
+	}
+	if err := emit(scan.Node{ID: 1, Path: root, Name: filepath.Base(root), Kind: "directory", HasChildren: true}); err != nil {
+		return scan.Result{}, err
+	}
+	if err := phase(scan.PhaseVolumeOverview); err != nil {
+		return scan.Result{}, err
+	}
+	if err := emit(scan.Node{ID: 2, ParentID: 1, Path: filepath.Join(root, "top-level.txt"), Name: "top-level.txt", Kind: "file", LogicalSize: 1, AllocatedSize: 1, OwnedAllocated: 1, Confidence: "exact", SizeBasis: "test"}); err != nil {
+		return scan.Result{}, err
+	}
+	if err := phase(scan.PhaseTopLevelPublish); err != nil {
+		return scan.Result{}, err
+	}
+	close(s.topLevelReady)
+	if err := phase(scan.PhaseDeepScan); err != nil {
+		return scan.Result{}, err
+	}
+	select {
+	case <-s.continueDeep:
+	case <-ctx.Done():
+		return scan.Result{}, ctx.Err()
+	}
+	if err := phase(scan.PhaseFinalize); err != nil {
+		return scan.Result{}, err
+	}
+	return scan.Result{Nodes: 2, Files: 1, Directories: 1, Bytes: 1, DirectorySizes: map[int64]scan.DirectorySize{1: {LogicalSize: 1, AllocatedSize: 1, OwnedAllocated: 1, Confidence: "exact"}}}, nil
 }
 
 func addTestSnapshot(t *testing.T, service *Service, root, child string) int64 {

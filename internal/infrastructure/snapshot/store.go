@@ -17,7 +17,7 @@ type Snapshot = scan.Snapshot
 
 type DirectorySize = scan.DirectorySize
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 type Store struct{ db *sql.DB }
 
@@ -65,6 +65,7 @@ func migrate(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			task_id TEXT NOT NULL,
 			state TEXT NOT NULL,
+			phase TEXT NOT NULL DEFAULT 'catalog',
 			root TEXT NOT NULL,
 			created_at INTEGER NOT NULL,
 			finished_at INTEGER,
@@ -103,6 +104,13 @@ func migrate(db *sql.DB) error {
 		if _, err := tx.Exec(`ALTER TABLE snapshots ADD COLUMN task_id TEXT NOT NULL DEFAULT ''`); err != nil {
 			return rollback(err)
 		}
+		if _, err := tx.Exec(`ALTER TABLE snapshots ADD COLUMN phase TEXT NOT NULL DEFAULT 'catalog'`); err != nil {
+			return rollback(err)
+		}
+	} else if version == 2 {
+		if _, err := tx.Exec(`ALTER TABLE snapshots ADD COLUMN phase TEXT NOT NULL DEFAULT 'catalog'`); err != nil {
+			return rollback(err)
+		}
 	}
 	if version < schemaVersion {
 		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
@@ -115,11 +123,16 @@ func migrate(db *sql.DB) error {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) CreateSnapshot(taskID, root string) (int64, error) {
-	result, err := s.db.Exec("INSERT INTO snapshots(task_id, state, root, created_at) VALUES (?, 'running', ?, ?)", taskID, root, time.Now().UnixNano())
+	result, err := s.db.Exec("INSERT INTO snapshots(task_id, state, phase, root, created_at) VALUES (?, 'running', 'catalog', ?, ?)", taskID, root, time.Now().UnixNano())
 	if err != nil {
 		return 0, err
 	}
 	return result.LastInsertId()
+}
+
+func (s *Store) UpdateSnapshotPhase(snapshotID int64, phase string) error {
+	_, err := s.db.Exec("UPDATE snapshots SET phase = ? WHERE id = ? AND state = 'running'", phase, snapshotID)
+	return err
 }
 
 func (s *Store) InsertNodes(snapshotID int64, nodes []Node) error {
@@ -206,9 +219,9 @@ func (s *Store) MarkRunningInterrupted() error {
 }
 
 func (s *Store) SnapshotByTaskID(taskID string) (scan.Snapshot, error) {
-	row := s.db.QueryRow(`SELECT task_id, id, state, root, node_count, file_count, dir_count, bytes, issue_count, error FROM snapshots WHERE task_id = ? ORDER BY id DESC LIMIT 1`, taskID)
+	row := s.db.QueryRow(`SELECT task_id, id, state, phase, root, node_count, file_count, dir_count, bytes, issue_count, error FROM snapshots WHERE task_id = ? ORDER BY id DESC LIMIT 1`, taskID)
 	var snapshot scan.Snapshot
-	if err := row.Scan(&snapshot.TaskID, &snapshot.ID, &snapshot.State, &snapshot.Root, &snapshot.NodeCount, &snapshot.FileCount, &snapshot.DirCount, &snapshot.Bytes, &snapshot.Issues, &snapshot.Error); err != nil {
+	if err := row.Scan(&snapshot.TaskID, &snapshot.ID, &snapshot.State, &snapshot.Phase, &snapshot.Root, &snapshot.NodeCount, &snapshot.FileCount, &snapshot.DirCount, &snapshot.Bytes, &snapshot.Issues, &snapshot.Error); err != nil {
 		return scan.Snapshot{}, err
 	}
 	return snapshot, nil

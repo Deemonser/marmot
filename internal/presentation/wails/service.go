@@ -22,6 +22,7 @@ type ScanStatus struct {
 	SnapshotID  int64    `json:"snapshotId"`
 	Root        string   `json:"root"`
 	State       string   `json:"state"`
+	Phase       string   `json:"phase"`
 	Nodes       int64    `json:"nodes"`
 	Files       int64    `json:"files"`
 	Directories int64    `json:"directories"`
@@ -35,6 +36,7 @@ type ScanProgress struct {
 	SnapshotID  int64    `json:"snapshotId"`
 	Root        string   `json:"root"`
 	State       string   `json:"state"`
+	Phase       string   `json:"phase"`
 	Nodes       int64    `json:"nodes"`
 	Files       int64    `json:"files"`
 	Directories int64    `json:"directories"`
@@ -169,11 +171,11 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 }
 
 func scanStatus(status application.ScanStatus) ScanStatus {
-	return ScanStatus{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: status.Issues, Error: status.Error}
+	return ScanStatus{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: append([]string{}, status.Issues...), Error: status.Error}
 }
 
 func ScanProgressView(progress application.ScanProgress) ScanProgress {
-	return ScanProgress{TaskID: progress.TaskID, SnapshotID: progress.SnapshotID, Root: progress.Root, State: progress.State, Nodes: progress.Nodes, Files: progress.Files, Directories: progress.Directories, Bytes: progress.Bytes, Issues: progress.Issues, Error: progress.Error}
+	return ScanProgress{TaskID: progress.TaskID, SnapshotID: progress.SnapshotID, Root: progress.Root, State: progress.State, Phase: progress.Phase, Nodes: progress.Nodes, Files: progress.Files, Directories: progress.Directories, Bytes: progress.Bytes, Issues: append([]string{}, progress.Issues...), Error: progress.Error}
 }
 
 func nodeView(node scan.Node) NodeView {

@@ -76,6 +76,7 @@ export interface ScanProgress {
     "snapshotId": number;
     "root": string;
     "state": string;
+    "phase": string;
     "nodes": number;
     "files": number;
     "directories": number;
@@ -89,6 +90,7 @@ export interface ScanStatus {
     "snapshotId": number;
     "root": string;
     "state": string;
+    "phase": string;
     "nodes": number;
     "files": number;
     "directories": number;

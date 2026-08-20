@@ -8,11 +8,12 @@ import (
 )
 
 type Scanner interface {
-	Scan(context.Context, string, scan.Emitter) (scan.Result, error)
+	Scan(context.Context, string, scan.Emitter, scan.PhaseEmitter) (scan.Result, error)
 }
 
 type SnapshotStore interface {
 	CreateSnapshot(string, string) (int64, error)
+	UpdateSnapshotPhase(int64, string) error
 	InsertNodes(int64, []scan.Node) error
 	UpdateDirectorySizes(int64, map[int64]scan.DirectorySize) error
 	NodeByPath(int64, string) (scan.Node, error)
