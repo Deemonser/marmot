@@ -1,0 +1,67 @@
+# Marmot
+
+Marmot 是一个 macOS 本地磁盘空间分析与安全清理工具，目标体验类似 DaisyDisk，底层扫描策略参考 Mole 和 GrandPerspective。
+
+## 当前阶段
+
+文档基准、技术预研和核心架构决策已完成，当前先冻结轻量 DDD、SDD 和目录标准，再进入
+受门禁控制的垂直切片阶段。真实签名/TCC、
+跨卷废纸篓和真实全盘样本仍是发布前验证项。
+
+## 已确定方案
+
+- 运行形态：Wails `v3.0.0-beta.9` 桌面应用，第一阶段只做 macOS。
+- 后端：Go 1.25+，本机验证 Go 1.25.13。
+- 前端：React + TypeScript + Vite。
+- 可视化：D3.js，负责 Treemap、Sunburst 和目录导航布局。
+- 生产通信：Wails 的类型化 Go-JS 绑定和应用事件，不启动本地 HTTP 服务。
+- 分发方式：Developer ID 签名和公证的直装版；不支持隐式 root 扫描。
+- 扫描方式：后台分层扫描、受限并发、渐进发布、缓存和按需加载；不跟随符号链接，按卷隔离。
+- 快照存储：SQLite WAL，10,000 节点批量写入，子节点分页最多 1,000 项。
+- 数据模型：逻辑大小、实际占用、去重后占用和结果可信度分开记录。
+- APFS：完整克隆使用公开 `getattrlist` metadata；部分共享块保留未知，不伪造精确值。
+- Mole：只复用固定的 MIT 版本 `V1.40.0` 中与扫描相关的代码，并放在 Infrastructure 层；当前 `main` 不使用。
+- Windows：后续阶段，当前只保留平台端口和能力抽象。
+
+## 第一条业务链路
+
+```text
+请求全盘扫描
+  -> 显示顶层结果和进度
+  -> 按需展开目录
+  -> 创建清理计划
+  -> 用户确认
+  -> 通过 macOS 废纸篓执行
+  -> 返回逐项结果
+```
+
+## 产品原则
+
+- 全盘扫描必须明确展示权限限制和部分结果。
+- 扫描事实、清理计划和执行动作必须分离。
+- 默认移入废纸篓，不做永久删除。
+- AI 只能提供带证据和风险的建议，不能执行文件操作。
+- 前端不能直接调用文件系统。
+- 生产版不开放本地 HTTP 控制面。
+
+## 文档
+
+- [DDD 领域设计](docs/DDD.md)
+- [SDD 系统设计](docs/SDD.md)
+- [文档基准](docs/BASELINE.md)
+- [项目目录规范](docs/PROJECT-STRUCTURE.md)
+- [技术预研](docs/research/README.md)
+- [ADR 决策记录](docs/adr/README.md)
+- [第三方代码声明](THIRD_PARTY_NOTICES.md)
+- [Agent 规则](AGENTS.md)
+
+当前门禁和验证结果详见 [SDD](docs/SDD.md)、[ADR](docs/adr/README.md) 以及
+[技术预研队列](docs/research/README.md)。
+
+## 当前不做
+
+- Windows 实现。
+- AI 自动删除。
+- 永久删除和安全擦除。
+- 当前 GPL `main` 代码和未固定版本的 Mole 代码集成。
+- 一次性向前端传输百万级节点。
