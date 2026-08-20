@@ -17,7 +17,10 @@ Marmot 是一个 macOS 本地磁盘空间分析与安全清理工具，目标体
 - 生产通信：Wails 的类型化 Go-JS 绑定和应用事件，不启动本地 HTTP 服务。
 - 分发方式：Developer ID 签名和公证的直装版；不支持隐式 root 扫描。
 - 扫描方式：后台分层扫描、受限并发、渐进发布、缓存和按需加载；不跟随符号链接，按卷隔离。
+- 扫描阶段：`Catalog -> VolumeOverview -> TopLevelPublish -> DeepScan -> Finalize`；全局 worker 8 个，按设备画像限制并发。
 - 快照存储：SQLite WAL，10,000 节点批量写入，子节点分页最多 1,000 项。
+- 空间图：`MapQuery`/`MapResult` 只传当前层，默认 256 项，截断结果使用不可操作的空间聚合项。
+- macOS 体验：Quick Look 预览、NSWorkspace Finder 定位；Collector 只生成可审查清理计划候选。
 - 数据模型：逻辑大小、实际占用、去重后占用和结果可信度分开记录。
 - APFS：完整克隆使用公开 `getattrlist` metadata；部分共享块保留未知，不伪造精确值。
 - Mole：只复用固定的 MIT 版本 `V1.40.0` 中与扫描相关的代码，并放在 Infrastructure 层；当前 `main` 不使用。
@@ -52,12 +55,18 @@ Marmot 是一个 macOS 本地磁盘空间分析与安全清理工具，目标体
 - [项目目录规范](docs/PROJECT-STRUCTURE.md)
 - [技术预研](docs/research/README.md)
 - [产品体验与交互基线](docs/research/R-009-DaisyDisk产品体验与交互基线.md)
+- [分阶段扫描预研](docs/research/R-010-分阶段扫描与设备感知并发.md)
+- [空间图数据契约预研](docs/research/R-011-Sunburst空间图与渐进查询数据契约.md)
+- [macOS 预览与收集区预研](docs/research/R-012-macOS预览Finder定位与收集区边界.md)
 - [ADR 决策记录](docs/adr/README.md)
 - [第三方代码声明](THIRD_PARTY_NOTICES.md)
 - [Agent 规则](AGENTS.md)
 
-当前门禁和验证结果详见 [SDD](docs/SDD.md)、[ADR](docs/adr/README.md) 以及
-[技术预研队列](docs/research/README.md)。
+当前门禁、已接受 ADR 和验证结果详见 [SDD](docs/SDD.md)、[DDD](docs/DDD.md)、
+[文档基准](docs/BASELINE.md) 以及 [技术预研队列](docs/research/README.md)。
+
+文档基线固定后，P0 实现顺序为：扫描阶段与卷目录、空间图查询与 Sunburst、Quick Look/Finder、
+Collector 到 CleanupPlan 的交互闭环。每一项实现都必须先满足对应 SDD 契约和 ADR 验收标准。
 
 ## 当前不做
 
@@ -66,3 +75,4 @@ Marmot 是一个 macOS 本地磁盘空间分析与安全清理工具，目标体
 - 永久删除和安全擦除。
 - 当前 GPL `main` 代码和未固定版本的 Mole 代码集成。
 - 一次性向前端传输百万级节点。
+- 让空间聚合项绕过快照节点校验执行预览、定位或清理。

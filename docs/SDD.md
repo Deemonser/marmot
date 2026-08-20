@@ -1,6 +1,6 @@
 # SDD 系统设计
 
-状态：技术基准已冻结，目录结构切片已进入实现，业务垂直切片仍需按门禁推进
+状态：技术基准和高风险预研 ADR 已冻结，进入 P0 业务垂直切片实现
 
 SDD 是项目实现门禁。代码、接口和模块必须先在这里定义边界、依赖和验收标准。
 
@@ -99,6 +99,33 @@ ScanCoordinator
 - 不跟随符号链接；挂载卷、系统快照、FileProvider 占位项和权限错误使用独立状态。
 - 扫描是最终一致快照，变化、取消和权限问题必须保留。
 
+### 5.1 分阶段、设备感知和缓存契约
+
+扫描任务必须按以下阶段发布状态和结果：
+
+```text
+Catalog -> VolumeOverview -> TopLevelPublish -> DeepScan -> Finalize
+```
+
+- `Catalog`：列出挂载卷、容量、类型、权限和可扫描状态，不遍历文件树；
+- `VolumeOverview`：读取卷根和直接子项元数据，尽快形成首层快照；
+- `TopLevelPublish`：首层可查询后立即允许 UI 进入空间图和目录列表，深层扫描继续运行；
+- `DeepScan`：按目录任务递归遍历，受设备和全局并发预算控制；
+- `Finalize`：完成目录汇总、问题汇总、缓存复核和快照终态。
+
+`VolumeCatalog` 必须为每个 `ScanScope` 返回 `DeviceProfile`：`ssd`、`rotational`、
+`network_or_virtual` 或 `unknown`。第一版预算固定为：全局目录 worker 8 个；单 SSD 卷 4 个；
+同一机械设备 1 个；网络/虚拟卷 2 个；未知设备 2 个；目录任务队列 4096；待提交批次 2。
+这些预算不作为用户配置，队列满时生产端必须受控背压。
+
+缓存仍由 SQLite 快照存储端口统一承载，不引入第二套完整内存树。缓存 TTL 为 24 小时，最多保留
+3 个完整快照或 512 MB，先达到的限制生效。缓存命中必须标为旧结果并重新校验卷、文件身份、权限
+和扫描器/口径版本；复核前不能作为当前事实或清理授权。
+
+扫描进度每个任务最多 5 Hz，使用容量为 1 的最新值槽位；事件只发送阶段、汇总、问题数量、快照
+版本和受影响父节点 ID，不发送单文件事件。取消观察点之后不得提交新的快照批次，已提交批次保留
+为部分快照。该技术方案由 [ADR-0014](adr/0014-分阶段扫描与设备感知并发.md) 锁定。
+
 ## 6. 空间数据模型
 
 节点不能只有一个 `size` 字段，至少需要：
@@ -136,22 +163,63 @@ SQLite 使用 WAL、`synchronous=NORMAL` 和默认 10,000 节点批次；子节�
 `snapshot_id, parent_id, owned_allocated DESC, id` 索引，单次最多返回 1000 节点。
 本机合成 100 万节点基线约 159 MB 数据库、101 MB RSS、3.1 秒树形写入；门槛详见 R-004。
 
+### 7.1 空间图查询契约
+
+空间图和目录列表使用 `GetMap(MapQuery)`，不向前端传输完整树：
+
+```text
+MapQuery
+  snapshotId
+  parentId
+  limit       默认 256，最大 1000
+  offset      默认 0
+  measure     owned_allocated（第一阶段固定）
+```
+
+```text
+MapResult
+  snapshotId
+  snapshotVersion
+  parent
+  entries[]
+  total / limit / offset / hasMore
+  remaining
+  confidence
+```
+
+`entries[]` 按 `owned_allocated DESC, nodeId` 稳定排序，单项为真实节点 `kind=node` 或空间聚合项
+`kind=aggregate`。真实节点可以进入、预览、Finder 定位或进入清理计划，但每个操作仍由 Application
+按快照和节点 ID 重新校验。聚合项只允许展开，不允许预览、定位、清理，也不写入 `scan_nodes`。
+`remaining` 和聚合项必须保留三种大小及可信度口径。单次 Wails 返回不得超过 256 KB。
+
+前端只保存当前层、面包屑和最近最多 32 个目录页的可丢弃 DTO 缓存。D3 只负责布局和交互；当前层
+收到受影响父节点事件后以 250 ms 防抖重新查询，响应版本过期则丢弃旧页。该数据契约由
+[ADR-0013](adr/0013-DaisyDisk空间图与渐进查询数据契约.md) 锁定。
+
 ## 8. 用例接口
 
 Wails 对外暴露的接口先按行为定义：
 
 | 用例 | 输入 | 输出 |
 | --- | --- | --- |
+| 查询卷概览 | 无或权限范围 | 卷身份、容量、类型、权限和可扫描状态 |
 | 开始全盘扫描 | 扫描选项 | 扫描任务 ID |
 | 查询扫描状态 | 任务 ID | 状态、进度、卷、权限和问题 |
 | 查询子节点 | 快照 ID、父节点 ID、分页条件 | 节点、汇总和限制 |
+| 查询空间图层 | `MapQuery` | `MapResult`，包含聚合项和快照版本 |
 | 取消扫描 | 任务 ID | 最终状态 |
+| 预览节点 | 快照 ID、节点 ID | Quick Look 调用结果 |
+| Finder 定位节点 | 快照 ID、节点 ID | Finder 调用结果 |
 | 创建清理计划 | 快照 ID、候选项、策略 | 计划 ID、原因和估算 |
 | 校验清理计划 | 计划 ID、版本 | 总体和逐项结果 |
 | 确认清理计划 | 精确版本 | 确认结果 |
 | 执行清理计划 | 已确认计划 ID | 逐项执行结果 |
 
-Wails 事件至少包括扫描进度、扫描问题、快照更新、清理进度和清理结果。客户端断线或窗口重开后，必须通过查询恢复状态。
+Wails 事件至少包括扫描进度、扫描问题、快照更新、清理进度和清理结果。扫描事件只携带摘要和受
+影响父节点，不承担节点传输。客户端断线或窗口重开后，必须通过查询恢复状态。
+
+Preview/Reveal 的 Wails 输入只能是 `snapshotId + nodeId`，不能接收任意路径、URL、命令或 Shell
+参数。Application 通过快照取得并校验路径后，调用 macOS Platform 的 Quick Look 或 Finder 端口。
 
 ## 9. macOS 权限
 
@@ -161,6 +229,23 @@ Wails 事件至少包括扫描进度、扫描问题、快照更新、清理进�
 - 第一阶段不支持 root/管理员扫描，不通过隐式 shell 提权。
 - Developer ID 直装分发是当前方案；App Store 沙盒不进入第一阶段。
 - 真实签名、Full Disk Access 和公证仍需在发布环境完成 smoke test。
+
+### 9.1 预览、Finder 定位和收集区
+
+Platform 提供：
+
+```text
+PreviewPort.Preview(path, ownerWindow)
+PreviewPort.Reveal(path)
+```
+
+macOS 预览使用 `QuickLookUI` 的 `QLPreviewPanel`/`QLPreviewItem`，Finder 定位使用
+`NSWorkspace.activateFileViewerSelectingURLs`，不调用 `qlmanage`、`open`、`osascript` 或任意
+Shell。原生 bridge 位于 Platform 层并遵守 AppKit 主线程和 Wails 窗口生命周期。
+
+Collector 只是前端会话内的选择视图，最终必须映射为可审查的 `CleanupPlan`；加入 Collector 不
+触发文件操作。聚合项、卷根、扫描根、特殊文件和权限不明对象不能加入计划。该边界由
+[ADR-0015](adr/0015-macOS预览Finder定位与收集区平台边界.md) 锁定。
 
 ## 10. 清理安全
 
@@ -178,8 +263,11 @@ Wails 事件至少包括扫描进度、扫描问题、快照更新、清理进�
 Wails 启动
   -> 获取权限状态
   -> 扫描本机测试卷/目录
-  -> 顶层结果即时出现
+  -> Catalog/VolumeOverview/TopLevelPublish：顶层结果即时出现
+  -> DeepScan：后台受限并发补齐结果
   -> 按需展开子目录
+  -> Quick Look/Finder 预览和定位
+  -> Collector 形成清理候选
   -> 创建并校验清理计划
   -> 用户确认
   -> 移入废纸篓
@@ -211,7 +299,9 @@ smoke test、跨卷废纸篓验证和真实只读全盘样本完成前，不宣�
 - 空间图按 `owned_allocated` 导航，单层懒加载、排序、聚合和分页，不能一次传输百万节点；
 - 选中对象可以预览，清理必须先进入可审查的计划，再确认、复核和执行；
 - 权限不足、隐藏空间、聚合对象、文件变化和大小不确定性必须显式表达；
-- 设备感知并发、扫描阶段、缓存、空间图数据载荷和 Quick Look 能力必须先完成对应预研和 ADR。
+- 设备感知并发、扫描阶段、缓存、空间图数据载荷和 Quick Look 能力已经分别由
+  [ADR-0014](adr/0014-分阶段扫描与设备感知并发.md)、[ADR-0013](adr/0013-DaisyDisk空间图与渐进查询数据契约.md)
+  和 [ADR-0015](adr/0015-macOS预览Finder定位与收集区平台边界.md) 锁定，后续实现不得绕过这些边界。
 
 参考产品允许永久删除，Marmot 不采用该差异：Marmot 的默认动作仍是移入 macOS 废纸篓，
 执行前必须重新校验文件身份和计划版本。R-009 的 P0 清单是首个体验垂直切片的验收入口，
