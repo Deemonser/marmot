@@ -17,7 +17,7 @@ type Snapshot = scan.Snapshot
 
 type DirectorySize = scan.DirectorySize
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 type Store struct{ db *sql.DB }
 
@@ -73,8 +73,9 @@ func migrate(db *sql.DB) error {
 			file_count INTEGER NOT NULL DEFAULT 0,
 			dir_count INTEGER NOT NULL DEFAULT 0,
 			bytes INTEGER NOT NULL DEFAULT 0,
-			issue_count INTEGER NOT NULL DEFAULT 0,
-			error TEXT NOT NULL DEFAULT ''
+				issue_count INTEGER NOT NULL DEFAULT 0,
+				error TEXT NOT NULL DEFAULT '',
+				snapshot_version INTEGER NOT NULL DEFAULT 1
 		)`,
 			`CREATE TABLE IF NOT EXISTS scan_nodes (
 			snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -111,6 +112,10 @@ func migrate(db *sql.DB) error {
 		if _, err := tx.Exec(`ALTER TABLE snapshots ADD COLUMN phase TEXT NOT NULL DEFAULT 'catalog'`); err != nil {
 			return rollback(err)
 		}
+	} else if version == 3 {
+		if _, err := tx.Exec(`ALTER TABLE snapshots ADD COLUMN snapshot_version INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return rollback(err)
+		}
 	}
 	if version < schemaVersion {
 		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
@@ -131,7 +136,7 @@ func (s *Store) CreateSnapshot(taskID, root string) (int64, error) {
 }
 
 func (s *Store) UpdateSnapshotPhase(snapshotID int64, phase string) error {
-	_, err := s.db.Exec("UPDATE snapshots SET phase = ? WHERE id = ? AND state = 'running'", phase, snapshotID)
+	_, err := s.db.Exec("UPDATE snapshots SET phase = ?, snapshot_version = snapshot_version + 1 WHERE id = ? AND state = 'running'", phase, snapshotID)
 	return err
 }
 
@@ -164,6 +169,10 @@ func (s *Store) InsertNodes(snapshotID int64, nodes []Node) error {
 		tx.Rollback()
 		return err
 	}
+	if _, err := tx.Exec("UPDATE snapshots SET snapshot_version = snapshot_version + 1 WHERE id = ? AND state = 'running'", snapshotID); err != nil {
+		tx.Rollback()
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -188,6 +197,11 @@ func (s *Store) UpdateDirectorySizes(snapshotID int64, sizes map[int64]Directory
 			return err
 		}
 	}
+	if _, err := tx.Exec("UPDATE snapshots SET snapshot_version = snapshot_version + 1 WHERE id = ? AND state = 'running'", snapshotID); err != nil {
+		stmt.Close()
+		tx.Rollback()
+		return err
+	}
 	if err := stmt.Close(); err != nil {
 		tx.Rollback()
 		return err
@@ -208,6 +222,11 @@ func (s *Store) NodeByPath(snapshotID int64, path string) (Node, error) {
 	return node, nil
 }
 
+func (s *Store) NodeByID(snapshotID, nodeID int64) (Node, error) {
+	row := s.db.QueryRow(`SELECT node_id, parent_id, path, name, kind, logical_size, allocated_size, owned_allocated, confidence, size_basis, device, inode, modified_at, has_children FROM scan_nodes WHERE snapshot_id = ? AND node_id = ?`, snapshotID, nodeID)
+	return scanNode(row)
+}
+
 func (s *Store) FinishSnapshot(snapshotID int64, state, failure string, nodeCount, fileCount, dirCount, bytes, issues int64) error {
 	_, err := s.db.Exec(`UPDATE snapshots SET state = ?, finished_at = ?, error = ?, node_count = ?, file_count = ?, dir_count = ?, bytes = ?, issue_count = ? WHERE id = ?`, state, time.Now().UnixNano(), failure, nodeCount, fileCount, dirCount, bytes, issues, snapshotID)
 	return err
@@ -219,15 +238,72 @@ func (s *Store) MarkRunningInterrupted() error {
 }
 
 func (s *Store) SnapshotByTaskID(taskID string) (scan.Snapshot, error) {
-	row := s.db.QueryRow(`SELECT task_id, id, state, phase, root, node_count, file_count, dir_count, bytes, issue_count, error FROM snapshots WHERE task_id = ? ORDER BY id DESC LIMIT 1`, taskID)
+	row := s.db.QueryRow(`SELECT task_id, id, state, phase, root, snapshot_version, node_count, file_count, dir_count, bytes, issue_count, error FROM snapshots WHERE task_id = ? ORDER BY id DESC LIMIT 1`, taskID)
 	var snapshot scan.Snapshot
-	if err := row.Scan(&snapshot.TaskID, &snapshot.ID, &snapshot.State, &snapshot.Phase, &snapshot.Root, &snapshot.NodeCount, &snapshot.FileCount, &snapshot.DirCount, &snapshot.Bytes, &snapshot.Issues, &snapshot.Error); err != nil {
+	if err := row.Scan(&snapshot.TaskID, &snapshot.ID, &snapshot.State, &snapshot.Phase, &snapshot.Root, &snapshot.SnapshotVersion, &snapshot.NodeCount, &snapshot.FileCount, &snapshot.DirCount, &snapshot.Bytes, &snapshot.Issues, &snapshot.Error); err != nil {
 		return scan.Snapshot{}, err
 	}
 	return snapshot, nil
 }
 
-func (s *Store) Children(snapshotID, parentID int64, limit, offset int) ([]Node, error) {
+func (s *Store) SnapshotVersion(snapshotID int64) (int64, error) {
+	var version int64
+	err := s.db.QueryRow(`SELECT snapshot_version FROM snapshots WHERE id = ?`, snapshotID).Scan(&version)
+	return version, err
+}
+
+func (s *Store) Map(query scan.MapQuery) (scan.MapResult, error) {
+	if query.Measure == "" {
+		query.Measure = "owned_allocated"
+	}
+	parentRow := s.db.QueryRow(`SELECT node_id, parent_id, path, name, kind, logical_size, allocated_size, owned_allocated, confidence, size_basis, device, inode, modified_at, has_children FROM scan_nodes WHERE snapshot_id = ? AND node_id = ?`, query.SnapshotID, query.ParentID)
+	parent, err := scanNode(parentRow)
+	if err != nil {
+		return scan.MapResult{}, err
+	}
+	var version int64
+	if err := s.db.QueryRow(`SELECT snapshot_version FROM snapshots WHERE id = ?`, query.SnapshotID).Scan(&version); err != nil {
+		return scan.MapResult{}, err
+	}
+	var total int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM scan_nodes WHERE snapshot_id = ? AND parent_id = ?`, query.SnapshotID, query.ParentID).Scan(&total); err != nil {
+		return scan.MapResult{}, err
+	}
+	visibleLimit := query.Limit
+	if visibleLimit <= 0 {
+		visibleLimit = 256
+	}
+	if total > query.Offset+visibleLimit {
+		visibleLimit--
+	}
+	nodes, err := s.children(query.SnapshotID, query.ParentID, visibleLimit, query.Offset)
+	if err != nil {
+		return scan.MapResult{}, err
+	}
+	remaining := scan.MapEntry{Kind: "aggregate", Name: "其他项目", SizeBasis: "map_remaining_v1"}
+	tailOffset := query.Offset + len(nodes)
+	if total > tailOffset {
+		row := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(logical_size), 0), COALESCE(SUM(allocated_size), 0), COALESCE(SUM(owned_allocated), 0) FROM (SELECT logical_size, allocated_size, owned_allocated FROM scan_nodes WHERE snapshot_id = ? AND parent_id = ? ORDER BY owned_allocated DESC, node_id LIMIT -1 OFFSET ?)`, query.SnapshotID, query.ParentID, tailOffset)
+		if err := row.Scan(&remaining.Count, &remaining.LogicalSize, &remaining.AllocatedSize, &remaining.OwnedAllocated); err != nil {
+			return scan.MapResult{}, err
+		}
+		remaining.Confidence = "estimated"
+		if remaining.Count > 0 {
+			nodes = append(nodes, scan.Node{})
+		}
+	}
+	entries := make([]scan.MapEntry, 0, len(nodes))
+	for _, node := range nodes {
+		if node.ID == 0 {
+			entries = append(entries, remaining)
+			continue
+		}
+		entries = append(entries, scan.MapEntry{Kind: "node", Node: node, Name: node.Name, LogicalSize: node.LogicalSize, AllocatedSize: node.AllocatedSize, OwnedAllocated: node.OwnedAllocated, Confidence: node.Confidence, SizeBasis: node.SizeBasis})
+	}
+	return scan.MapResult{SnapshotID: query.SnapshotID, SnapshotVersion: version, Parent: parent, Entries: entries, Total: total, Limit: query.Limit, Offset: query.Offset, HasMore: total > tailOffset, Remaining: remaining, Confidence: mergeMapConfidence(parent.Confidence, remaining.Confidence)}, nil
+}
+
+func (s *Store) children(snapshotID, parentID int64, limit, offset int) ([]Node, error) {
 	rows, err := s.db.Query(`SELECT node_id, parent_id, path, name, kind, logical_size, allocated_size, owned_allocated, confidence, size_basis, device, inode, modified_at, has_children FROM scan_nodes WHERE snapshot_id = ? AND parent_id = ? ORDER BY owned_allocated DESC, node_id LIMIT ? OFFSET ?`, snapshotID, parentID, limit, offset)
 	if err != nil {
 		return nil, err
@@ -235,15 +311,42 @@ func (s *Store) Children(snapshotID, parentID int64, limit, offset int) ([]Node,
 	defer rows.Close()
 	var nodes []Node
 	for rows.Next() {
-		var node Node
-		var modified int64
-		var hasChildren int
-		if err := rows.Scan(&node.ID, &node.ParentID, &node.Path, &node.Name, &node.Kind, &node.LogicalSize, &node.AllocatedSize, &node.OwnedAllocated, &node.Confidence, &node.SizeBasis, &node.Device, &node.Inode, &modified, &hasChildren); err != nil {
+		node, err := scanNode(rows)
+		if err != nil {
 			return nil, err
 		}
-		node.ModifiedAt = time.Unix(0, modified)
-		node.HasChildren = hasChildren != 0
 		nodes = append(nodes, node)
 	}
 	return nodes, rows.Err()
+}
+
+type scanner interface{ Scan(...any) error }
+
+func scanNode(row scanner) (Node, error) {
+	var node Node
+	var modified int64
+	var hasChildren int
+	if err := row.Scan(&node.ID, &node.ParentID, &node.Path, &node.Name, &node.Kind, &node.LogicalSize, &node.AllocatedSize, &node.OwnedAllocated, &node.Confidence, &node.SizeBasis, &node.Device, &node.Inode, &modified, &hasChildren); err != nil {
+		return Node{}, err
+	}
+	node.ModifiedAt = time.Unix(0, modified)
+	node.HasChildren = hasChildren != 0
+	return node, nil
+}
+
+func mergeMapConfidence(parent, remaining string) string {
+	if remaining == "" {
+		return parent
+	}
+	if parent == "unknown" || remaining == "unknown" {
+		return "unknown"
+	}
+	if parent == "partial" || remaining == "partial" {
+		return "partial"
+	}
+	return "estimated"
+}
+
+func (s *Store) Children(snapshotID, parentID int64, limit, offset int) ([]Node, error) {
+	return s.children(snapshotID, parentID, limit, offset)
 }

@@ -19,8 +19,28 @@ type SnapshotStore interface {
 	NodeByPath(int64, string) (scan.Node, error)
 	FinishSnapshot(int64, string, string, int64, int64, int64, int64, int64) error
 	Children(int64, int64, int, int) ([]scan.Node, error)
+	Map(scan.MapQuery) (scan.MapResult, error)
+	NodeByID(int64, int64) (scan.Node, error)
+	SnapshotVersion(int64) (int64, error)
 	SnapshotByTaskID(string) (scan.Snapshot, error)
 	MarkRunningInterrupted() error
+}
+
+type Volume struct {
+	ID         string
+	Name       string
+	Path       string
+	Kind       string
+	TotalBytes uint64
+	UsedBytes  uint64
+	FreeBytes  uint64
+	Permission string
+	Message    string
+	Scannable  bool
+}
+
+type VolumeCatalog interface {
+	ListVolumes() ([]Volume, error)
 }
 
 type PermissionReport struct {
@@ -40,4 +60,9 @@ type FileSystem interface {
 
 type Trash interface {
 	Trash(string) (string, error)
+}
+
+type PreviewPort interface {
+	Preview(string) (string, error)
+	Reveal(string) (string, error)
 }

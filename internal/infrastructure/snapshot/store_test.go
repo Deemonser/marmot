@@ -1,6 +1,10 @@
 package snapshot
 
-import "testing"
+import (
+	"testing"
+
+	"example.com/marmot/internal/domain/scan"
+)
 
 func TestStorePersistsAndQueriesNodes(t *testing.T) {
 	store, err := Open(t.TempDir() + "/snapshots.db")
@@ -96,5 +100,37 @@ func TestStoreMarksRunningSnapshotInterruptedAndQueriesByTaskID(t *testing.T) {
 	}
 	if snapshot.ID != snapshotID || snapshot.TaskID != "scan-restart" || snapshot.State != "interrupted" || snapshot.Root != "/tmp/restart-root" {
 		t.Fatalf("unexpected recovered snapshot: %#v", snapshot)
+	}
+}
+
+func TestStoreMapReturnsStableEntriesAndRemainingAggregate(t *testing.T) {
+	store, err := Open(t.TempDir() + "/snapshots.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	snapshotID, err := store.CreateSnapshot("map-task", "/tmp/map-root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := []Node{{ID: 1, Path: "/tmp/map-root", Name: "map-root", Kind: "directory", Confidence: "exact"}}
+	for i, size := range []int64{400, 300, 200} {
+		nodes = append(nodes, Node{ID: int64(i + 2), ParentID: 1, Path: "/tmp/map-root/item-" + string(rune('a'+i)), Name: "item", Kind: "file", LogicalSize: size, AllocatedSize: size, OwnedAllocated: size, Confidence: "exact", SizeBasis: "test"})
+	}
+	if err := store.InsertNodes(snapshotID, nodes); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.Map(scan.MapQuery{SnapshotID: snapshotID, ParentID: 1, Limit: 2, Measure: "owned_allocated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Entries) != 2 || result.Entries[0].Kind != "node" || result.Entries[0].OwnedAllocated != 400 || result.Entries[1].Kind != "aggregate" {
+		t.Fatalf("unexpected map entries: %#v", result.Entries)
+	}
+	if result.Remaining.Count != 2 || result.Remaining.OwnedAllocated != 500 || !result.HasMore || result.SnapshotVersion <= 1 {
+		t.Fatalf("unexpected map metadata: %#v", result)
+	}
+	if result.Entries[1].Node.ID != 0 {
+		t.Fatal("aggregate entry must not carry a real snapshot node")
 	}
 }

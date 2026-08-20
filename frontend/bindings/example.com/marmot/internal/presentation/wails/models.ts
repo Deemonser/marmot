@@ -47,6 +47,46 @@ export interface CleanupValidation {
     "items": CleanupItemValidation[] | null;
 }
 
+export interface MapEntry {
+    "kind": string;
+    "node": NodeView;
+    "name": string;
+    "count": number;
+    "logicalSize": number;
+    "allocatedSize": number;
+    "ownedAllocated": number;
+    "confidence": string;
+    "sizeBasis": string;
+}
+
+export interface MapQuery {
+    "snapshotId": number;
+    "parentId": number;
+    "limit": number;
+    "offset": number;
+    "measure": string;
+}
+
+export interface MapResult {
+    "snapshotId": number;
+    "snapshotVersion": number;
+    "parent": NodeView;
+    "entries": MapEntry[] | null;
+    "total": number;
+    "limit": number;
+    "offset": number;
+    "hasMore": boolean;
+    "remaining": MapEntry;
+    "confidence": string;
+}
+
+export interface NodeActionResult {
+    "ok": boolean;
+    "code": string;
+    "message": string;
+    "path": string;
+}
+
 export interface NodeView {
     "id": number;
     "parentId": number;
@@ -83,6 +123,8 @@ export interface ScanProgress {
     "bytes": number;
     "issues": string[] | null;
     "error": string;
+    "snapshotVersion": number;
+    "affectedParentIds": number[] | null;
 }
 
 export interface ScanStatus {
@@ -97,4 +139,17 @@ export interface ScanStatus {
     "bytes": number;
     "issues": string[] | null;
     "error": string;
+}
+
+export interface VolumeOverview {
+    "id": string;
+    "name": string;
+    "path": string;
+    "kind": string;
+    "totalBytes": number;
+    "usedBytes": number;
+    "freeBytes": number;
+    "permission": string;
+    "message": string;
+    "scannable": boolean;
 }

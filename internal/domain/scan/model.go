@@ -34,17 +34,18 @@ type Result struct {
 }
 
 type Snapshot struct {
-	TaskID    string
-	ID        int64
-	State     string
-	Phase     string
-	Root      string
-	NodeCount int64
-	FileCount int64
-	DirCount  int64
-	Bytes     int64
-	Issues    int64
-	Error     string
+	TaskID          string
+	ID              int64
+	State           string
+	Phase           string
+	Root            string
+	SnapshotVersion int64
+	NodeCount       int64
+	FileCount       int64
+	DirCount        int64
+	Bytes           int64
+	Issues          int64
+	Error           string
 }
 
 type DirectorySize struct {
@@ -53,6 +54,39 @@ type DirectorySize struct {
 	OwnedAllocated int64
 	Confidence     string
 	SizeBasis      string
+}
+
+type MapQuery struct {
+	SnapshotID int64
+	ParentID   int64
+	Limit      int
+	Offset     int
+	Measure    string
+}
+
+type MapEntry struct {
+	Kind           string
+	Node           Node
+	Name           string
+	Count          int64
+	LogicalSize    int64
+	AllocatedSize  int64
+	OwnedAllocated int64
+	Confidence     string
+	SizeBasis      string
+}
+
+type MapResult struct {
+	SnapshotID      int64
+	SnapshotVersion int64
+	Parent          Node
+	Entries         []MapEntry
+	Total           int
+	Limit           int
+	Offset          int
+	HasMore         bool
+	Remaining       MapEntry
+	Confidence      string
 }
 
 type Emitter func(Node) error

@@ -29,12 +29,28 @@ export function GetChildren(query: $models.ChildrenQuery): $CancellablePromise<$
     return $Call.ByID(3688422103, query);
 }
 
+export function GetMap(query: $models.MapQuery): $CancellablePromise<$models.MapResult> {
+    return $Call.ByID(2827691950, query);
+}
+
 export function GetPermissionStatus(): $CancellablePromise<$models.PermissionStatus> {
     return $Call.ByID(37670297);
 }
 
 export function GetScanStatus(taskID: string): $CancellablePromise<$models.ScanStatus> {
     return $Call.ByID(173246179, taskID);
+}
+
+export function GetVolumes(): $CancellablePromise<$models.VolumeOverview[] | null> {
+    return $Call.ByID(672903915);
+}
+
+export function PreviewNode(snapshotID: number, nodeID: number): $CancellablePromise<$models.NodeActionResult> {
+    return $Call.ByID(1900736820, snapshotID, nodeID);
+}
+
+export function RevealNode(snapshotID: number, nodeID: number): $CancellablePromise<$models.NodeActionResult> {
+    return $Call.ByID(3842996745, snapshotID, nodeID);
 }
 
 export function StartScan(options: $models.ScanOptions): $CancellablePromise<$models.ScanStatus> {

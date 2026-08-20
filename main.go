@@ -37,6 +37,8 @@ func main() {
 		FileSystem:  adapter,
 		Permissions: adapter,
 		Trash:       adapter,
+		Volumes:     adapter,
+		Preview:     adapter,
 		Emit: func(name string, data any) {
 			if emit != nil {
 				emit(name, data)

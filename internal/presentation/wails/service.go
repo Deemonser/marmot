@@ -32,23 +32,38 @@ type ScanStatus struct {
 }
 
 type ScanProgress struct {
-	TaskID      string   `json:"taskId"`
-	SnapshotID  int64    `json:"snapshotId"`
-	Root        string   `json:"root"`
-	State       string   `json:"state"`
-	Phase       string   `json:"phase"`
-	Nodes       int64    `json:"nodes"`
-	Files       int64    `json:"files"`
-	Directories int64    `json:"directories"`
-	Bytes       int64    `json:"bytes"`
-	Issues      []string `json:"issues"`
-	Error       string   `json:"error"`
+	TaskID            string   `json:"taskId"`
+	SnapshotID        int64    `json:"snapshotId"`
+	Root              string   `json:"root"`
+	State             string   `json:"state"`
+	Phase             string   `json:"phase"`
+	Nodes             int64    `json:"nodes"`
+	Files             int64    `json:"files"`
+	Directories       int64    `json:"directories"`
+	Bytes             int64    `json:"bytes"`
+	Issues            []string `json:"issues"`
+	Error             string   `json:"error"`
+	SnapshotVersion   int64    `json:"snapshotVersion"`
+	AffectedParentIDs []int64  `json:"affectedParentIds"`
 }
 
 type PermissionStatus struct {
 	Platform string `json:"platform"`
 	State    string `json:"state"`
 	Message  string `json:"message"`
+}
+
+type VolumeOverview struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Kind       string `json:"kind"`
+	TotalBytes uint64 `json:"totalBytes"`
+	UsedBytes  uint64 `json:"usedBytes"`
+	FreeBytes  uint64 `json:"freeBytes"`
+	Permission string `json:"permission"`
+	Message    string `json:"message"`
+	Scannable  bool   `json:"scannable"`
 }
 
 type ChildrenQuery struct {
@@ -76,6 +91,46 @@ type ChildrenResult struct {
 	Nodes  []NodeView `json:"nodes"`
 	Limit  int        `json:"limit"`
 	Offset int        `json:"offset"`
+}
+
+type MapQuery struct {
+	SnapshotID int64  `json:"snapshotId"`
+	ParentID   int64  `json:"parentId"`
+	Limit      int    `json:"limit"`
+	Offset     int    `json:"offset"`
+	Measure    string `json:"measure"`
+}
+
+type MapEntry struct {
+	Kind           string   `json:"kind"`
+	Node           NodeView `json:"node"`
+	Name           string   `json:"name"`
+	Count          int64    `json:"count"`
+	LogicalSize    int64    `json:"logicalSize"`
+	AllocatedSize  int64    `json:"allocatedSize"`
+	OwnedAllocated int64    `json:"ownedAllocated"`
+	Confidence     string   `json:"confidence"`
+	SizeBasis      string   `json:"sizeBasis"`
+}
+
+type MapResult struct {
+	SnapshotID      int64      `json:"snapshotId"`
+	SnapshotVersion int64      `json:"snapshotVersion"`
+	Parent          NodeView   `json:"parent"`
+	Entries         []MapEntry `json:"entries"`
+	Total           int        `json:"total"`
+	Limit           int        `json:"limit"`
+	Offset          int        `json:"offset"`
+	HasMore         bool       `json:"hasMore"`
+	Remaining       MapEntry   `json:"remaining"`
+	Confidence      string     `json:"confidence"`
+}
+
+type NodeActionResult struct {
+	OK      bool   `json:"ok"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Path    string `json:"path"`
 }
 
 type CleanupPlanRequest struct {
@@ -116,6 +171,18 @@ func (s *Service) GetPermissionStatus() PermissionStatus {
 	return PermissionStatus{Platform: status.Platform, State: status.State, Message: status.Message}
 }
 
+func (s *Service) GetVolumes() ([]VolumeOverview, error) {
+	volumes, err := s.application.GetVolumes()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]VolumeOverview, 0, len(volumes))
+	for _, volume := range volumes {
+		result = append(result, VolumeOverview{ID: volume.ID, Name: volume.Name, Path: volume.Path, Kind: volume.Kind, TotalBytes: volume.TotalBytes, UsedBytes: volume.UsedBytes, FreeBytes: volume.FreeBytes, Permission: volume.Permission, Message: volume.Message, Scannable: volume.Scannable})
+	}
+	return result, nil
+}
+
 func (s *Service) StartScan(options ScanOptions) (ScanStatus, error) {
 	status, err := s.application.StartScan(application.ScanOptions{Root: options.Root})
 	return scanStatus(status), err
@@ -141,6 +208,28 @@ func (s *Service) GetChildren(query ChildrenQuery) (ChildrenResult, error) {
 		view.Nodes = append(view.Nodes, nodeView(node))
 	}
 	return view, nil
+}
+
+func (s *Service) GetMap(query MapQuery) (MapResult, error) {
+	result, err := s.application.GetMap(application.MapQuery{SnapshotID: query.SnapshotID, ParentID: query.ParentID, Limit: query.Limit, Offset: query.Offset, Measure: query.Measure})
+	if err != nil {
+		return MapResult{}, err
+	}
+	entries := make([]MapEntry, 0, len(result.Entries))
+	for _, entry := range result.Entries {
+		entries = append(entries, mapEntry(entry))
+	}
+	return MapResult{SnapshotID: result.SnapshotID, SnapshotVersion: result.SnapshotVersion, Parent: nodeView(result.Parent), Entries: entries, Total: result.Total, Limit: result.Limit, Offset: result.Offset, HasMore: result.HasMore, Remaining: mapEntry(result.Remaining), Confidence: result.Confidence}, nil
+}
+
+func (s *Service) PreviewNode(snapshotID, nodeID int64) (NodeActionResult, error) {
+	result, err := s.application.PreviewNode(snapshotID, nodeID)
+	return NodeActionResult{OK: result.OK, Code: result.Code, Message: result.Message, Path: result.Path}, err
+}
+
+func (s *Service) RevealNode(snapshotID, nodeID int64) (NodeActionResult, error) {
+	result, err := s.application.RevealNode(snapshotID, nodeID)
+	return NodeActionResult{OK: result.OK, Code: result.Code, Message: result.Message, Path: result.Path}, err
 }
 
 func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, error) {
@@ -175,7 +264,7 @@ func scanStatus(status application.ScanStatus) ScanStatus {
 }
 
 func ScanProgressView(progress application.ScanProgress) ScanProgress {
-	return ScanProgress{TaskID: progress.TaskID, SnapshotID: progress.SnapshotID, Root: progress.Root, State: progress.State, Phase: progress.Phase, Nodes: progress.Nodes, Files: progress.Files, Directories: progress.Directories, Bytes: progress.Bytes, Issues: append([]string{}, progress.Issues...), Error: progress.Error}
+	return ScanProgress{TaskID: progress.TaskID, SnapshotID: progress.SnapshotID, Root: progress.Root, State: progress.State, Phase: progress.Phase, Nodes: progress.Nodes, Files: progress.Files, Directories: progress.Directories, Bytes: progress.Bytes, Issues: append([]string{}, progress.Issues...), Error: progress.Error, SnapshotVersion: progress.SnapshotVersion, AffectedParentIDs: append([]int64{}, progress.AffectedParentIDs...)}
 }
 
 func nodeView(node scan.Node) NodeView {
@@ -188,4 +277,8 @@ func cleanupPlan(plan application.CleanupPlan) CleanupPlan {
 		results = append(results, CleanupItemResult{Path: item.Path, State: item.State, Reason: item.Reason})
 	}
 	return CleanupPlan{ID: plan.ID, SnapshotID: plan.SnapshotID, Version: plan.Version, State: plan.State, Items: plan.Items, Results: results}
+}
+
+func mapEntry(entry application.MapEntry) MapEntry {
+	return MapEntry{Kind: entry.Kind, Node: nodeView(entry.Node), Name: entry.Name, Count: entry.Count, LogicalSize: entry.LogicalSize, AllocatedSize: entry.AllocatedSize, OwnedAllocated: entry.OwnedAllocated, Confidence: entry.Confidence, SizeBasis: entry.SizeBasis}
 }

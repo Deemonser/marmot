@@ -21,6 +21,8 @@ type Service struct {
 	files       ports.FileSystem
 	permissions ports.PermissionProbe
 	trash       ports.Trash
+	volumes     ports.VolumeCatalog
+	preview     ports.PreviewPort
 	mu          sync.RWMutex
 	tasks       map[string]*scanTask
 	plans       map[string]*cleanupPlan
@@ -34,23 +36,26 @@ type Dependencies struct {
 	FileSystem  ports.FileSystem
 	Permissions ports.PermissionProbe
 	Trash       ports.Trash
+	Volumes     ports.VolumeCatalog
+	Preview     ports.PreviewPort
 	Emit        func(string, any)
 }
 
 type scanTask struct {
-	mu          sync.RWMutex
-	taskID      string
-	snapshotID  int64
-	root        string
-	state       string
-	phase       string
-	nodes       int64
-	files       int64
-	directories int64
-	bytes       int64
-	issues      []string
-	error       string
-	cancel      context.CancelFunc
+	mu              sync.RWMutex
+	taskID          string
+	snapshotID      int64
+	root            string
+	state           string
+	phase           string
+	nodes           int64
+	files           int64
+	directories     int64
+	bytes           int64
+	issues          []string
+	error           string
+	cancel          context.CancelFunc
+	affectedParents map[int64]struct{}
 }
 
 type ScanOptions struct {
@@ -72,23 +77,78 @@ type ScanStatus struct {
 }
 
 type ScanProgress struct {
-	TaskID      string   `json:"taskId"`
-	SnapshotID  int64    `json:"snapshotId"`
-	Root        string   `json:"root"`
-	State       string   `json:"state"`
-	Phase       string   `json:"phase"`
-	Nodes       int64    `json:"nodes"`
-	Files       int64    `json:"files"`
-	Directories int64    `json:"directories"`
-	Bytes       int64    `json:"bytes"`
-	Issues      []string `json:"issues"`
-	Error       string   `json:"error"`
+	TaskID            string   `json:"taskId"`
+	SnapshotID        int64    `json:"snapshotId"`
+	Root              string   `json:"root"`
+	State             string   `json:"state"`
+	Phase             string   `json:"phase"`
+	Nodes             int64    `json:"nodes"`
+	Files             int64    `json:"files"`
+	Directories       int64    `json:"directories"`
+	Bytes             int64    `json:"bytes"`
+	Issues            []string `json:"issues"`
+	Error             string   `json:"error"`
+	SnapshotVersion   int64    `json:"snapshotVersion"`
+	AffectedParentIDs []int64  `json:"affectedParentIds"`
 }
 
 type PermissionStatus struct {
 	Platform string `json:"platform"`
 	State    string `json:"state"`
 	Message  string `json:"message"`
+}
+
+type VolumeOverview struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Kind       string `json:"kind"`
+	TotalBytes uint64 `json:"totalBytes"`
+	UsedBytes  uint64 `json:"usedBytes"`
+	FreeBytes  uint64 `json:"freeBytes"`
+	Permission string `json:"permission"`
+	Message    string `json:"message"`
+	Scannable  bool   `json:"scannable"`
+}
+
+type MapQuery struct {
+	SnapshotID int64  `json:"snapshotId"`
+	ParentID   int64  `json:"parentId"`
+	Limit      int    `json:"limit"`
+	Offset     int    `json:"offset"`
+	Measure    string `json:"measure"`
+}
+
+type MapEntry struct {
+	Kind           string    `json:"kind"`
+	Node           scan.Node `json:"node"`
+	Name           string    `json:"name"`
+	Count          int64     `json:"count"`
+	LogicalSize    int64     `json:"logicalSize"`
+	AllocatedSize  int64     `json:"allocatedSize"`
+	OwnedAllocated int64     `json:"ownedAllocated"`
+	Confidence     string    `json:"confidence"`
+	SizeBasis      string    `json:"sizeBasis"`
+}
+
+type MapResult struct {
+	SnapshotID      int64      `json:"snapshotId"`
+	SnapshotVersion int64      `json:"snapshotVersion"`
+	Parent          scan.Node  `json:"parent"`
+	Entries         []MapEntry `json:"entries"`
+	Total           int        `json:"total"`
+	Limit           int        `json:"limit"`
+	Offset          int        `json:"offset"`
+	HasMore         bool       `json:"hasMore"`
+	Remaining       MapEntry   `json:"remaining"`
+	Confidence      string     `json:"confidence"`
+}
+
+type NodeActionResult struct {
+	OK      bool   `json:"ok"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Path    string `json:"path"`
 }
 
 type ChildrenQuery struct {
@@ -148,7 +208,7 @@ func NewService(deps Dependencies) *Service {
 	if emit == nil {
 		emit = func(string, any) {}
 	}
-	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
+	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
 }
 
 func (s *Service) RecoverInterruptedScans() error {
@@ -158,6 +218,21 @@ func (s *Service) RecoverInterruptedScans() error {
 func (s *Service) GetPermissionStatus() PermissionStatus {
 	report := s.permissions.Probe()
 	return PermissionStatus{Platform: report.Platform, State: report.State, Message: report.Message}
+}
+
+func (s *Service) GetVolumes() ([]VolumeOverview, error) {
+	if s.volumes == nil {
+		return []VolumeOverview{}, nil
+	}
+	items, err := s.volumes.ListVolumes()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]VolumeOverview, 0, len(items))
+	for _, item := range items {
+		result = append(result, VolumeOverview{ID: item.ID, Name: item.Name, Path: item.Path, Kind: item.Kind, TotalBytes: item.TotalBytes, UsedBytes: item.UsedBytes, FreeBytes: item.FreeBytes, Permission: item.Permission, Message: item.Message, Scannable: item.Scannable})
+	}
+	return result, nil
 }
 
 func (s *Service) StartScan(options ScanOptions) (ScanStatus, error) {
@@ -172,7 +247,7 @@ func (s *Service) StartScan(options ScanOptions) (ScanStatus, error) {
 		cancel()
 		return ScanStatus{}, err
 	}
-	task := &scanTask{taskID: taskID, snapshotID: snapshotID, root: root, state: "running", phase: string(scan.PhaseCatalog), cancel: cancel}
+	task := &scanTask{taskID: taskID, snapshotID: snapshotID, root: root, state: "running", phase: string(scan.PhaseCatalog), cancel: cancel, affectedParents: make(map[int64]struct{})}
 	s.mu.Lock()
 	s.tasks[taskID] = task
 	s.mu.Unlock()
@@ -243,6 +318,9 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 			}
 		}
 		task.mu.Lock()
+		if node.ParentID != 0 {
+			task.affectedParents[node.ParentID] = struct{}{}
+		}
 		task.nodes++
 		if node.Kind == "file" || node.Kind == "symlink" {
 			task.files++
@@ -378,6 +456,72 @@ func (s *Service) GetChildren(query ChildrenQuery) (ChildrenResult, error) {
 	return ChildrenResult{Limit: query.Limit, Offset: query.Offset, Nodes: nodes}, nil
 }
 
+func (s *Service) GetMap(query MapQuery) (MapResult, error) {
+	if query.SnapshotID <= 0 || query.ParentID <= 0 {
+		return MapResult{}, errors.New("snapshot and parent are required")
+	}
+	if query.Limit <= 0 {
+		query.Limit = 256
+	}
+	if query.Limit > 1000 {
+		query.Limit = 1000
+	}
+	if query.Offset < 0 {
+		query.Offset = 0
+	}
+	if query.Measure == "" {
+		query.Measure = "owned_allocated"
+	}
+	if query.Measure != "owned_allocated" {
+		return MapResult{}, errors.New("unsupported map measure")
+	}
+	result, err := s.store.Map(scan.MapQuery{SnapshotID: query.SnapshotID, ParentID: query.ParentID, Limit: query.Limit, Offset: query.Offset, Measure: query.Measure})
+	if err != nil {
+		return MapResult{}, err
+	}
+	return mapResult(result), nil
+}
+
+func (s *Service) PreviewNode(snapshotID, nodeID int64) (NodeActionResult, error) {
+	return s.nodeAction(snapshotID, nodeID, func(path string) (string, error) {
+		if s.preview == nil {
+			return "", errors.New("preview is unavailable")
+		}
+		return s.preview.Preview(path)
+	})
+}
+
+func (s *Service) RevealNode(snapshotID, nodeID int64) (NodeActionResult, error) {
+	return s.nodeAction(snapshotID, nodeID, func(path string) (string, error) {
+		if s.preview == nil {
+			return "", errors.New("finder reveal is unavailable")
+		}
+		return s.preview.Reveal(path)
+	})
+}
+
+func (s *Service) nodeAction(snapshotID, nodeID int64, action func(string) (string, error)) (NodeActionResult, error) {
+	if snapshotID <= 0 || nodeID <= 0 {
+		return NodeActionResult{Code: "invalid_request", Message: "snapshot and node are required"}, nil
+	}
+	node, err := s.store.NodeByID(snapshotID, nodeID)
+	if err != nil {
+		return NodeActionResult{Code: "stale_node", Message: "节点已不在当前快照中"}, nil
+	}
+	if node.Kind != "file" && node.Kind != "directory" && node.Kind != "symlink" {
+		return NodeActionResult{Code: "unsupported_node", Message: "该对象不能执行此操作"}, nil
+	}
+	current, err := s.files.CaptureCleanupItem(node.Path)
+	if err != nil || current.Device != node.Device || current.Inode != node.Inode {
+		return NodeActionResult{Code: "stale_node", Message: "对象已移动或删除，请重新扫描"}, nil
+	}
+	path, err := action(node.Path)
+	if err != nil {
+		return NodeActionResult{Code: "platform_error", Message: err.Error()}, nil
+	}
+	return NodeActionResult{OK: true, Code: "ok", Message: "操作已交给 macOS", Path: path}, nil
+}
+
 func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, error) {
 	if request.SnapshotID <= 0 || len(request.Paths) == 0 {
 		return CleanupPlan{}, errors.New("snapshot and paths are required")
@@ -486,7 +630,15 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 
 func (s *Service) emitProgress(task *scanTask) {
 	status := task.status()
-	s.emit("scan-progress", ScanProgress{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: status.Issues, Error: status.Error})
+	version, _ := s.store.SnapshotVersion(status.SnapshotID)
+	task.mu.Lock()
+	affected := make([]int64, 0, len(task.affectedParents))
+	for parentID := range task.affectedParents {
+		affected = append(affected, parentID)
+	}
+	task.affectedParents = make(map[int64]struct{})
+	task.mu.Unlock()
+	s.emit("scan-progress", ScanProgress{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: status.Issues, Error: status.Error, SnapshotVersion: version, AffectedParentIDs: affected})
 }
 
 func (t *scanTask) status() ScanStatus {
@@ -497,6 +649,14 @@ func (t *scanTask) status() ScanStatus {
 
 func (t *scanTask) statusLocked() ScanStatus {
 	return ScanStatus{TaskID: t.taskID, SnapshotID: t.snapshotID, Root: t.root, State: t.state, Phase: t.phase, Nodes: t.nodes, Files: t.files, Directories: t.directories, Bytes: t.bytes, Issues: append([]string(nil), t.issues...), Error: t.error}
+}
+
+func mapResult(result scan.MapResult) MapResult {
+	entries := make([]MapEntry, 0, len(result.Entries))
+	for _, entry := range result.Entries {
+		entries = append(entries, MapEntry{Kind: entry.Kind, Node: entry.Node, Name: entry.Name, Count: entry.Count, LogicalSize: entry.LogicalSize, AllocatedSize: entry.AllocatedSize, OwnedAllocated: entry.OwnedAllocated, Confidence: entry.Confidence, SizeBasis: entry.SizeBasis})
+	}
+	return MapResult{SnapshotID: result.SnapshotID, SnapshotVersion: result.SnapshotVersion, Parent: result.Parent, Entries: entries, Total: result.Total, Limit: result.Limit, Offset: result.Offset, HasMore: result.HasMore, Remaining: MapEntry{Kind: result.Remaining.Kind, Name: result.Remaining.Name, Count: result.Remaining.Count, LogicalSize: result.Remaining.LogicalSize, AllocatedSize: result.Remaining.AllocatedSize, OwnedAllocated: result.Remaining.OwnedAllocated, Confidence: result.Remaining.Confidence, SizeBasis: result.Remaining.SizeBasis}, Confidence: result.Confidence}
 }
 
 func matchesSnapshotNode(node scan.Node, item cleanup.Item) bool {

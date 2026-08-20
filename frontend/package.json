@@ -11,14 +11,16 @@
   },
   "dependencies": {
     "@wailsio/runtime": "latest",
+    "d3-shape": "^3.2.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@types/d3-shape": "^3.1.8",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.2",
-    "typescript": "^4.9.3",
+    "typescript": "^5.9.3",
     "vite": "^8.0.5"
   }
 }

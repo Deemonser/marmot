@@ -14,9 +14,14 @@ export type {
     CleanupPlan,
     CleanupPlanRequest,
     CleanupValidation,
+    MapEntry,
+    MapQuery,
+    MapResult,
+    NodeActionResult,
     NodeView,
     PermissionStatus,
     ScanOptions,
     ScanProgress,
-    ScanStatus
+    ScanStatus,
+    VolumeOverview
 } from "./models.js";
