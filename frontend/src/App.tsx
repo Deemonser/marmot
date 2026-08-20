@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Events } from "@wailsio/runtime";
 import { Service as MarmotService } from "../bindings/example.com/marmot/internal/presentation/wails";
 
@@ -35,6 +35,8 @@ export default function App() {
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const currentParentRef = useRef(1);
+  const rootLoadInFlight = useRef(false);
 
   const scanActive = status?.state === "running";
   const selectedBytes = useMemo(() => nodes.filter((node) => selectedPaths.includes(node.path)).reduce((sum, node) => sum + node.ownedAllocated, 0), [nodes, selectedPaths]);
@@ -43,28 +45,55 @@ export default function App() {
     MarmotService.GetPermissionStatus().then(setPermission).catch((error: unknown) => setNotice(String(error)));
     const savedTaskId = window.localStorage.getItem("marmot.scanTaskId");
     if (savedTaskId) {
-      MarmotService.GetScanStatus(savedTaskId).then(setStatus).catch(() => window.localStorage.removeItem("marmot.scanTaskId"));
+      MarmotService.GetScanStatus(savedTaskId).then(async (next) => {
+        setStatus(next);
+        setRoot(next.root);
+        setCurrentPath(next.root);
+        await loadRootIfAvailable(next.snapshotId, next.root);
+      }).catch(() => window.localStorage.removeItem("marmot.scanTaskId"));
     }
-    const off = Events.On("scan-progress", (event: { data: ScanStatus }) => setStatus((current) => ({
-      taskId: event.data.taskId,
-      snapshotId: event.data.snapshotId,
-      root: event.data.root || current?.root || root,
-      state: event.data.state,
-      nodes: event.data.nodes,
-      files: event.data.files,
-      directories: event.data.directories,
-      bytes: event.data.bytes,
-      issues: event.data.issues ?? current?.issues ?? [],
-      error: event.data.error ?? current?.error ?? "",
-    })));
+    const off = Events.On("scan-progress", (event: { data: ScanStatus }) => {
+      setStatus((current) => ({
+        taskId: event.data.taskId,
+        snapshotId: event.data.snapshotId,
+        root: event.data.root || current?.root || root,
+        state: event.data.state,
+        nodes: event.data.nodes,
+        files: event.data.files,
+        directories: event.data.directories,
+        bytes: event.data.bytes,
+        issues: event.data.issues ?? current?.issues ?? [],
+        error: event.data.error ?? current?.error ?? "",
+      }));
+      if (event.data.nodes > 1 || event.data.state !== "running") {
+        void loadRootIfAvailable(event.data.snapshotId, event.data.root || root);
+      }
+    });
     return () => off();
   }, []);
 
   async function loadChildren(snapshotId: number, parentId: number, path: string) {
     const result = await MarmotService.GetChildren({ snapshotId, parentId, limit: 1000, offset: 0 });
-    setNodes(result.nodes);
+    setNodes(result.nodes ?? []);
+    currentParentRef.current = parentId;
     setCurrentParent(parentId);
     setCurrentPath(path);
+  }
+
+  async function loadRootIfAvailable(snapshotId: number, path: string) {
+    if (snapshotId <= 0 || currentParentRef.current !== 1 || rootLoadInFlight.current) return;
+    rootLoadInFlight.current = true;
+    try {
+      const result = await MarmotService.GetChildren({ snapshotId, parentId: 1, limit: 1000, offset: 0 });
+      const nodes = result.nodes ?? [];
+      if (currentParentRef.current === 1 && nodes.length > 0) {
+        setNodes(nodes);
+        setCurrentParent(1);
+        setCurrentPath(path);
+      }
+    } finally {
+      rootLoadInFlight.current = false;
+    }
   }
 
   async function startScan() {

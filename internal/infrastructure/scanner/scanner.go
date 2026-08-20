@@ -194,6 +194,10 @@ func makeNode(id, parentID int64, path, name string, info fs.FileInfo, symlink b
 		node.Kind = "symlink"
 	}
 	stat, _ := info.Sys().(*syscall.Stat_t)
+	if stat != nil {
+		node.Device = uint64(stat.Dev)
+		node.Inode = stat.Ino
+	}
 	if stat != nil && node.Kind != "directory" {
 		allocated := int64(stat.Blocks) * 512
 		if allocated > 0 {
