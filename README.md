@@ -51,6 +51,7 @@ Marmot 是一个 macOS 本地磁盘空间分析与安全清理工具，目标体
 - [文档基准](docs/BASELINE.md)
 - [项目目录规范](docs/PROJECT-STRUCTURE.md)
 - [技术预研](docs/research/README.md)
+- [产品体验与交互基线](docs/research/R-009-DaisyDisk产品体验与交互基线.md)
 - [ADR 决策记录](docs/adr/README.md)
 - [第三方代码声明](THIRD_PARTY_NOTICES.md)
 - [Agent 规则](AGENTS.md)
