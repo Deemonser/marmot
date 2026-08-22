@@ -43,7 +43,7 @@ presentation/wails -> application -> domain
                        ports <- infrastructure/platform
 ```
 
-- `domain` 不依赖 Wails、SQLite、macOS API、前端或 Mole。
+- `domain` 不依赖 Wails、任何数据库实现、macOS API、前端或 Mole。
 - `application` 只依赖 domain 和 ports，不直接调用平台 API。
 - `presentation/wails` 只做绑定、DTO、事件和窗口生命周期。
 - `infrastructure` 实现 ports；Mole 代码只能在这里隔离。
@@ -60,7 +60,7 @@ presentation/wails -> application -> domain
 | `internal/application` | 承载扫描/清理用例、任务生命周期和端口编排 | 当前第一阶段应用层 |
 | `internal/presentation/wails` | 承载 Wails DTO、绑定入口和事件转换 | 当前第一阶段展示适配层 |
 | `internal/domain`、`internal/ports` | 领域模型和技术无关契约已建立，Recommendation 只保留边界 | 后续按领域切片细化 |
-| `internal/infrastructure/*` | 扫描器和 SQLite 已归入基础设施并实现端口 | 保留，Mole 只能在此隔离 |
+| `internal/infrastructure/*` | 扫描器和 `SnapshotStore` 已归入基础设施并实现端口；当前 checkout 仍保留 SQLite 过渡适配器 | 保留，最终快照实现按 ADR-0028 切换为追加式二进制格式，Mole 只能在此隔离 |
 | `internal/platform` | macOS 权限、文件身份和废纸篓适配 | 保留，按平台能力继续拆分 |
 | `build/*` | 含 Wails 生成的非 macOS 平台资源 | 作为构建资产保留，不视为当前业务实现 |
 

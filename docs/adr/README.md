@@ -9,7 +9,7 @@ ADR 用于记录影响领域边界、系统架构、公共接口、平台能力�
 - [ADR-0004 Mole 隔离策略](0004-Mole隔离策略.md)（已被 ADR-0005 替代）
 - [ADR-0005 复用 Mole V1.40.0 的 MIT 代码](0005-复用Mole-V1.40.0的MIT代码.md)
 - [ADR-0006 Wails 工具链与 macOS 分发边界](0006-Wails工具链与macOS分发边界.md)
-- [ADR-0007 SQLite 快照存储与性能门槛](0007-SQLite快照存储与性能门槛.md)
+- [ADR-0007 SQLite 快照存储与性能门槛](0007-SQLite快照存储与性能门槛.md)（首版存储实现已由 ADR-0028 替代）
 - [ADR-0008 APFS 空间语义与扫描边界](0008-APFS空间语义与扫描边界.md)
 - [ADR-0009 清理计划与 macOS 废纸篓执行](0009-清理计划与macOS废纸篓执行.md)
 - [ADR-0010 Mole 扫描代码抽取边界](0010-Mole扫描代码抽取边界.md)
@@ -21,6 +21,16 @@ ADR 用于记录影响领域边界、系统架构、公共接口、平台能力�
 - [ADR-0016 DaisyDisk 原生交互状态模型](0016-DaisyDisk原生交互状态模型.md)
 - [ADR-0017 有界多层空间图投影](0017-有界多层空间图投影.md)
 - [ADR-0018 DaisyDisk 视觉版式与窗口状态重做](0018-DaisyDisk视觉版式与窗口状态重做.md)
+- [ADR-0019 macOS APFS 卷组与全盘容量语义](0019-macOS_APFS卷组与全盘容量语义.md)
+- [ADR-0020 APFS 卷组与产品存储源映射](0020-APFS卷组与产品存储源映射.md)
+- [ADR-0021 macOS `getattrlistbulk` 批量元数据扫描](0021-macOS_getattrlistbulk批量元数据扫描.md)
+- [ADR-0022 macOS 目录 fd 与 `openat` 扫描路径](0022-macOS目录fd与openat扫描路径.md)
+- [ADR-0023 快照缓存生命周期与扫描中进度反馈](0023-快照缓存生命周期与扫描中进度反馈.md)（SQLite 维护实现部分已由 ADR-0028 替代）
+- [ADR-0024 macOS SSD 并发预算复测](0024-macOS_SSD并发预算复测.md)
+- [ADR-0025 SQLite 目录汇总旁路存储](0025-SQLite目录汇总旁路存储.md)（已由 ADR-0028 替代）
+- [ADR-0026 SQLite 扫描写入并发与端到端性能](0026-SQLite扫描写入并发与端到端性能.md)（已由 ADR-0028 替代）
+- [ADR-0027 DaisyDisk 扫描中窗口状态边界](0027-DaisyDisk扫描中窗口状态边界.md)
+- [ADR-0028 macOS 原生扫描与追加式二进制快照](0028-macOS原生扫描与追加式二进制快照.md)
 
 `ADR-0001` 是旧的 HTTP 优先方案，已被后续决策替代。
 

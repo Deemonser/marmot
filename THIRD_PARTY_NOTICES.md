@@ -23,6 +23,9 @@ Marmot 只允许复用上述固定提交中的代码。当前 `main` 及之后�
 
 ### mattn/go-sqlite3
 
+> 过渡依赖：ADR-0028 已决定首版生产快照不使用 SQLite。完成二进制快照 POC 和迁移后，
+> 若代码与构建产物已移除该依赖，应同步删除本节。
+
 - 项目：[mattn/go-sqlite3](https://github.com/mattn/go-sqlite3)
 - 固定版本：`v1.14.24`
 - 许可证：MIT；内含 SQLite 代码的许可证和声明也必须随发行审查
