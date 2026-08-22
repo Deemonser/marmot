@@ -4,6 +4,8 @@
 
 日期：2026-08-22
 
+POC 状态：格式 POC 已完成；生产 `SnapshotStore` 接线、Darwin 原生扫描主循环和真实 `/` 性能验证待实施。
+
 ## 背景
 
 当前 Marmot 的 `getattrlistbulk` 只优化了单目录读取，目录队列、节点转换和快照写入仍由 Go

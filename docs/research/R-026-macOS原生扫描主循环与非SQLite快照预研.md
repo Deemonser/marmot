@@ -1,6 +1,6 @@
 # R-026 macOS 原生扫描主循环与非 SQLite 快照预研
 
-状态：已完成，结论由 ADR-0028 接受；实现尚未开始
+状态：已完成，结论由 ADR-0028 接受；格式 POC 已完成，生产接线尚未开始
 
 日期：2026-08-22
 
@@ -162,7 +162,15 @@ permission state / mount boundary version / scanner version / size-basis version
 
 ## 5. 验证计划与门槛
 
-实现前必须先完成最小 POC，验证格式和恢复语义，不以设计推测性能：
+最小格式 POC 已完成，验证结果如下；这些结果不替代真实 `/` 样本的生产接线验证：
+
+- `internal/infrastructure/snapshot/binary` 使用固定宽度节点记录、名称字节区、目录索引、稳定子项索引、问题索引和 commit footer；
+- 合成 100 万节点可写入并重新打开查询，数据文件约 `147 MB`、索引约 `88 MB`，本机单次写入/重开耗时约 `3.3s`；顶层 256 项 Map 查询约 `5.7ms`；
+- 已覆盖根节点、按 `owned_allocated DESC, node_id` 稳定排序、子节点分页、Map 聚合、路径按父关系重建和问题日志；
+- 已覆盖尾部不完整批次、批次校验和损坏、索引校验和损坏、manifest 临时文件和 manifest 越界声明；
+- 当前 POC 查询使用 Go `os.File.ReadAt`（Unix 上对应有界 pread 语义），尚未接入生产 `SnapshotStore`，也尚未实现 mmap 映射。
+
+生产接线仍需完成：
 
 1. 用 100 万和真实 `/` 样本写入固定记录、名称区、目录索引和排序子项索引；
 2. 对比节点数、问题数、三种大小、分页、Map 投影、Preview/Reveal 身份读取和取消结果；
@@ -190,7 +198,7 @@ SQLite 相关 R-004、R-023、R-024 和 ADR-0007、ADR-0025、ADR-0026 保留为
 ## 7. 限制
 
 - DaisyDisk 是闭源软件，原生符号和行为只能证明可观察的技术方向，不能证明其私有文件格式；
-- 当前 append-only 格式尚未完成 POC，15 秒目标是验收门槛而不是已达成结果；
+- 当前 POC 只验证合成快照格式和恢复语义，15 秒目标是生产接线后的验收门槛而不是已达成结果；
 - 增量复用对 APFS clone、硬链接、Firmlink、FileProvider 和权限变化的完整失效策略仍需实现测试；
 - 搜索、跨快照比较和任意条件过滤不属于首版快照查询能力，未来需要独立索引预研。
 
@@ -198,5 +206,5 @@ SQLite 相关 R-004、R-023、R-024 和 ADR-0007、ADR-0025、ADR-0026 保留为
 
 - DDD 的 `ScanSnapshot`、`ScanNode`、部分结果、失效对象和清理校验语义不变；物理数据库不属于领域语言；
 - SDD 将 `SnapshotStore` 定义为二进制快照端口，补充原生扫描批次、文件格式、恢复、查询和缓存契约；
-- 下一步只实施 POC 和 Infrastructure 适配，不修改 Wails 公共接口、清理领域不变量或前端 DTO；
+- 下一步实施生产 Infrastructure 适配和 Darwin 原生扫描主循环，不修改 Wails 公共接口、清理领域不变量或前端 DTO；
 - 任何恢复 SQLite、引入通用数据库、跨快照搜索或可续扫能力都必须新增 ADR。
