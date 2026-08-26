@@ -47,6 +47,7 @@ type Service struct {
 	maintenanceMu    sync.Mutex
 	maintenanceStop  context.CancelFunc
 	maintenanceDone  chan struct{}
+	memoryLimiter    scanMemoryLimiter
 }
 
 type Dependencies struct {
@@ -815,6 +816,11 @@ func (s *Service) handleScanPhase(ctx context.Context, task *scanTask, phase sca
 }
 
 func (s *Service) runScan(ctx context.Context, task *scanTask) {
+	// Held for the whole scan and released on every exit — normal, cancelled and
+	// failed alike, which is why it is a defer rather than a call on the success
+	// path (ADR-0058 §1).
+	defer s.memoryLimiter.hold()()
+
 	type persistEvent struct {
 		nodes   []scan.Node
 		barrier chan error

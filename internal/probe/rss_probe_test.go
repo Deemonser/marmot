@@ -137,7 +137,10 @@ func TestRSSBreakdown(t *testing.T) {
 	afterScanFootprint, peakFootprint := selfFootprintMiB(t)
 	allocated := metricValue("/gc/heap/allocs:bytes")
 	runtime.GC()
-	liveHeap := metricValue("/memory/classes/heap/objects:bytes")
+	// /gc/heap/live:bytes, not /memory/classes/heap/objects:bytes: the latter
+	// counts dead objects that the sweeper has not reached yet, so right after a
+	// scan it reads far above what the result actually retains.
+	liveHeap := metricValue("/gc/heap/live:bytes")
 	heapFree := metricValue("/memory/classes/heap/free:bytes")
 	heapReleased := metricValue("/memory/classes/heap/released:bytes")
 	totalMapped := metricValue("/memory/classes/total:bytes")
@@ -156,7 +159,7 @@ func TestRSSBreakdown(t *testing.T) {
 	time.Sleep(10 * time.Second)
 	settledRSS := selfRSSMiB(t)
 	settledFootprint, _ := selfFootprintMiB(t)
-	settledLive := metricValue("/memory/classes/heap/objects:bytes")
+	settledLive := metricValue("/gc/heap/live:bytes")
 	settledFree := metricValue("/memory/classes/heap/free:bytes")
 	settledReleased := metricValue("/memory/classes/heap/released:bytes")
 	settledStacks := metricValue("/memory/classes/heap/stacks:bytes")
