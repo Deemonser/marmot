@@ -13,6 +13,7 @@ declare module "@wailsio/runtime" {
     namespace Events {
         interface CustomEvents {
             "scan-progress": wails$0.ScanProgress;
+            "volume-menu": wails$0.VolumeMenuAction;
         }
     }
 }

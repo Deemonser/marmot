@@ -31,6 +31,22 @@ type ScanStatus struct {
 	Bytes       int64    `json:"bytes"`
 	Issues      []string `json:"issues"`
 	Error       string   `json:"error"`
+	// CountedBytes and VolumeUsedBytes are the progress bar's numerator and
+	// denominator (ADR-0053 §1); Bytes stays the walked total.
+	CountedBytes    int64  `json:"countedBytes"`
+	VolumeUsedBytes uint64 `json:"volumeUsedBytes"`
+}
+
+// ProjectedEntry is one arc below the current level. It carries only what the
+// space map draws with; it has no path and no capabilities (ADR-0048).
+type ProjectedEntry struct {
+	NodeID          int64            `json:"id"`
+	Name            string           `json:"name"`
+	Kind            string           `json:"kind"`
+	OwnedAllocated  int64            `json:"size"`
+	Children        []ProjectedEntry `json:"children,omitempty"`
+	ChildrenTotal   int              `json:"total,omitempty"`
+	ChildrenHasMore bool             `json:"more,omitempty"`
 }
 
 type ScanProgress struct {
@@ -47,6 +63,10 @@ type ScanProgress struct {
 	Error             string   `json:"error"`
 	SnapshotVersion   int64    `json:"snapshotVersion"`
 	AffectedParentIDs []int64  `json:"affectedParentIds"`
+	// CountedBytes and VolumeUsedBytes are the progress bar's numerator and
+	// denominator (ADR-0053 §1); Bytes stays the walked total.
+	CountedBytes    int64  `json:"countedBytes"`
+	VolumeUsedBytes uint64 `json:"volumeUsedBytes"`
 }
 
 type PermissionStatus struct {
@@ -55,17 +75,33 @@ type PermissionStatus struct {
 	Message  string `json:"message"`
 }
 
-type VolumeOverview struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Path       string `json:"path"`
-	Kind       string `json:"kind"`
-	TotalBytes uint64 `json:"totalBytes"`
-	UsedBytes  uint64 `json:"usedBytes"`
-	FreeBytes  uint64 `json:"freeBytes"`
-	Permission string `json:"permission"`
-	Message    string `json:"message"`
-	Scannable  bool   `json:"scannable"`
+type StorageVolumeMember struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Path             string `json:"path"`
+	Kind             string `json:"kind"`
+	Role             string `json:"role"`
+	VolumeTotalBytes uint64 `json:"volumeTotalBytes"`
+	VolumeUsedBytes  uint64 `json:"volumeUsedBytes"`
+	VolumeFreeBytes  uint64 `json:"volumeFreeBytes"`
+	UsageBasis       string `json:"usageBasis"`
+	Permission       string `json:"permission"`
+	Scannable        bool   `json:"scannable"`
+}
+
+type StorageSourceOverview struct {
+	ID         string                `json:"id"`
+	Name       string                `json:"name"`
+	Path       string                `json:"path"`
+	Kind       string                `json:"kind"`
+	TotalBytes uint64                `json:"totalBytes"`
+	UsedBytes  uint64                `json:"usedBytes"`
+	FreeBytes  uint64                `json:"freeBytes"`
+	UsageBasis string                `json:"usageBasis"`
+	Permission string                `json:"permission"`
+	Message    string                `json:"message"`
+	Scannable  bool                  `json:"scannable"`
+	Members    []StorageVolumeMember `json:"members"`
 }
 
 type ChildrenQuery struct {
@@ -84,6 +120,7 @@ type NodeView struct {
 	LogicalSize    int64  `json:"logicalSize"`
 	AllocatedSize  int64  `json:"allocatedSize"`
 	OwnedAllocated int64  `json:"ownedAllocated"`
+	VolumeID       string `json:"volumeId"`
 	Confidence     string `json:"confidence"`
 	SizeBasis      string `json:"sizeBasis"`
 	HasChildren    bool   `json:"hasChildren"`
@@ -106,35 +143,38 @@ type MapQuery struct {
 }
 
 type MapEntry struct {
-	Kind            string     `json:"kind"`
-	Node            NodeView   `json:"node"`
-	Name            string     `json:"name"`
-	VirtualType     string     `json:"virtualType"`
-	DisplayState    string     `json:"displayState"`
-	Capabilities    []string   `json:"capabilities"`
-	Count           int64      `json:"count"`
-	LogicalSize     int64      `json:"logicalSize"`
-	AllocatedSize   int64      `json:"allocatedSize"`
-	OwnedAllocated  int64      `json:"ownedAllocated"`
-	Confidence      string     `json:"confidence"`
-	SizeBasis       string     `json:"sizeBasis"`
-	Children        []MapEntry `json:"children,omitempty"`
-	ChildrenTotal   int        `json:"childrenTotal,omitempty"`
-	ChildrenHasMore bool       `json:"childrenHasMore,omitempty"`
+	Kind            string           `json:"kind"`
+	Node            NodeView         `json:"node"`
+	Name            string           `json:"name"`
+	VirtualType     string           `json:"virtualType"`
+	DisplayState    string           `json:"displayState"`
+	Capabilities    []string         `json:"capabilities"`
+	Count           int64            `json:"count"`
+	LogicalSize     int64            `json:"logicalSize"`
+	AllocatedSize   int64            `json:"allocatedSize"`
+	OwnedAllocated  int64            `json:"ownedAllocated"`
+	Confidence      string           `json:"confidence"`
+	SizeBasis       string           `json:"sizeBasis"`
+	Children        []ProjectedEntry `json:"children,omitempty"`
+	ChildrenTotal   int              `json:"childrenTotal,omitempty"`
+	ChildrenHasMore bool             `json:"childrenHasMore,omitempty"`
 }
 
 type MapResult struct {
-	SnapshotID          int64      `json:"snapshotId"`
-	SnapshotVersion     int64      `json:"snapshotVersion"`
-	Parent              NodeView   `json:"parent"`
-	Entries             []MapEntry `json:"entries"`
-	Total               int        `json:"total"`
-	Limit               int        `json:"limit"`
-	Offset              int        `json:"offset"`
-	HasMore             bool       `json:"hasMore"`
-	Remaining           MapEntry   `json:"remaining"`
-	Confidence          string     `json:"confidence"`
-	ProjectionTruncated bool       `json:"projectionTruncated"`
+	SnapshotID       int64      `json:"snapshotId"`
+	SnapshotVersion  int64      `json:"snapshotVersion"`
+	Parent           NodeView   `json:"parent"`
+	Entries          []MapEntry `json:"entries"`
+	Total            int        `json:"total"`
+	Limit            int        `json:"limit"`
+	Offset           int        `json:"offset"`
+	HasMore          bool       `json:"hasMore"`
+	Remaining        MapEntry   `json:"remaining"`
+	Confidence       string     `json:"confidence"`
+	VolumeTotalBytes uint64     `json:"volumeTotalBytes"`
+	VolumeUsedBytes  uint64     `json:"volumeUsedBytes"`
+	VolumeFreeBytes  uint64     `json:"volumeFreeBytes"`
+	DensityTruncated bool       `json:"densityTruncated"`
 }
 
 type NodeActionResult struct {
@@ -182,14 +222,43 @@ func (s *Service) GetPermissionStatus() PermissionStatus {
 	return PermissionStatus{Platform: status.Platform, State: status.State, Message: status.Message}
 }
 
-func (s *Service) GetVolumes() ([]VolumeOverview, error) {
-	volumes, err := s.application.GetVolumes()
+func (s *Service) GetStorageSources() ([]StorageSourceOverview, error) {
+	sources, err := s.application.GetStorageSources()
 	if err != nil {
 		return nil, err
 	}
-	result := make([]VolumeOverview, 0, len(volumes))
-	for _, volume := range volumes {
-		result = append(result, VolumeOverview{ID: volume.ID, Name: volume.Name, Path: volume.Path, Kind: volume.Kind, TotalBytes: volume.TotalBytes, UsedBytes: volume.UsedBytes, FreeBytes: volume.FreeBytes, Permission: volume.Permission, Message: volume.Message, Scannable: volume.Scannable})
+	result := make([]StorageSourceOverview, 0, len(sources))
+	for _, source := range sources {
+		members := make([]StorageVolumeMember, 0, len(source.Members))
+		for _, member := range source.Members {
+			members = append(members, StorageVolumeMember{
+				ID:               member.ID,
+				Name:             member.Name,
+				Path:             member.Path,
+				Kind:             member.Kind,
+				Role:             member.Role,
+				VolumeTotalBytes: member.VolumeTotalBytes,
+				VolumeUsedBytes:  member.VolumeUsedBytes,
+				VolumeFreeBytes:  member.VolumeFreeBytes,
+				UsageBasis:       member.UsageBasis,
+				Permission:       member.Permission,
+				Scannable:        member.Scannable,
+			})
+		}
+		result = append(result, StorageSourceOverview{
+			ID:         source.ID,
+			Name:       source.Name,
+			Path:       source.Path,
+			Kind:       source.Kind,
+			TotalBytes: source.TotalBytes,
+			UsedBytes:  source.UsedBytes,
+			FreeBytes:  source.FreeBytes,
+			UsageBasis: source.UsageBasis,
+			Permission: source.Permission,
+			Message:    source.Message,
+			Scannable:  source.Scannable,
+			Members:    members,
+		})
 	}
 	return result, nil
 }
@@ -230,7 +299,7 @@ func (s *Service) GetMap(query MapQuery) (MapResult, error) {
 	for _, entry := range result.Entries {
 		entries = append(entries, mapEntry(entry))
 	}
-	return trimMapPayload(MapResult{SnapshotID: result.SnapshotID, SnapshotVersion: result.SnapshotVersion, Parent: nodeView(result.Parent), Entries: entries, Total: result.Total, Limit: result.Limit, Offset: result.Offset, HasMore: result.HasMore, Remaining: mapEntry(result.Remaining), Confidence: result.Confidence, ProjectionTruncated: result.ProjectionTruncated}), nil
+	return trimMapPayload(MapResult{SnapshotID: result.SnapshotID, SnapshotVersion: result.SnapshotVersion, Parent: nodeView(result.Parent), Entries: entries, Total: result.Total, Limit: result.Limit, Offset: result.Offset, HasMore: result.HasMore, Remaining: mapEntry(result.Remaining), Confidence: result.Confidence, VolumeTotalBytes: result.VolumeTotalBytes, VolumeUsedBytes: result.VolumeUsedBytes, VolumeFreeBytes: result.VolumeFreeBytes, DensityTruncated: result.DensityTruncated}), nil
 }
 
 const maxMapPayloadBytes = 256 * 1024
@@ -240,7 +309,7 @@ func trimMapPayload(result MapResult) MapResult {
 	if err == nil && len(encoded) <= maxMapPayloadBytes {
 		return result
 	}
-	result.ProjectionTruncated = true
+	result.DensityTruncated = true
 	for index := range result.Entries {
 		if len(result.Entries[index].Children) == 0 {
 			continue
@@ -319,6 +388,13 @@ func (s *Service) RevealNode(snapshotID, nodeID int64) (NodeActionResult, error)
 	return NodeActionResult{OK: result.OK, Code: result.Code, Message: result.Message, Path: result.Path}, err
 }
 
+// RevealStorageSource takes the source's identity, not a path: the path comes
+// from the volume catalog (ADR-0051 §5, DDD invariant 17).
+func (s *Service) RevealStorageSource(sourceID string) (NodeActionResult, error) {
+	result, err := s.application.RevealStorageSource(sourceID)
+	return NodeActionResult{OK: result.OK, Code: result.Code, Message: result.Message, Path: result.Path}, err
+}
+
 func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, error) {
 	plan, err := s.application.CreateCleanupPlan(application.CleanupPlanRequest{SnapshotID: request.SnapshotID, Paths: request.Paths})
 	return cleanupPlan(plan), err
@@ -347,15 +423,15 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 }
 
 func scanStatus(status application.ScanStatus) ScanStatus {
-	return ScanStatus{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: append([]string{}, status.Issues...), Error: status.Error}
+	return ScanStatus{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: append([]string{}, status.Issues...), Error: status.Error, CountedBytes: status.CountedBytes, VolumeUsedBytes: status.VolumeUsedBytes}
 }
 
 func ScanProgressView(progress application.ScanProgress) ScanProgress {
-	return ScanProgress{TaskID: progress.TaskID, SnapshotID: progress.SnapshotID, Root: progress.Root, State: progress.State, Phase: progress.Phase, Nodes: progress.Nodes, Files: progress.Files, Directories: progress.Directories, Bytes: progress.Bytes, Issues: append([]string{}, progress.Issues...), Error: progress.Error, SnapshotVersion: progress.SnapshotVersion, AffectedParentIDs: append([]int64{}, progress.AffectedParentIDs...)}
+	return ScanProgress{TaskID: progress.TaskID, SnapshotID: progress.SnapshotID, Root: progress.Root, State: progress.State, Phase: progress.Phase, Nodes: progress.Nodes, Files: progress.Files, Directories: progress.Directories, Bytes: progress.Bytes, Issues: append([]string{}, progress.Issues...), Error: progress.Error, SnapshotVersion: progress.SnapshotVersion, AffectedParentIDs: append([]int64{}, progress.AffectedParentIDs...), CountedBytes: progress.CountedBytes, VolumeUsedBytes: progress.VolumeUsedBytes}
 }
 
 func nodeView(node scan.Node) NodeView {
-	return NodeView{ID: node.ID, ParentID: node.ParentID, Path: node.Path, Name: node.Name, Kind: node.Kind, LogicalSize: node.LogicalSize, AllocatedSize: node.AllocatedSize, OwnedAllocated: node.OwnedAllocated, Confidence: node.Confidence, SizeBasis: node.SizeBasis, HasChildren: node.HasChildren}
+	return NodeView{ID: node.ID, ParentID: node.ParentID, Path: node.Path, Name: node.Name, Kind: node.Kind, LogicalSize: node.LogicalSize, AllocatedSize: node.AllocatedSize, OwnedAllocated: node.OwnedAllocated, VolumeID: node.VolumeID, Confidence: node.Confidence, SizeBasis: node.SizeBasis, HasChildren: node.HasChildren}
 }
 
 func cleanupPlan(plan application.CleanupPlan) CleanupPlan {
@@ -367,9 +443,18 @@ func cleanupPlan(plan application.CleanupPlan) CleanupPlan {
 }
 
 func mapEntry(entry application.MapEntry) MapEntry {
-	children := make([]MapEntry, 0, len(entry.Children))
-	for _, child := range entry.Children {
-		children = append(children, mapEntry(child))
-	}
+	children := projectedEntries(entry.Children)
 	return MapEntry{Kind: entry.Kind, Node: nodeView(entry.Node), Name: entry.Name, VirtualType: entry.VirtualType, DisplayState: entry.DisplayState, Capabilities: append([]string(nil), entry.Capabilities...), Count: entry.Count, LogicalSize: entry.LogicalSize, AllocatedSize: entry.AllocatedSize, OwnedAllocated: entry.OwnedAllocated, Confidence: entry.Confidence, SizeBasis: entry.SizeBasis, Children: children, ChildrenTotal: entry.ChildrenTotal, ChildrenHasMore: entry.ChildrenHasMore}
+}
+
+func projectedEntries(entries []application.ProjectedEntry) []ProjectedEntry {
+	out := make([]ProjectedEntry, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, ProjectedEntry{
+			NodeID: entry.NodeID, Name: entry.Name, Kind: entry.Kind,
+			OwnedAllocated: entry.OwnedAllocated, Children: projectedEntries(entry.Children),
+			ChildrenTotal: entry.ChildrenTotal, ChildrenHasMore: entry.ChildrenHasMore,
+		})
+	}
+	return out
 }

@@ -119,6 +119,40 @@ tasks:
       - task: build
     cmds:
       - task: create:app:bundle
+      - task: sign:dev
+
+  sign:dev:
+    summary: Signs the bundle with a stable local identity so macOS keeps its permissions
+    internal: true
+    vars:
+      # macOS records a TCC grant against the bundle's designated requirement.
+      # An ad-hoc signature's requirement is `cdhash H"..."` — the binary's own
+      # hash — so every rebuild is a different app and every permission has to be
+      # granted again. A certificate-based signature's requirement is
+      # `identifier ... and certificate root = H"..."`, which does not change when
+      # the binary does, so grants survive a rebuild.
+      #
+      # Override with MARMOT_SIGN_IDENTITY. Create the local identity once:
+      #   /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      #     -keyout md.key -out md.crt -subj "/CN=Marmot Dev Signing" \
+      #     -addext "basicConstraints=critical,CA:false" \
+      #     -addext "keyUsage=critical,digitalSignature" \
+      #     -addext "extendedKeyUsage=critical,codeSigning"
+      #   /usr/bin/openssl pkcs12 -export -inkey md.key -in md.crt \
+      #     -name "Marmot Dev Signing" -out md.p12 -passout pass:PICK_ONE
+      #   security import md.p12 -k ~/Library/Keychains/login.keychain-db \
+      #     -P PICK_ONE -T /usr/bin/codesign
+      # A release build must use a real Developer ID instead (ADR-0006).
+      SIGN_IDENTITY: '{{.MARMOT_SIGN_IDENTITY | default "Marmot Dev Signing"}}'
+    cmds:
+      - |
+        if security find-certificate -c "{{.SIGN_IDENTITY}}" >/dev/null 2>&1; then
+          codesign --force --sign "{{.SIGN_IDENTITY}}" --timestamp=none "{{.BIN_DIR}}/{{.APP_NAME}}.app"
+          codesign -d --requirements - "{{.BIN_DIR}}/{{.APP_NAME}}.app" 2>&1 | grep -F designated
+        else
+          echo "sign:dev: no '{{.SIGN_IDENTITY}}' identity in the keychain; leaving the ad-hoc signature."
+          echo "sign:dev: macOS will then ask for permissions again after every rebuild."
+        fi
 
   package:universal:
     summary: Packages darwin universal binary (arm64 + amd64)

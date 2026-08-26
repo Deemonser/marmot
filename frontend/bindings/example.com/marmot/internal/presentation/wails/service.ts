@@ -41,8 +41,17 @@ export function GetScanStatus(taskID: string): $CancellablePromise<$models.ScanS
     return $Call.ByID(173246179, taskID);
 }
 
-export function GetVolumes(): $CancellablePromise<$models.VolumeOverview[] | null> {
-    return $Call.ByID(672903915);
+export function GetStorageSources(): $CancellablePromise<$models.StorageSourceOverview[] | null> {
+    return $Call.ByID(106857813);
+}
+
+/**
+ * PrepareVolumeMenu rebuilds the native menu for one volume row and returns the
+ * name the frontend must trigger. It is rebuilt on every open so the item set
+ * always matches the row it belongs to (ADR-0051 §3).
+ */
+export function PrepareVolumeMenu(sourceID: string, hasResult: boolean): $CancellablePromise<string> {
+    return $Call.ByID(3520626822, sourceID, hasResult);
 }
 
 export function PreviewNode(snapshotID: number, nodeID: number): $CancellablePromise<$models.NodeActionResult> {
@@ -51,6 +60,14 @@ export function PreviewNode(snapshotID: number, nodeID: number): $CancellablePro
 
 export function RevealNode(snapshotID: number, nodeID: number): $CancellablePromise<$models.NodeActionResult> {
     return $Call.ByID(3842996745, snapshotID, nodeID);
+}
+
+/**
+ * RevealStorageSource takes the source's identity, not a path: the path comes
+ * from the volume catalog (ADR-0051 §5, DDD invariant 17).
+ */
+export function RevealStorageSource(sourceID: string): $CancellablePromise<$models.NodeActionResult> {
+    return $Call.ByID(3892187735, sourceID);
 }
 
 export function StartScan(options: $models.ScanOptions): $CancellablePromise<$models.ScanStatus> {

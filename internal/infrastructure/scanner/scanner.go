@@ -7,10 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
-	"syscall"
 
 	"example.com/marmot/internal/domain/scan"
+	"example.com/marmot/internal/ports"
 )
 
 type Node = scan.Node
@@ -20,22 +21,68 @@ type DirectorySize = scan.DirectorySize
 type Emit = scan.Emitter
 
 const (
-	unknownDeviceWorkers   = 2
-	directoryQueueCapacity = 4096
+	directoryQueueCapacity  = 4096
+	directoryFDLimit        = 2048
+	ssdDeviceWorkers        = 8
+	rotationalDeviceWorkers = 1
+	networkDeviceWorkers    = 2
+	unknownDeviceWorkers    = 2
 )
 
 type directoryTask struct {
-	id   int64
-	path string
+	id     int64
+	path   string
+	fd     int
+	fdHeld bool
 }
 
-type Scanner struct{}
+type nodeToEmit struct {
+	node      Node
+	linkCount uint64
+}
 
-func (Scanner) Scan(ctx context.Context, root string, emit scan.Emitter, phase scan.PhaseEmitter) (scan.Result, error) {
-	return Scan(ctx, root, emit, phase)
+type MountResolver func() ([]ports.Mount, error)
+
+type Scanner struct {
+	MountResolver MountResolver
+}
+
+type mountBoundary struct {
+	path   string
+	prefix string
+}
+
+type mountBoundaries []mountBoundary
+
+func (s Scanner) Scan(ctx context.Context, root string, emit scan.Emitter, phase scan.PhaseEmitter) (scan.Result, error) {
+	if emit == nil {
+		emit = func(Node) error { return nil }
+	}
+	return s.ScanBatched(ctx, root, func(nodes []Node) error {
+		for _, node := range nodes {
+			if err := emit(node); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, phase)
+}
+
+func (s Scanner) ScanBatched(ctx context.Context, root string, emit scan.BatchEmitter, phase scan.PhaseEmitter) (scan.Result, error) {
+	if emit == nil {
+		emit = func([]Node) error { return nil }
+	}
+	if s.MountResolver != nil {
+		return scanConfiguredTree(ctx, root, emit, phase, s.MountResolver)
+	}
+	return scanTree(ctx, root, func(node Node) error { return emit([]Node{node}) }, phase, s.MountResolver)
 }
 
 func Scan(ctx context.Context, root string, emit Emit, phase scan.PhaseEmitter) (Result, error) {
+	return scanTree(ctx, root, emit, phase, nil)
+}
+
+func scanTree(ctx context.Context, root string, emit Emit, phase scan.PhaseEmitter, resolveMounts MountResolver) (Result, error) {
 	if emit == nil {
 		emit = func(Node) error { return nil }
 	}
@@ -56,6 +103,31 @@ func Scan(ctx context.Context, root string, emit Emit, phase scan.PhaseEmitter) 
 	if !rootInfo.IsDir() {
 		return Result{}, fmt.Errorf("scan root is not a directory: %s", root)
 	}
+	var mounts []ports.Mount
+	if resolveMounts != nil {
+		mounts, err = resolveMounts()
+		if err != nil {
+			return Result{}, fmt.Errorf("resolve mount boundaries: %w", err)
+		}
+	}
+	volumeID, deviceProfile := mountForRoot(root, mounts)
+	boundaries := newMountBoundaries(root, mounts)
+	fdSlots := make(chan struct{}, directoryFDLimit)
+	acquireFD := func() bool {
+		select {
+		case fdSlots <- struct{}{}:
+			return true
+		default:
+			return false
+		}
+	}
+	releaseTaskFD := func(task directoryTask) {
+		if !task.fdHeld {
+			return
+		}
+		closeDirectoryFD(task.fd)
+		<-fdSlots
+	}
 
 	result := Result{DirectorySizes: map[int64]DirectorySize{}}
 	var stateMu sync.Mutex
@@ -70,47 +142,59 @@ func Scan(ctx context.Context, root string, emit Emit, phase scan.PhaseEmitter) 
 		stateMu.Unlock()
 	}
 
-	emitNode := func(node Node, stat *syscall.Stat_t) (Node, error) {
+	emitNodes := func(items []nodeToEmit) ([]Node, error) {
 		stateMu.Lock()
 		defer stateMu.Unlock()
-		nextID++
-		node.ID = nextID
-		if stat != nil && stat.Nlink > 1 && node.Kind == "file" {
-			key := [2]uint64{uint64(stat.Dev), stat.Ino}
-			if _, exists := seen[key]; exists {
-				node.OwnedAllocated = 0
+		emitted := make([]Node, 0, len(items))
+		for _, item := range items {
+			node := item.node
+			nextID++
+			node.ID = nextID
+			if item.linkCount > 1 && node.Kind == "file" {
+				key := [2]uint64{node.Device, node.Inode}
+				if _, exists := seen[key]; exists {
+					node.OwnedAllocated = 0
+				} else {
+					seen[key] = struct{}{}
+				}
+			}
+			result.Nodes++
+			if node.Kind == "directory" {
+				result.Directories++
+				directoryParents[node.ID] = node.ParentID
+				directoryPaths[node.ID] = node.Path
+				directorySizes[node.ID] = DirectorySize{Confidence: "exact"}
 			} else {
-				seen[key] = struct{}{}
+				if node.Kind == "file" || node.Kind == "symlink" {
+					result.Files++
+				}
+				result.Bytes += node.OwnedAllocated
+				total := directorySizes[node.ParentID]
+				addDirectorySize(&total, node)
+				directorySizes[node.ParentID] = total
 			}
-		}
-		result.Nodes++
-		if node.Kind == "directory" {
-			result.Directories++
-			directoryParents[node.ID] = node.ParentID
-			directoryPaths[node.ID] = node.Path
-			directorySizes[node.ID] = DirectorySize{Confidence: "exact"}
-		} else {
-			if node.Kind == "file" || node.Kind == "symlink" {
-				result.Files++
+			if err := emit(node); err != nil {
+				return emitted, err
 			}
-			result.Bytes += node.OwnedAllocated
-			total := directorySizes[node.ParentID]
-			addDirectorySize(&total, node)
-			directorySizes[node.ParentID] = total
+			emitted = append(emitted, node)
 		}
-		if err := emit(node); err != nil {
+		return emitted, nil
+	}
+	emitNode := func(node Node, linkCount uint64) (Node, error) {
+		emitted, err := emitNodes([]nodeToEmit{{node: node, linkCount: linkCount}})
+		if len(emitted) == 0 {
 			return node, err
 		}
-		return node, nil
+		return emitted[0], err
 	}
 
-	rootNode, rootStat := makeNode(0, 0, root, filepath.Base(root), rootInfo, false)
+	rootNode := directoryEntryFromFileInfo(filepath.Base(root), rootInfo, false).node(0, 0, root, volumeID)
 	rootNode.Kind = "directory"
 	rootNode.HasChildren = true
 	rootNode.LogicalSize = 0
 	rootNode.AllocatedSize = 0
 	rootNode.OwnedAllocated = 0
-	rootNode, err = emitNode(rootNode, rootStat)
+	rootNode, err = emitNode(rootNode, 0)
 	if err != nil {
 		return result, err
 	}
@@ -120,32 +204,61 @@ func Scan(ctx context.Context, root string, emit Emit, phase scan.PhaseEmitter) 
 	}
 
 	readDirectory := func(task directoryTask) ([]directoryTask, error) {
+		defer releaseTaskFD(task)
 		if err := scanCtx.Err(); err != nil {
 			return nil, err
 		}
-		entries, err := os.ReadDir(task.path)
+		if boundaries.contains(task.path) {
+			return nil, nil
+		}
+		fd := -1
+		if task.fdHeld {
+			fd = task.fd
+		}
+		entries, err := listDirectoryEntries(task.path, fd)
 		if err != nil {
 			appendIssue(task.path, err)
 			return nil, nil
 		}
-		children := make([]directoryTask, 0)
+		items := make([]nodeToEmit, 0, len(entries))
 		for _, entry := range entries {
 			if err := scanCtx.Err(); err != nil {
 				return nil, err
 			}
-			path := filepath.Join(task.path, entry.Name())
-			info, infoErr := entry.Info()
-			if infoErr != nil {
-				appendIssue(path, infoErr)
+			path := filepath.Join(task.path, entry.name)
+			if entry.mountPoint || boundaries.contains(path) {
 				continue
 			}
-			node, stat := makeNode(0, task.id, path, entry.Name(), info, entry.Type()&os.ModeSymlink != 0)
-			node, err = emitNode(node, stat)
-			if err != nil {
-				return nil, err
+			if entry.readError != nil {
+				appendIssue(path, entry.readError)
+				continue
 			}
+			items = append(items, nodeToEmit{node: entry.node(0, task.id, path, volumeID), linkCount: entry.linkCount})
+		}
+		nodes, err := emitNodes(items)
+		if err != nil {
+			return nil, err
+		}
+		children := make([]directoryTask, 0, len(nodes))
+		for _, node := range nodes {
 			if node.Kind == "directory" {
-				children = append(children, directoryTask{id: node.ID, path: path})
+				child := directoryTask{id: node.ID, path: node.Path}
+				if acquireFD() {
+					var childFD int
+					var childErr error
+					if task.fdHeld {
+						childFD, childErr = openDirectoryAt(task.fd, node.Name)
+					} else {
+						childFD, childErr = openDirectoryPath(node.Path)
+					}
+					if childErr == nil {
+						child.fd = childFD
+						child.fdHeld = true
+					} else {
+						<-fdSlots
+					}
+				}
+				children = append(children, child)
 			}
 		}
 		return children, nil
@@ -179,33 +292,13 @@ func Scan(ctx context.Context, root string, emit Emit, phase scan.PhaseEmitter) 
 		}
 		firstErrMu.Unlock()
 	}
-	enqueue := func(task directoryTask) error {
-		pending.Add(1)
-		select {
-		case queue <- task:
-			return nil
-		case <-scanCtx.Done():
-			pending.Done()
-			return scanCtx.Err()
-		}
-	}
-
-	for i := 0; i < unknownDeviceWorkers; i++ {
+	workerCount := workersForProfile(deviceProfile)
+	for i := 0; i < workerCount; i++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
 			for task := range queue {
-				children, err := readDirectory(task)
-				if err != nil {
-					reportError(err)
-				} else {
-					for _, child := range children {
-						if err := enqueue(child); err != nil {
-							reportError(err)
-							break
-						}
-					}
-				}
+				processDirectory(task, scanCtx, queue, &pending, readDirectory, releaseTaskFD, reportError)
 				pending.Done()
 			}
 		}()
@@ -220,6 +313,7 @@ func Scan(ctx context.Context, root string, emit Emit, phase scan.PhaseEmitter) 
 		case queue <- task:
 		case <-scanCtx.Done():
 			pending.Done()
+			releaseTaskFD(task)
 		}
 	}
 	workers.Wait()
@@ -255,6 +349,77 @@ func Scan(ctx context.Context, root string, emit Emit, phase scan.PhaseEmitter) 
 	return result, nil
 }
 
+// processDirectory keeps the global queue bounded without allowing a full queue
+// to deadlock every worker. Work that cannot be queued is walked by the current
+// worker using a local stack.
+func processDirectory(
+	initial directoryTask,
+	ctx context.Context,
+	queue chan<- directoryTask,
+	pending *sync.WaitGroup,
+	read func(directoryTask) ([]directoryTask, error),
+	release func(directoryTask),
+	reportError func(error),
+) {
+	local := []directoryTask{initial}
+	defer func() {
+		for _, task := range local {
+			release(task)
+		}
+	}()
+	for len(local) > 0 {
+		last := len(local) - 1
+		task := local[last]
+		local = local[:last]
+		if err := ctx.Err(); err != nil {
+			release(task)
+			return
+		}
+		children, err := read(task)
+		if err != nil {
+			reportError(err)
+			continue
+		}
+		for index, child := range children {
+			if err := ctx.Err(); err != nil {
+				release(child)
+				for _, remaining := range children[index+1:] {
+					release(remaining)
+				}
+				return
+			}
+			pending.Add(1)
+			select {
+			case queue <- child:
+				continue
+			case <-ctx.Done():
+				pending.Done()
+				release(child)
+				for _, remaining := range children[index+1:] {
+					release(remaining)
+				}
+				return
+			default:
+				pending.Done()
+				local = append(local, child)
+			}
+		}
+	}
+}
+
+func workersForProfile(profile scan.DeviceProfile) int {
+	switch profile {
+	case scan.DeviceProfileSSD:
+		return ssdDeviceWorkers
+	case scan.DeviceProfileRotational:
+		return rotationalDeviceWorkers
+	case scan.DeviceProfileNetworkOrVirtual:
+		return networkDeviceWorkers
+	default:
+		return unknownDeviceWorkers
+	}
+}
+
 func addDirectorySize(total *DirectorySize, node Node) {
 	total.LogicalSize += node.LogicalSize
 	total.AllocatedSize += node.AllocatedSize
@@ -288,43 +453,53 @@ func mergeConfidence(left, right string) string {
 	return "exact"
 }
 
-func makeNode(id, parentID int64, path, name string, info os.FileInfo, symlink bool) (Node, *syscall.Stat_t) {
-	node := Node{
-		ID:             id,
-		ParentID:       parentID,
-		Path:           path,
-		Name:           name,
-		Kind:           "file",
-		LogicalSize:    info.Size(),
-		AllocatedSize:  info.Size(),
-		OwnedAllocated: info.Size(),
-		Confidence:     "estimated",
-		SizeBasis:      "logical_size",
-		ModifiedAt:     info.ModTime(),
+func mountForRoot(root string, mounts []ports.Mount) (string, scan.DeviceProfile) {
+	best := ""
+	profile := scan.DeviceProfileUnknown
+	bestLength := -1
+	for _, mount := range mounts {
+		mountPath := filepath.Clean(mount.Path)
+		if !pathWithin(mountPath, root) || len(mountPath) <= bestLength {
+			continue
+		}
+		best = mount.ID
+		profile = mount.DeviceProfile
+		bestLength = len(mountPath)
 	}
-	if info.IsDir() && !symlink {
-		node.Kind = "directory"
-		node.LogicalSize = 0
-		node.AllocatedSize = 0
-		node.OwnedAllocated = 0
-		node.HasChildren = true
+	if best != "" {
+		return best, profile
 	}
-	if symlink {
-		node.Kind = "symlink"
-	}
-	stat, _ := info.Sys().(*syscall.Stat_t)
-	if stat != nil {
-		node.Device = uint64(stat.Dev)
-		node.Inode = stat.Ino
-	}
-	if stat != nil && node.Kind != "directory" {
-		allocated := int64(stat.Blocks) * 512
-		if allocated > 0 {
-			node.AllocatedSize = allocated
-			node.OwnedAllocated = allocated
-			node.Confidence = "exact"
-			node.SizeBasis = "darwin_stat_blocks_512"
+	return "mount:" + filepath.Clean(root), profile
+}
+
+func newMountBoundaries(root string, mounts []ports.Mount) mountBoundaries {
+	root = filepath.Clean(root)
+	boundaries := make(mountBoundaries, 0, len(mounts))
+	for _, mount := range mounts {
+		mountPath := filepath.Clean(mount.Path)
+		if mountPath == root {
+			continue
+		}
+		if pathWithin(root, mountPath) {
+			boundaries = append(boundaries, mountBoundary{path: mountPath, prefix: mountPath + string(filepath.Separator)})
 		}
 	}
-	return node, stat
+	return boundaries
+}
+
+func (boundaries mountBoundaries) contains(path string) bool {
+	for _, boundary := range boundaries {
+		if path == boundary.path || strings.HasPrefix(path, boundary.prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathWithin(base, path string) bool {
+	relative, err := filepath.Rel(filepath.Clean(base), filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }

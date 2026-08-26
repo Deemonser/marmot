@@ -2,6 +2,15 @@ package scan
 
 import "time"
 
+type DeviceProfile string
+
+const (
+	DeviceProfileSSD              DeviceProfile = "ssd"
+	DeviceProfileRotational       DeviceProfile = "rotational"
+	DeviceProfileNetworkOrVirtual DeviceProfile = "network_or_virtual"
+	DeviceProfileUnknown          DeviceProfile = "unknown"
+)
+
 type Node struct {
 	ID             int64
 	ParentID       int64
@@ -11,6 +20,7 @@ type Node struct {
 	LogicalSize    int64
 	AllocatedSize  int64
 	OwnedAllocated int64
+	VolumeID       string
 	Confidence     string
 	SizeBasis      string
 	Device         uint64
@@ -79,26 +89,72 @@ type MapEntry struct {
 	OwnedAllocated  int64
 	Confidence      string
 	SizeBasis       string
-	Children        []MapEntry
+	Children        []ProjectedEntry
 	ChildrenTotal   int
 	ChildrenHasMore bool
 }
 
+// ProjectedEntry is one arc of the space map below the current level. It carries
+// only what drawing an arc needs: identity, name, size and kind. It deliberately
+// omits Path, Device, Inode, ModifiedAt, VolumeID and the per-entry confidence
+// and size-basis strings — the space map never reads them, they dominated the
+// payload, and reconstructing a path costs one record read per ancestor.
+//
+// Omitting the path also makes ADR-0013/0015 and DDD invariant 17 structural:
+// a projected descendant cannot be used to authorise a file operation, because
+// it does not carry one. Acting on an arc requires looking the node up by ID.
+// The JSON keys are deliberately short. At the target density the projection
+// carries thousands of arcs and repeated field names dominate the payload; short
+// keys are what keep it inside the 256 KB ceiling (ADR-0048).
+type ProjectedEntry struct {
+	NodeID int64  `json:"id"`
+	Name   string `json:"name"`
+	// Kind is "directory", "file" or "aggregate".
+	Kind            string           `json:"kind"`
+	OwnedAllocated  int64            `json:"size"`
+	Children        []ProjectedEntry `json:"children"`
+	ChildrenTotal   int              `json:"total,omitempty"`
+	ChildrenHasMore bool             `json:"more,omitempty"`
+}
+
 type MapResult struct {
-	SnapshotID          int64
-	SnapshotVersion     int64
-	Parent              Node
-	Entries             []MapEntry
-	Total               int
-	Limit               int
-	Offset              int
-	HasMore             bool
-	Remaining           MapEntry
-	Confidence          string
-	ProjectionTruncated bool
+	SnapshotID      int64
+	SnapshotVersion int64
+	Parent          Node
+	Entries         []MapEntry
+	Total           int
+	Limit           int
+	Offset          int
+	HasMore         bool
+	Remaining       MapEntry
+	Confidence      string
+	// Volume state captured when the scan started. The root level balances to
+	// VolumeUsedBytes; the free-space rows come from VolumeFreeBytes. Zero means
+	// the snapshot did not record it (ADR-0052 §4).
+	VolumeTotalBytes uint64
+	VolumeUsedBytes  uint64
+	VolumeFreeBytes  uint64
+	// DensityTruncated reports that the arc budget ran out before every
+	// projected subtree got an allowance. It is a limit of how much the wheel
+	// can draw, never a limit of what the store knows: the query source retains
+	// every child, so any entry the caller asks for directly is answerable.
+	DensityTruncated bool
 }
 
 type Emitter func(Node) error
+
+// BatchEmitter delivers one scanner-produced batch to the consumer. The slice
+// and the strings inside it are valid only until the call returns: the scanner
+// recycles the backing arrays across batches, so a consumer that needs to keep
+// anything must copy it before returning (ADR-0057 §1).
+//
+// This is the opposite of the previous contract, which transferred ownership.
+// It changed because 45.7% of batches carry a single node and the fixed cost of
+// allocating a batch the consumer could own dominated the scan's allocation
+// total (R-058 §4.1). A consumer that retains the slice will see it overwritten
+// by a later batch, and the emitter is called concurrently from scanner worker
+// threads, so retaining it is also a data race.
+type BatchEmitter func([]Node) error
 type PhaseEmitter func(Phase) error
 
 type Phase string

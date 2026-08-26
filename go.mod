@@ -4,10 +4,7 @@ go 1.25.0
 
 require github.com/wailsapp/wails/v3 v3.0.0-beta.9
 
-require (
-	github.com/mattn/go-sqlite3 v1.14.24
-	golang.org/x/sys v0.46.0
-)
+require golang.org/x/sys v0.46.0
 
 require (
 	github.com/adrg/xdg v0.5.3 // indirect

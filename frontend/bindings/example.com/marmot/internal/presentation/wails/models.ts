@@ -60,7 +60,7 @@ export interface MapEntry {
     "ownedAllocated": number;
     "confidence": string;
     "sizeBasis": string;
-    "children"?: MapEntry[] | null;
+    "children"?: ProjectedEntry[] | null;
     "childrenTotal"?: number;
     "childrenHasMore"?: boolean;
 }
@@ -86,7 +86,10 @@ export interface MapResult {
     "hasMore": boolean;
     "remaining": MapEntry;
     "confidence": string;
-    "projectionTruncated": boolean;
+    "volumeTotalBytes": number;
+    "volumeUsedBytes": number;
+    "volumeFreeBytes": number;
+    "densityTruncated": boolean;
 }
 
 export interface NodeActionResult {
@@ -105,6 +108,7 @@ export interface NodeView {
     "logicalSize": number;
     "allocatedSize": number;
     "ownedAllocated": number;
+    "volumeId": string;
     "confidence": string;
     "sizeBasis": string;
     "hasChildren": boolean;
@@ -114,6 +118,20 @@ export interface PermissionStatus {
     "platform": string;
     "state": string;
     "message": string;
+}
+
+/**
+ * ProjectedEntry is one arc below the current level. It carries only what the
+ * space map draws with; it has no path and no capabilities (ADR-0048).
+ */
+export interface ProjectedEntry {
+    "id": number;
+    "name": string;
+    "kind": string;
+    "size": number;
+    "children"?: ProjectedEntry[] | null;
+    "total"?: number;
+    "more"?: boolean;
 }
 
 export interface ScanOptions {
@@ -134,6 +152,13 @@ export interface ScanProgress {
     "error": string;
     "snapshotVersion": number;
     "affectedParentIds": number[] | null;
+
+    /**
+     * CountedBytes and VolumeUsedBytes are the progress bar's numerator and
+     * denominator (ADR-0053 §1); Bytes stays the walked total.
+     */
+    "countedBytes": number;
+    "volumeUsedBytes": number;
 }
 
 export interface ScanStatus {
@@ -148,9 +173,16 @@ export interface ScanStatus {
     "bytes": number;
     "issues": string[] | null;
     "error": string;
+
+    /**
+     * CountedBytes and VolumeUsedBytes are the progress bar's numerator and
+     * denominator (ADR-0053 §1); Bytes stays the walked total.
+     */
+    "countedBytes": number;
+    "volumeUsedBytes": number;
 }
 
-export interface VolumeOverview {
+export interface StorageSourceOverview {
     "id": string;
     "name": string;
     "path": string;
@@ -158,7 +190,34 @@ export interface VolumeOverview {
     "totalBytes": number;
     "usedBytes": number;
     "freeBytes": number;
+    "usageBasis": string;
     "permission": string;
     "message": string;
     "scannable": boolean;
+    "members": StorageVolumeMember[] | null;
+}
+
+export interface StorageVolumeMember {
+    "id": string;
+    "name": string;
+    "path": string;
+    "kind": string;
+    "role": string;
+    "volumeTotalBytes": number;
+    "volumeUsedBytes": number;
+    "volumeFreeBytes": number;
+    "usageBasis": string;
+    "permission": string;
+    "scannable": boolean;
+}
+
+/**
+ * VolumeMenuAction is emitted when the user picks an item in a volume row's
+ * native menu. The menu is only an input device: the frontend performs the
+ * action with the service methods it already uses, so the business rules and the
+ * error surface stay in one place (ADR-0051 §4).
+ */
+export interface VolumeMenuAction {
+    "sourceId": string;
+    "action": string;
 }

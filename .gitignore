@@ -1,5 +1,6 @@
 .DS_Store
 .task/
+*.test
 bin/
 /marmot
 frontend/node_modules/

@@ -7,9 +7,9 @@ import (
 )
 
 func TestTrimMapPayloadDropsProjectionBeforeCompactingEntries(t *testing.T) {
-	children := make([]MapEntry, 0, 120)
+	children := make([]ProjectedEntry, 0, 120)
 	for index := 0; index < 120; index++ {
-		children = append(children, MapEntry{Kind: "node", Name: strings.Repeat("child", 600), Node: NodeView{ID: int64(index + 2), Name: strings.Repeat("child", 600)}})
+		children = append(children, ProjectedEntry{Kind: "file", Name: strings.Repeat("child", 600), NodeID: int64(index + 2)})
 	}
 	result := MapResult{
 		SnapshotID: 1,
@@ -19,7 +19,7 @@ func TestTrimMapPayloadDropsProjectionBeforeCompactingEntries(t *testing.T) {
 
 	trimmed := trimMapPayload(result)
 
-	if !trimmed.ProjectionTruncated {
+	if !trimmed.DensityTruncated {
 		t.Fatal("projection trim should be visible to the caller")
 	}
 	if len(trimmed.Entries) != 1 || len(trimmed.Entries[0].Children) != 0 || !trimmed.Entries[0].ChildrenHasMore {

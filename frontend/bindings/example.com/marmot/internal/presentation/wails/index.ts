@@ -20,8 +20,11 @@ export type {
     NodeActionResult,
     NodeView,
     PermissionStatus,
+    ProjectedEntry,
     ScanOptions,
     ScanProgress,
     ScanStatus,
-    VolumeOverview
+    StorageSourceOverview,
+    StorageVolumeMember,
+    VolumeMenuAction
 } from "./models.js";
