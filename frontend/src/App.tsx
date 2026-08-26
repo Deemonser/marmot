@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
+import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { arc } from "d3-shape";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
@@ -131,23 +132,12 @@ const virtualLabels: Record<string, string> = {
 // biggest wedge in pale orange and compressed the rest.
 const sunburstHueStart = 0;
 const sunburstHueSpan = 360;
-// Sampled off the reference wheel (docs/research/R-055): every ring sits at
-// ~97% HSB brightness with 52-74% HSB saturation, which is hsl(~92%, 67-79%).
-// Our previous hsl(72%, 58%) was both duller and darker, which is what read as
-// "not as bright". Saturation stays put and lightness climbs with depth.
-const sunburstSaturation = [91, 93, 92, 95, 96];
-const sunburstLightness = [67, 72, 76, 78, 79];
 // Folded small siblings use the reference's grey, #888787.
 const sunburstAggregate = "#888787";
 // The reference's used-space sequence ends exactly at 3 o'clock, and the circle
 // spans the volume's capacity — free space is the arc that closes it. d3 measures
 // from 12 o'clock clockwise, so 3 o'clock is +PI/2.
 const sunburstEndAngle = Math.PI / 2;
-// An arc thinner than this is a hair, not a slice. Below it siblings fold into
-// one grey aggregate, and if even that would be a hair they are left out and the
-// background shows through — both are what the reference does.
-const minArcPixels = 2.5;
-
 // The wheel and the directory list must agree on an entry's colour, so both
 // derive it from the same cumulative angular position.
 // The reference's hue runs 1:1 with angle from the start of the sequence, so the
@@ -167,20 +157,16 @@ function subBand(from: number, to: number, band: HueBand): HueBand {
   return { center: start + width / 2, width };
 }
 
-function entryColors(entries: MapEntry[], band: HueBand): Record<string, string> {
+// baseDepth is the tree depth of the level being listed, so its entries sit at
+// baseDepth + 1 (ADR-0059 SS1b).
+function entryColors(entries: MapEntry[], band: HueBand, baseDepth: number): Record<string, string> {
   const bands = entryBands(entries, band);
   const colors: Record<string, string> = {};
   for (const entry of entries) {
     const own = bands[entryKey(entry)];
-    colors[entryKey(entry)] = entry.kind === "node" && own ? sliceColor(own.center, 0) : sunburstAggregate;
+    colors[entryKey(entry)] = entry.kind === "node" && own ? sliceColor(own.center, baseDepth + 1) : sunburstAggregate;
   }
   return colors;
-}
-
-function sliceColor(hue: number, depth: number): string {
-  const level = Math.min(Math.max(depth, 0), sunburstLightness.length - 1);
-  const wrapped = ((hue % 360) + 360) % 360;
-  return `hsl(${wrapped.toFixed(1)} ${sunburstSaturation[level]}% ${sunburstLightness[level]}%)`;
 }
 
 // Decimal units, like Apple and the original: a 245.1 GB volume is 228.3 GiB, so
@@ -361,6 +347,7 @@ function Sunburst({
   onGoParent,
   centerColor,
   hueRange,
+  baseDepth,
   onDragEntry,
 }: {
   map: MapResult | null;
@@ -375,15 +362,34 @@ function Sunburst({
   onGoParent: () => void;
   centerColor: string | null;
   hueRange: HueBand;
+  baseDepth: number;
   onDragEntry: (entry: MapEntry, event: ReactPointerEvent) => void;
 }) {
   const entries = foldSmallEntries((map?.entries ?? []).filter(Boolean), map?.parent.ownedAllocated ?? 0);
-  const innerRadius = 46;
-  const maxDepth = 5;
-  // Inner rings are thick and outer rings thin, so deep levels read as fine
-  // teeth on the rim instead of equal-weight bands.
-  const ringThicknesses = [70, 58, 50, 42, 32];
-  const ringStart = (depth: number) => ringThicknesses.slice(0, depth).reduce((sum, value) => sum + value, innerRadius);
+  // Geometry from ADR-0059 SS2, all as ratios of the main ring width so the chart
+  // scales with the window. Measured on six views of the reference, where the hub
+  // and the ring width were identical in every one.
+  const { viewRadius, mainRings, maxDepth, hubRatio, thinRingRatio, thinGapRatio, radialGapRatio, separatorRatio } = sunburstGeometry;
+  const ringWidth = ringWidthFor(viewRadius);
+  const innerRadius = ringWidth * hubRatio;
+  const thinRing = ringWidth * thinRingRatio;
+  const thinGap = thinRing * thinGapRatio;
+  // Label metrics measured off the reference's hub, as ratios of its radius: a
+  // 32px glyph height at 2x over a 93px hub radius, with the two baselines 50px
+  // apart (R-060). Held as ratios so they follow the hub when the chart resizes.
+  const hubLabelSize = innerRadius * 0.484;
+  const hubLabelBaseline = innerRadius * -0.086;
+  const hubLabelLead = innerRadius * 0.538;
+  const ringThickness = (depth: number) => (depth < mainRings ? ringWidth : thinRing);
+  const ringGap = (depth: number) => (depth < mainRings ? ringWidth * radialGapRatio : thinGap);
+  const separatorArc = ringWidth * separatorRatio;
+  const ringStart = (depth: number) => {
+    let radius = innerRadius;
+    for (let level = 0; level < depth; level += 1) {
+      radius += ringThickness(level) + ringGap(level);
+    }
+    return radius;
+  };
   const pathRefs = useRef<Record<string, SVGPathElement | null>>({});
   // Separate from pathRefs, which is keyed by node and used for focus: the morph
   // needs one handle per drawn arc, and the same node can be drawn at more than
@@ -433,7 +439,7 @@ function Sunburst({
     if (depth >= maxDepth || items.length === 0) return;
     const levelTotal = items.reduce((sum, item) => sum + item.size, 0) || items.length;
     const r0 = ringStart(depth);
-    const r1 = r0 + ringThicknesses[depth] - 3;
+    const r1 = r0 + ringThickness(depth);
     // Minimum readable width, converted to an angle at this ring's radius: the
     // same byte count is a fat wedge near the hub and a hair at the rim.
     const minAngle = minArcPixels / ((r0 + r1) / 2);
@@ -474,7 +480,11 @@ function Sunburst({
       const to = (next - startAngle) / span;
       const own = subBand(from, to, band);
       const hue = own.center;
-      const geom: ArcGeom = { a0: cursor, a1: next, r0, r1 };
+      // The separator is background, not a stroke: siblings are inset by half of
+      // it on each side. Clamped so a wedge narrower than the separator collapses
+      // to a hairline instead of inverting.
+      const inset = Math.min(separatorArc / ((r0 + r1) / 2) / 2, (next - cursor) / 2.5);
+      const geom: ArcGeom = { a0: cursor + inset, a1: next - inset, r0, r1 };
       slices.push({
         key: item.key,
         renderKey: item.key + ":" + depth + ":" + slices.length,
@@ -538,7 +548,7 @@ function Sunburst({
       paintedSlices.current = sliceSnapshot.map((slice) => ({
         key: slice.key,
         geom: slice.geom,
-        color: slice.aggregate ? sunburstAggregate : sliceColor(slice.hue, slice.depth),
+        color: slice.aggregate ? sunburstAggregate : sliceColor(slice.hue, baseDepth + slice.depth + 1),
       }));
       setGhosts([]);
     };
@@ -565,7 +575,7 @@ function Sunburst({
     // old level sweeps it past 0 or 2π — out of the wheel, which is what the
     // original does. Going up is the inverse: everything folds back into the
     // wedge it came from.
-    const ringShift = ringThicknesses[0];
+    const ringShift = ringWidth + ringGap(0);
     const focusIn = map ? previous.get("node:" + map.parent.id) : undefined;
     const focusOut = previousParentKey.current
       ? sliceSnapshot.find((slice) => slice.key === previousParentKey.current)?.geom
@@ -663,7 +673,7 @@ function Sunburst({
   const centerParts = formatBytes(hubTotal).split(" ");
   const hubColor = hueRange.center === rootHueBand.center && hueRange.width === rootHueBand.width
     ? "#f4f4f6"
-    : sliceColor(hueRange.center, 0);
+    : sliceColor(hueRange.center, baseDepth);
 
   return (
     <div className="sunburst-wrap" aria-label="空间图">
@@ -701,7 +711,7 @@ function Sunburst({
             const selected = key === selectedKey;
             const focused = key === focusedKey;
             const hovered = key === hoveredKey;
-            const color = aggregate ? sunburstAggregate : sliceColor(hue, depth);
+            const color = aggregate ? sunburstAggregate : sliceColor(hue, baseDepth + depth + 1);
             return (
               <path
                 key={renderKey}
@@ -753,9 +763,14 @@ function Sunburst({
             );
           })}
           <g className="sunburst-hub" role="button" tabIndex={0} onClick={onGoParent} onKeyDown={(event) => { if (event.key === "Enter") onGoParent(); }}>
-            <circle className="sunburst-center" r={innerRadius - 6} />
-            <text className="sunburst-center-label" textAnchor="middle" y="-4" fill={hubColor}>{centerParts[0]}</text>
-            <text className="sunburst-center-label" textAnchor="middle" y="30" fill={hubColor}>{centerParts[1] ?? ""}</text>
+            {/* A hole, not a disc. The reference's hub interior is the page
+                background to the byte and has no ring at its edge (R-060). The
+                circle stays as the click target for going up a level, which is
+                why it is transparent rather than unpainted — `fill: none` would
+                not hit-test. */}
+            <circle className="sunburst-center" r={innerRadius} />
+            <text className="sunburst-center-label" textAnchor="middle" style={{ fontSize: hubLabelSize }} y={hubLabelBaseline} fill={hubColor}>{centerParts[0]}</text>
+            <text className="sunburst-center-label" textAnchor="middle" style={{ fontSize: hubLabelSize }} y={hubLabelBaseline + hubLabelLead} fill={hubColor}>{centerParts[1] ?? ""}</text>
           </g>
         </g>
       </svg>
@@ -809,7 +824,17 @@ function VolumeTile({
 	// volume's used bytes, both measured. Without a denominator the bar stays
 	// indeterminate instead of guessing one. It tops out short of 100% because
 	// hidden space is only computable at the end, so the terminal state fills it.
-	const scanDenominator = scanStatus?.volumeUsedBytes ?? 0;
+	// The denominator this row already displays, in preference to the one the
+	// snapshot records. Two reasons: it is on screen from the first frame, so a
+	// volume scan never has to fall back to the indeterminate style; and it is the
+	// group's used bytes, while the snapshot records only the volume whose path
+	// matched the root — on an APFS volume group that is the smaller of the two.
+	const scanDenominator = sourceUsed > 0 ? sourceUsed : (scanStatus?.volumeUsedBytes ?? 0);
+	// The bar stops a few percent short of the end and that is correct, not a
+	// stall: hidden space counts towards the volume's used bytes and is not
+	// walkable, so the counted total cannot reach it (ADR-0052 §5). There is no
+	// "fill to 100% on completion" branch because there is no frame to show it in —
+	// the row stops rendering the bar the moment the state leaves "running".
 	const scanFraction = scanDenominator > 0
 		? Math.max(0, Math.min(1, (scanStatus?.countedBytes ?? 0) / scanDenominator))
 		: null;
@@ -840,7 +865,21 @@ function VolumeTile({
 	        aria-valuemax={scanning && scanFraction !== null ? scanDenominator : undefined}
 	        aria-valuenow={scanning && scanFraction !== null ? (scanStatus?.countedBytes ?? 0) : undefined}
 	      >
-	        <span style={scanning ? (scanFraction === null ? undefined : { width: (scanFraction * 100).toFixed(2) + "%" }) : { width: ratio + "%" }} />
+	        {/* Two elements rather than one with two meanings. The capacity fill and
+	            the scan progress are different quantities, and driving both from a
+	            single span made the bar animate from the disk's fill level down to
+	            zero the moment scanning began. Only one is ever visible: showing the
+	            capacity fill underneath the progress just read as a stray band, and
+	            scaling the progress to the capacity extent so the two lined up made
+	            the bar stop short of the track's end, which reads as stalling. */}
+	        {scanning ? (
+	          <span
+	            className="meter-scan"
+	            style={scanFraction === null ? undefined : { width: (scanFraction * 100).toFixed(2) + "%" }}
+	          />
+	        ) : (
+	          <span className="meter-used" style={{ width: ratio + "%" }} />
+	        )}
 	      </div>
 	      <div className={"meter-caption" + (scanning ? " is-scanning" : "")}>
 	        {scanning ? <em>扫描中…</em> : <b>{formatBytes(source.freeBytes)}</b>}
@@ -869,6 +908,7 @@ function VolumeTile({
 
 function DirectoryList({
   entryColors_,
+  parentDotColor,
   parent,
   entries,
   total,
@@ -887,6 +927,9 @@ function DirectoryList({
   onCollect,
 }: {
   entryColors_: Record<string, string>;
+  // null at the scan root, where the reference shows no dot beside the volume
+  // name; below it the dot carries the node's own colour (R-060 SS3.7).
+  parentDotColor: string | null;
   parent: NodeView | null;
   entries: MapEntry[];
   total: number;
@@ -907,9 +950,8 @@ function DirectoryList({
   return (
     <aside className="directory-panel" data-testid="directory-list">
       <div className="directory-heading">
-        <span className="directory-parent-dot" />
+        {parentDotColor && <span className="directory-parent-dot" style={{ background: parentDotColor }} />}
         <h2>{parent ? crumbLabel(parent.path, parent.parentId === 0 ? 0 : 1) : "当前目录"}</h2>
-        {(map?.confidence ?? parent?.confidence) === "partial" && <span className="directory-confidence">部分结果</span>}
         <strong>{formatBytes(total)}</strong>
       </div>
 
@@ -951,7 +993,11 @@ function DirectoryList({
             >
               <span className={"directory-dot " + kindClass} style={entryColors_[entryKey(entry)] ? { background: entryColors_[entryKey(entry)] } : undefined} />
               <span className="directory-name">{entry.name}</span>
-              {entry.kind === "aggregate" && <span className="directory-tag">{entry.count.toLocaleString()} 项</span>}
+              {/* Always emitted, even when empty: a conditional cell moved the
+                  size out of the last grid column, which left the rows without a
+                  count 22px short of the ones with it. The reference has one
+                  right edge for every row. */}
+              <span className="directory-tag">{entry.kind === "aggregate" ? entry.count.toLocaleString() + " 项" : ""}</span>
               <span className="directory-size">{formatBytes(entrySize(entry))}</span>
             </div>
           );
@@ -974,6 +1020,14 @@ function DirectoryList({
             <span className="summary-size">{formatBytes(map!.volumeFreeBytes)}</span>
           </div>
         </div>
+      )}
+      {/* The result is incomplete -- permissions, cloud placeholders, a cancelled
+          run. DDD invariant 5 requires that be visible, so it cannot simply be
+          dropped; it moved out of the heading, where it sat as a badge next to
+          the volume name, down to where the unaccounted space is already
+          explained. */}
+      {(map?.confidence ?? parent?.confidence) === "partial" && (
+        <p className="directory-partial">部分结果：有目录未能完整读取，未计入的空间归入隐藏空间。</p>
       )}
       {contextEntry?.displayState === "stale" && (
         <p className="context-warning">{displayStateLabel(contextEntry.displayState)}，当前对象需要重新读取。</p>
@@ -1039,7 +1093,10 @@ export default function App() {
   const focusedKey = focusedEntry ? entryKey(focusedEntry) : null;
   const hoveredKey = hoveredEntry ? entryKey(hoveredEntry) : null;
   const hueRange: HueBand = currentPage?.hue ?? rootHueBand;
-  const levelColors = useMemo(() => entryColors(entries, hueRange), [entries, hueRange]);
+  // Depth of the level on screen within the scanned tree: 0 is the volume root.
+  // Colour is a function of this, not of the ring index (ADR-0059 SS1b).
+  const baseDepth = Math.max(pageIndex, 0);
+  const levelColors = useMemo(() => entryColors(entries, hueRange, baseDepth), [entries, hueRange, baseDepth]);
   const inspectedInCollector = inspectorEntry ? collector.some((item) => entryKey(item) === entryKey(inspectorEntry)) : false;
   const collectorBytes = collector.reduce((sum, item) => sum + entrySize(item), 0);
   // At the root the displayed total is the volume's used bytes, so the number in
@@ -1094,7 +1151,7 @@ export default function App() {
     const request = ++mapRequest.current;
     setMapBusy(true);
     try {
-      const next = await MarmotService.GetMap({ snapshotId: target.snapshotId, parentId: target.parentId, limit: pageSize, offset: target.offset, measure: "owned_allocated", depth: compact ? 1 : 4, projectionLimit: compact ? 400 : 2000 });
+      const next = await MarmotService.GetMap({ snapshotId: target.snapshotId, parentId: target.parentId, limit: pageSize, offset: target.offset, measure: "owned_allocated", depth: compact ? 1 : sunburstGeometry.maxDepth - 1, projectionLimit: compact ? 400 : 2000, minSweeps: projectionMinSweeps(compact ? 1 : sunburstGeometry.maxDepth - 1) });
       if (request !== mapRequest.current) return false;
       const nextEntries = next.entries ?? [];
       setMap(next);
@@ -1678,6 +1735,7 @@ export default function App() {
                 <Sunburst
                   onDragEntry={beginSliceDrag}
                   hueRange={hueRange}
+                  baseDepth={baseDepth}
                   centerColor={centerColor}
                   map={map}
                   hoveredKey={hoveredKey}
@@ -1703,6 +1761,7 @@ export default function App() {
             </div>
             <DirectoryList
               entryColors_={levelColors}
+              parentDotColor={baseDepth > 0 ? sliceColor(hueRange.center, baseDepth) : null}
               parent={currentParent}
               entries={entries}
               total={mapTotal}

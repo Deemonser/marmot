@@ -74,6 +74,16 @@ type MapQuery struct {
 	Measure         string
 	Depth           int
 	ProjectionLimit int
+	// MinSweeps is the smallest angle, in radians, a descendant must span to be
+	// worth projecting, one entry per projected level. The renderer knows each
+	// ring's radius and the narrowest arc a person can see, so it computes this
+	// and the store prunes at the source (ADR-0059 §3).
+	//
+	// Culling here rather than in the renderer is the point: the previous build
+	// serialised, transferred and parsed arcs that were then discarded for being
+	// sub-pixel, which is why four levels already hit the payload ceiling. An
+	// empty slice disables it.
+	MinSweeps []float64
 }
 
 type MapEntry struct {

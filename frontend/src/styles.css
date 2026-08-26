@@ -1,5 +1,10 @@
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  /* WebKit defaults to subpixel antialiasing on macOS, which renders noticeably
+     heavier than the native AppKit text it sits next to: the same nominal size
+     measured 2px taller than the reference on both the heading and the rows,
+     which reads as bigger and bolder. */
+  -webkit-font-smoothing: antialiased;
   color: #f1f1f3;
   background: #2b2c31;
   font-synthesis: none;
@@ -85,9 +90,10 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .volume-title strong { color: #f0f0f2; font-size: 13px; font-weight: 400; }
 .volume-title span { margin-top: 3px; color: #8a8b92; font-size: 11px; }
 .volume-meter { min-width: 0; }
-.meter-track { height: 4px; overflow: hidden; border-radius: 2px; background: #4c4d53; }
+.meter-track { position: relative; height: 4px; overflow: hidden; border-radius: 2px; background: #4c4d53; }
 .meter-track > span { display: block; height: 100%; border-radius: inherit; background: #e0492a; }
 .meter-track.is-scanning { background: #45464c; }
+.meter-track > .meter-scan { position: absolute; left: 0; top: 0; bottom: 0; }
 /* Marching blue-and-white slanted stripes, like the original: the pattern keeps
    moving even when the fill does not, and the width is the real progress
    (ADR-0053 §2).
@@ -99,9 +105,9 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    the marching comes from background-position alone.
    105deg means 15deg off vertical; its horizontal period is 6px / sin(105deg)
    = 6.21px. */
-.meter-track.is-scanning > span { background: none; background-image: repeating-linear-gradient(105deg, #5486d6 0 3px, #e9eefb 3px 6px); background-size: 6.21px 100%; animation: meter-march .55s linear infinite; transition: width .3s linear; }
+.meter-track.is-scanning > .meter-scan { background: none; background-image: repeating-linear-gradient(105deg, #5486d6 0 3px, #e9eefb 3px 6px); background-size: 6.21px 100%; animation: meter-march .55s linear infinite; transition: width .3s linear; }
 /* No denominator: a sweeping segment that claims no position. */
-.meter-track.is-indeterminate > span { width: 36%; transition: none; animation: meter-sweep 1.7s ease-in-out infinite; }
+.meter-track.is-indeterminate > .meter-scan { width: 36%; transition: none; animation: meter-sweep 1.7s ease-in-out infinite, meter-march .55s linear infinite; }
 .meter-caption { margin-top: 5px; text-align: right; font-size: 11px; line-height: 1.2; }
 .meter-caption.is-scanning { text-align: left; }
 .meter-caption b { color: #e0492a; font-weight: 400; }
@@ -174,36 +180,50 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .map-panel { display: flex; flex-direction: column; }
 .map-heading { display: none; }
 .map-stage { position: relative; display: grid; min-height: 0; flex: 1; place-items: center; overflow: hidden; }
-.sunburst-wrap { position: relative; width: min(96%, 94vh); max-width: 100%; aspect-ratio: 1; }
+/* Sized off the stage's height, not the viewport: the five main rings have to
+   land at ~75% of the available height to match the reference (ADR-0059 §2), and
+   they are 0.809 of the whole chart's radius once the thin outer levels are
+   counted, so the chart box is 0.748 / 0.809 of it. */
+.sunburst-wrap { position: relative; height: 92.5%; max-width: 100%; aspect-ratio: 1; }
 .sunburst { width: 100%; height: 100%; overflow: visible; }
 .sunburst-slice:focus, .sunburst-slice:focus-visible { outline: none; }
-.sunburst-slice { stroke: #212227; stroke-width: 1; cursor: pointer; transition: opacity .13s, filter .13s, stroke-width .13s; }
-.sunburst-slice.depth-1, .sunburst-slice.depth-2, .sunburst-slice.depth-3, .sunburst-slice.depth-4 { stroke-width: .75; }
+/* No separating stroke: the gap between siblings is real background now
+   (ADR-0059 SS2), so a stroke on top would double it. The stroke is kept only for
+   the focus and selection states. */
+.sunburst-slice { stroke: none; cursor: pointer; transition: opacity .13s, filter .13s; }
 .sunburst-slice.is-focused { stroke: #d8d9dd; stroke-width: 1.25; opacity: 1; }
 .sunburst-slice.is-selected { stroke: #ffffff; stroke-width: 1.25; opacity: 1; }
 .sunburst-slice.is-hovered { filter: brightness(1.25); opacity: 1; }
 .sunburst-slice.is-aggregate, .sunburst-slice.is-virtual { stroke-dasharray: 5 4; }
 .sunburst-slice.is-stale { filter: saturate(.35); opacity: .45; }
-.sunburst-center { fill: #232429; stroke: #34353b; stroke-width: 1; cursor: pointer; transition: fill .13s; }
-.sunburst-center:hover { fill: #2c2d33; }
+/* The hub is a hole: the reference's interior is the page background to the byte
+   and it carries no ring (R-060). Transparent rather than unpainted so it still
+   takes the click that goes up a level. */
+.sunburst-center { fill: transparent; pointer-events: all; cursor: pointer; transition: fill .13s; }
+.sunburst-center:hover { fill: rgba(255, 255, 255, .035); }
 .sunburst-center:focus { stroke: #e6bd5f; stroke-width: 2; outline: none; }
-.sunburst-center-label { font-size: 27px; font-weight: 400; }
-.sunburst-center-hint { fill: #8b8c93; font-size: 9px; }
+/* Size comes from the geometry, not from here: it is a ratio of the hub radius. */
+.sunburst-center-label { font-weight: 400; }
 .chart-placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: #8e8f96; font-size: 11px; }
 .map-loading { position: absolute; top: 13px; right: 7px; color: #dfb660; font-size: 9px; }
 .map-footer { display: none; }
 
-.directory-panel { position: relative; display: flex; flex-direction: column; justify-content: flex-start; padding: 14px 26px 10px 14px; }
+/* Right inset measured against the reference: its rows end 12pt from the window
+   edge (R-060 SS3.7). */
+.directory-panel { position: relative; display: flex; flex-direction: column; justify-content: flex-start; padding: 14px 12px 10px 14px; }
 .directory-heading { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 2px 10px; }
 .directory-heading h2 { flex: 1 1 auto; overflow: hidden; margin: 0; color: #e9e9ec; font-size: 21px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .directory-heading strong { flex: 0 0 auto; color: #e9e9ec; font-size: 21px; font-weight: 400; }
 .directory-title { display: flex; align-items: start; gap: 9px; min-width: 0; }
-.directory-parent-dot { width: 11px; height: 11px; flex: 0 0 auto; border-radius: 50%; background: #75e867; }
+/* Twice the diameter of a row's dot, measured, and it takes the node's own
+   colour from the component rather than a fixed one. Absent at the scan root. */
+.directory-parent-dot { width: 14px; height: 14px; flex: 0 0 auto; border-radius: 50%; }
 .directory-title h2 { overflow: hidden; margin: 0 0 4px; color: #f4f4f6; font-size: 18px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .directory-title strong { color: #d1d1d5; font-size: 17px; font-weight: 400; }
-.directory-confidence-legacy { padding-top: 4px; color: #8d8e95; font-size: 9px; white-space: nowrap; }
 .directory-list { min-height: 0; flex: 0 1 auto; overflow: auto; padding: 0; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
-.directory-row { display: grid; grid-template-columns: 11px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; min-height: 34px; padding: 2px 2px; border: 0; border-radius: 3px; outline: none; background: transparent; color: #e2e2e6; cursor: pointer; font-size: 14px; }
+/* Row pitch 22pt and body type 17pt, both measured off the reference; the dot
+   column is exactly the dot (R-060 SS3.7). Name left, size right. */
+.directory-row { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto auto; align-items: center; gap: 11px; min-height: 22px; padding: 0 2px; border: 0; border-radius: 3px; outline: none; background: transparent; color: #e2e2e6; cursor: pointer; font-size: 17px; }
 .directory-row:hover, .directory-row.is-hovered { background: #393a41; }
 .directory-row.is-focused { background: rgba(255, 255, 255, .04); }
 .directory-row.is-selected { background: rgba(255, 255, 255, .09); color: #fff; }
@@ -213,6 +233,9 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .directory-dot.file { background: #888990; }
 .directory-dot.virtual { background: #77787f; }
 .directory-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Deliberately not `display: none` when empty: removing it from the grid puts
+   the size back in the wrong column, which is the misalignment this cell fixes.
+   An empty cell is zero-width and harmless. */
 .directory-tag { color: #97989f; font-size: 9px; white-space: nowrap; }
 .directory-size { min-width: 58px; color: #c7c7cc; text-align: right; white-space: nowrap; }
 .directory-empty { padding: 18px 12px; color: #94959c; font-size: 10px; }
@@ -306,7 +329,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 }
 
 /* Partial-result marker sits inline on the title line, muted. */
-.directory-confidence { flex: 0 0 auto; color: #8e8f96; font-size: 10px; }
+.directory-partial { margin: 10px 2px 0; color: #8e8f96; font-size: 11px; line-height: 1.4; }
 
 /* Ghost that follows the cursor while a slice is dragged to the drop ring. */
 .drag-ghost { position: fixed; z-index: 60; padding: 4px 9px; border-radius: 4px; background: rgba(70, 113, 184, .92); color: #fff; font-size: 11px; pointer-events: none; box-shadow: 0 4px 12px rgba(0,0,0,.35); }
@@ -376,8 +399,12 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 }
 
 /* Root-level free-space rows (ADR-0052 §5). */
-.directory-summary { margin-top: 14px; padding: 0 10px; }
-.summary-row { display: flex; align-items: center; gap: 10px; min-height: 26px; color: #9a9ba1; font-size: 11px; }
+/* The reference separates this block by one row height and keeps it on the same
+   right edge as the list (R-060 §3.7). */
+.directory-summary { margin-top: 22px; padding: 0; }
+/* Same type size and right edge as the list rows: the reference draws these two
+   at the same size as everything above them, only greyer (R-060 §3.7). */
+.summary-row { display: flex; align-items: center; gap: 11px; min-height: 22px; padding: 0 2px; color: #9a9ba1; font-size: 17px; }
 .summary-mark { width: 10px; flex: 0 0 auto; text-align: center; color: #7c7d84; }
 .summary-name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .summary-size { flex: 0 0 auto; color: #cfd0d5; font-variant-numeric: tabular-nums; }

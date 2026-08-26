@@ -77,7 +77,13 @@ func TestSingleSourceEndToEnd(t *testing.T) {
 	visibleAt := time.Since(start)
 	heapVisible := heapMiB()
 
-	query := marmotapp.MapQuery{SnapshotID: visible.SnapshotID, ParentID: 1, Limit: 256, Depth: 5, ProjectionLimit: 2000}
+	// Depth and MinSweeps as the renderer sends them (ADR-0059 §3): twelve rings,
+	// with the store pruning arcs the renderer could not show. Sending Depth
+	// without MinSweeps is what used to blow the payload ceiling.
+	query := marmotapp.MapQuery{
+		SnapshotID: visible.SnapshotID, ParentID: 1, Limit: 256,
+		Depth: 11, ProjectionLimit: 2000, MinSweeps: renderMinSweeps(11),
+	}
 	firstStart := time.Now()
 	first, err := service.GetMap(query)
 	if err != nil {
@@ -138,4 +144,55 @@ func TestSingleSourceEndToEnd(t *testing.T) {
 	if !identical {
 		t.Errorf("the map changed when the durable publish landed")
 	}
+}
+
+// renderMinSweeps mirrors frontend/src/sunburst.ts: the same ring ratios, so the
+// probe measures the payload the renderer will actually ask for. Two copies of
+// these numbers can drift, which is why ADR-0059 §3 records the coupling.
+func renderMinSweeps(depth int) []float64 {
+	const (
+		viewRadius     = 296.0
+		mainRings      = 5
+		maxDepth       = 12
+		hubRatio       = 1.38
+		thinRingRatio  = 0.147
+		thinGapRatio   = 0.46
+		radialGapRatio = 1.0 / 33.5
+		minArcPixels   = 2.5
+	)
+	units := hubRatio
+	for level := 0; level < maxDepth; level++ {
+		if level < mainRings {
+			units += 1
+		} else {
+			units += thinRingRatio
+		}
+		if level == maxDepth-1 {
+			break
+		}
+		if level < mainRings {
+			units += radialGapRatio
+		} else {
+			units += thinRingRatio * thinGapRatio
+		}
+	}
+	ringWidth := viewRadius / units
+	thinRing := ringWidth * thinRingRatio
+	sweeps := make([]float64, 0, depth)
+	for level := 1; level <= depth; level++ {
+		r0 := ringWidth * hubRatio
+		for inner := 0; inner < level; inner++ {
+			if inner < mainRings {
+				r0 += ringWidth + ringWidth*radialGapRatio
+			} else {
+				r0 += thinRing + thinRing*thinGapRatio
+			}
+		}
+		thickness := ringWidth
+		if level >= mainRings {
+			thickness = thinRing
+		}
+		sweeps = append(sweeps, minArcPixels/((r0+r0+thickness)/2))
+	}
+	return sweeps
 }

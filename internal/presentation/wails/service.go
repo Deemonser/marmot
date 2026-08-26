@@ -133,13 +133,14 @@ type ChildrenResult struct {
 }
 
 type MapQuery struct {
-	SnapshotID      int64  `json:"snapshotId"`
-	ParentID        int64  `json:"parentId"`
-	Limit           int    `json:"limit"`
-	Offset          int    `json:"offset"`
-	Measure         string `json:"measure"`
-	Depth           int    `json:"depth"`
-	ProjectionLimit int    `json:"projectionLimit"`
+	SnapshotID      int64     `json:"snapshotId"`
+	ParentID        int64     `json:"parentId"`
+	Limit           int       `json:"limit"`
+	Offset          int       `json:"offset"`
+	Measure         string    `json:"measure"`
+	Depth           int       `json:"depth"`
+	ProjectionLimit int       `json:"projectionLimit"`
+	MinSweeps       []float64 `json:"minSweeps"`
 }
 
 type MapEntry struct {
@@ -291,7 +292,7 @@ func (s *Service) GetChildren(query ChildrenQuery) (ChildrenResult, error) {
 }
 
 func (s *Service) GetMap(query MapQuery) (MapResult, error) {
-	result, err := s.application.GetMap(application.MapQuery{SnapshotID: query.SnapshotID, ParentID: query.ParentID, Limit: query.Limit, Offset: query.Offset, Measure: query.Measure, Depth: query.Depth, ProjectionLimit: query.ProjectionLimit})
+	result, err := s.application.GetMap(application.MapQuery{SnapshotID: query.SnapshotID, ParentID: query.ParentID, Limit: query.Limit, Offset: query.Offset, Measure: query.Measure, Depth: query.Depth, ProjectionLimit: query.ProjectionLimit, MinSweeps: query.MinSweeps})
 	if err != nil {
 		return MapResult{}, err
 	}

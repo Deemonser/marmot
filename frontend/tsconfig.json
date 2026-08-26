@@ -25,5 +25,8 @@
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
   },
+  // The Node test file is run by `npm test` under Node's own module and type
+  // semantics, so it is deliberately outside the browser type-check.
+  "exclude": ["src/**/*.test.ts"],
   "include": ["src", "bindings"]
 }

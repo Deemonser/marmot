@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"example.com/marmot/internal/domain/scan"
 	"example.com/marmot/internal/ports"
@@ -63,13 +64,15 @@ func (Adapter) ListVolumes() ([]ports.Volume, error) {
 	if err != nil {
 		return nil, err
 	}
+	kept := make([]mountRecord, 0, len(records))
 	volumes := make([]ports.Volume, 0, len(records))
 	for _, record := range records {
 		kind, scannable, include := classifyMount(record)
 		if !include {
 			continue
 		}
-		volume := ports.Volume{
+		kept = append(kept, record)
+		volumes = append(volumes, ports.Volume{
 			ID:            record.id,
 			Name:          volumeName(record.path),
 			Path:          record.path,
@@ -78,11 +81,31 @@ func (Adapter) ListVolumes() ([]ports.Volume, error) {
 			Permission:    "unknown",
 			Scannable:     scannable,
 			DeviceProfile: scan.DeviceProfileUnknown,
-		}
-		if err := populateVolume(&volume, record); err != nil {
+		})
+	}
+	// populateVolume spawns `diskutil info` per volume, which is ~95ms of process
+	// startup each. Serially that was 754ms of the 761ms this call costs, and the
+	// scan path waits on it before the walk can start. The calls are independent,
+	// so they run together.
+	errs := make([]error, len(volumes))
+	var wait sync.WaitGroup
+	for index := range volumes {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			errs[index] = populateVolume(&volumes[index], kept[index])
+		}(index)
+	}
+	wait.Wait()
+
+	populated := volumes[:0]
+	for index := range volumes {
+		volume := volumes[index]
+		kind := volume.Kind
+		if err := errs[index]; err != nil {
 			volume.Permission = "unavailable"
 			volume.Message = "无法读取卷容量：" + err.Error()
-			volumes = append(volumes, volume)
+			populated = append(populated, volume)
 			continue
 		}
 		if kind == "system_auxiliary" {
@@ -93,8 +116,9 @@ func (Adapter) ListVolumes() ([]ports.Volume, error) {
 		} else {
 			volume.Message = "卷自身占用与 APFS 容器共享占用分开统计"
 		}
-		volumes = append(volumes, volume)
+		populated = append(populated, volume)
 	}
+	volumes = populated
 	sort.SliceStable(volumes, func(i, j int) bool {
 		leftRank, rightRank := volumeSortRank(volumes[i].Path), volumeSortRank(volumes[j].Path)
 		if leftRank != rightRank {

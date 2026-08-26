@@ -2,6 +2,7 @@ package memtree
 
 import (
 	"fmt"
+	"math"
 
 	"example.com/marmot/internal/domain/scan"
 )
@@ -26,7 +27,7 @@ type mapSource interface {
 	// mapProjectedChildren returns the slim form used below the current level.
 	// It must not reconstruct paths and is not bound by the paging page limit:
 	// the projection budget bounds it instead (ADR-0048).
-	mapProjectedChildren(parentID int64, limit int) ([]scan.ProjectedEntry, error)
+	mapProjectedChildren(parentID int64, limit int, minSize int64) ([]scan.ProjectedEntry, error)
 }
 
 func buildMap(source mapSource, query scan.MapQuery) (scan.MapResult, error) {
@@ -79,6 +80,7 @@ func buildMap(source mapSource, query scan.MapQuery) (scan.MapResult, error) {
 		// entries drain it: a wide branch would otherwise take every arc and
 		// leave its siblings without teeth.
 		allotments := shareBudget(entries, normalizeProjectionBudget(query.ProjectionLimit))
+		entrySweeps := sweepsFor(entries)
 		for index := range entries {
 			if entries[index].Kind != "node" || entries[index].Node.Kind != "directory" {
 				continue
@@ -89,7 +91,9 @@ func buildMap(source mapSource, query scan.MapQuery) (scan.MapResult, error) {
 				}
 				continue
 			}
-			children, childTotal, childHasMore, childTruncated, err := projectChildrenFrom(source, entries[index].Node.ID, query.Depth-1, allotments[index])
+			children, childTotal, childHasMore, childTruncated, err := projectChildrenFrom(
+				source, entries[index].Node.ID, query.Depth-1, allotments[index],
+				entrySweeps[index], entries[index].OwnedAllocated, query.MinSweeps, 0)
 			if err != nil {
 				return scan.MapResult{}, err
 			}
@@ -141,7 +145,29 @@ func buildMap(source mapSource, query scan.MapQuery) (scan.MapResult, error) {
 // allowance is subdivided among children in proportion to size, so a wide branch
 // cannot starve its siblings and no single directory is asked for thousands of
 // children.
-func projectChildrenFrom(source mapSource, parentID int64, depth, allot int) ([]scan.ProjectedEntry, int, bool, bool, error) {
+// sweepsFor gives each entry the angle it will occupy, in radians. The renderer
+// lays the level out proportionally over a full circle, so this is the same
+// number it will use.
+func sweepsFor(entries []scan.MapEntry) []float64 {
+	total := int64(0)
+	for _, entry := range entries {
+		if entry.OwnedAllocated > 0 {
+			total += entry.OwnedAllocated
+		}
+	}
+	sweeps := make([]float64, len(entries))
+	if total == 0 {
+		return sweeps
+	}
+	for index, entry := range entries {
+		if entry.OwnedAllocated > 0 {
+			sweeps[index] = 2 * math.Pi * float64(entry.OwnedAllocated) / float64(total)
+		}
+	}
+	return sweeps
+}
+
+func projectChildrenFrom(source mapSource, parentID int64, depth, allot int, sweep float64, parentSize int64, minSweeps []float64, level int) ([]scan.ProjectedEntry, int, bool, bool, error) {
 	total, err := source.mapChildCount(parentID)
 	if err != nil {
 		return nil, 0, false, false, err
@@ -159,16 +185,40 @@ func projectChildrenFrom(source mapSource, parentID int64, depth, allot int) ([]
 			visibleLimit--
 		}
 	}
-	children, err := source.mapProjectedChildren(parentID, visibleLimit)
+	// A ring cannot show more arcs than its circumference divided by the
+	// narrowest visible one, so fetching more than that is pure waste. Without
+	// this bound the shallow levels materialised up to the whole budget and then
+	// culled almost all of it, which cost 67ms of assembly.
+	if minSweep, ok := minSweepAt(minSweeps, level); ok {
+		if drawable := int(2 * math.Pi / minSweep); drawable > 0 && visibleLimit > drawable {
+			visibleLimit = drawable
+		}
+	}
+	// The smallest child worth fetching: below this its arc is narrower than a
+	// pixel at this ring's radius.
+	minSize := int64(0)
+	if minSweep, ok := minSweepAt(minSweeps, level); ok && sweep > 0 && parentSize > 0 {
+		minSize = int64(float64(parentSize) * minSweep / sweep)
+	}
+	children, err := source.mapProjectedChildren(parentID, visibleLimit, minSize)
 	if err != nil {
 		return nil, 0, false, false, err
 	}
 	entries := make([]scan.ProjectedEntry, 0, len(children)+1)
+	// Deliberately not seeded from the min-sweep cull. That flag means "there is
+	// more here than the budget let us send"; an arc below one pixel is not
+	// withheld information, it is below the display's resolution. Conflating the
+	// two made the flag permanently true.
 	truncated := false
 	shares := shareProjected(children, allot-len(children))
 	for index, child := range children {
+		childSweep := 0.0
+		if parentSize > 0 {
+			childSweep = sweep * float64(child.OwnedAllocated) / float64(parentSize)
+		}
 		if child.Kind == "directory" && depth > 0 && shares[index] > 0 {
-			grandChildren, grandTotal, grandHasMore, grandTruncated, err := projectChildrenFrom(source, child.NodeID, depth-1, shares[index])
+			grandChildren, grandTotal, grandHasMore, grandTruncated, err := projectChildrenFrom(
+				source, child.NodeID, depth-1, shares[index], childSweep, child.OwnedAllocated, minSweeps, level+1)
 			if err != nil {
 				return nil, 0, false, false, err
 			}
@@ -198,6 +248,21 @@ func projectChildrenFrom(source mapSource, parentID int64, depth, allot int) ([]
 
 // shareBudget splits an arc budget across current-level directories in
 // proportion to size, with a floor so small wedges still show depth.
+// minSweepAt reads the threshold for a projected level, holding the last entry
+// for anything deeper.
+func minSweepAt(minSweeps []float64, level int) (float64, bool) {
+	if len(minSweeps) == 0 {
+		return 0, false
+	}
+	if level >= len(minSweeps) {
+		level = len(minSweeps) - 1
+	}
+	if minSweeps[level] <= 0 {
+		return 0, false
+	}
+	return minSweeps[level], true
+}
+
 func shareBudget(entries []scan.MapEntry, budget int) []int {
 	sizes := make([]int64, len(entries))
 	for index, entry := range entries {

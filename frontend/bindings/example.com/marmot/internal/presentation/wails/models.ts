@@ -73,6 +73,7 @@ export interface MapQuery {
     "measure": string;
     "depth": number;
     "projectionLimit": number;
+    "minSweeps": number[] | null;
 }
 
 export interface MapResult {

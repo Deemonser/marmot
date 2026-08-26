@@ -191,6 +191,9 @@ type MapQuery struct {
 	Measure         string `json:"measure"`
 	Depth           int    `json:"depth"`
 	ProjectionLimit int    `json:"projectionLimit"`
+	// One minimum arc angle per projected level, in radians. The renderer knows
+	// each ring's radius; the store prunes what would be sub-pixel (ADR-0059 §3).
+	MinSweeps []float64 `json:"minSweeps"`
 }
 
 type MapEntry struct {
@@ -415,11 +418,8 @@ func (s *Service) GetStorageSources() ([]StorageSourceOverview, error) {
 // recordSnapshotVolume stores the scanned volume's capacity, used and free bytes
 // on the snapshot. A failure is not fatal: the space map then omits the balancing
 // entry rather than guessing one.
-func (s *Service) recordSnapshotVolume(snapshotID int64, root string) uint64 {
-	sources, err := s.GetStorageSources()
-	if err != nil {
-		return 0
-	}
+func (s *Service) recordSnapshotVolume(snapshotID int64, root string, items []ports.Volume) uint64 {
+	sources := projectStorageSources(items)
 	root = filepath.Clean(root)
 	for _, source := range sources {
 		if filepath.Clean(source.Path) != root {
@@ -493,12 +493,8 @@ type groupVolume struct {
 // volume is deliberately absent: its content is already reached through the
 // firmlinks at /Users, /Applications and friends, so counting the mount point
 // again would double it.
-func (s *Service) groupVolumesInRoot(root string) ([]groupVolume, map[string]int64) {
-	if s.volumes == nil {
-		return nil, nil
-	}
-	items, err := s.volumes.ListVolumes()
-	if err != nil {
+func (s *Service) groupVolumesInRoot(root string, items []ports.Volume) ([]groupVolume, map[string]int64) {
+	if len(items) == 0 {
 		return nil, nil
 	}
 	root = filepath.Clean(root)
@@ -788,10 +784,7 @@ func (s *Service) StartScan(options ScanOptions) (ScanStatus, error) {
 		cancel()
 		return ScanStatus{}, err
 	}
-	// Captured now, not at the end: the source page's numbers come from this same
-	// instant, so both pages describe one disk state (ADR-0052 §4).
-	volumeUsed := s.recordSnapshotVolume(snapshotID, root)
-	task := &scanTask{taskID: taskID, snapshotID: snapshotID, root: root, state: "running", phase: string(scan.PhaseCatalog), cancel: cancel, affectedParents: make(map[int64]struct{}), volumeUsed: volumeUsed}
+	task := &scanTask{taskID: taskID, snapshotID: snapshotID, root: root, state: "running", phase: string(scan.PhaseCatalog), cancel: cancel, affectedParents: make(map[int64]struct{})}
 	s.mu.Lock()
 	s.tasks[taskID] = task
 	s.mu.Unlock()
@@ -820,6 +813,27 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 	// failed alike, which is why it is a defer rather than a call on the success
 	// path (ADR-0058 §1).
 	defer s.memoryLimiter.hold()()
+	scanStarted := time.Now()
+
+	// One enumeration, shared by both users of it below. It used to run twice —
+	// once for the snapshot's volume record, once for the group volumes — and each
+	// pass spawns `diskutil info` per volume, so the walk could not start for
+	// about 1.5s after the user clicked scan.
+	//
+	// Captured at the start of the walk, not at the end: the source page's numbers
+	// come from the same enumeration, so both pages describe one disk state
+	// (ADR-0052 §4). It runs here rather than in StartScan because StartScan is
+	// what the UI waits on before it can leave the source page — the capture only
+	// has to precede the walk, not the call's return.
+	var volumeItems []ports.Volume
+	if s.volumes != nil {
+		volumeItems, _ = s.volumes.ListVolumes()
+	}
+	if volumeUsed := s.recordSnapshotVolume(task.snapshotID, task.root, volumeItems); volumeUsed > 0 {
+		task.mu.Lock()
+		task.volumeUsed = volumeUsed
+		task.mu.Unlock()
+	}
 
 	type persistEvent struct {
 		nodes   []scan.Node
@@ -933,7 +947,7 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 	// The walk skips mount points, so the volume group's auxiliary volumes are
 	// attached afterwards (ADR-0052 §3). Their roll-up needs the node IDs of the
 	// ancestor directories, which only the emit stream knows.
-	groupVolumes, watchedPaths := s.groupVolumesInRoot(task.root)
+	groupVolumes, watchedPaths := s.groupVolumesInRoot(task.root, volumeItems)
 	// Counted from t=0, not when the volumes are attached at the end: their sizes
 	// are already known from statfs and they are certain to land in the tree, so
 	// deferring them puts a 12-point jump in the last tenth of the scan
@@ -1085,6 +1099,9 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 			return s.handleScanPhase(ctx, task, phase, persistBarrier, emitProgressIfDue)
 		})
 	}
+	// Stamped where the bar stops moving: everything after this is roll-up and
+	// publish, which the user sees as the progress standing still.
+	walkEnded := time.Now()
 	close(events)
 	<-writerDone
 	if scanErr == nil {
@@ -1179,7 +1196,18 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 	} else {
 		task.state = state
 	}
+	finalState := task.state
 	task.mu.Unlock()
+	// The only record of how long a scan took. Without it the question "how long
+	// did that actually take" has no answer after the fact, which is where this
+	// line came from. Reachable with:
+	//   ./bin/marmot.app/Contents/MacOS/marmot
+	// stderr from a bundle launched by Finder or `open` goes nowhere.
+	log.Printf("scan %s finished: state=%s elapsed=%s walk=%s tail=%s nodes=%d files=%d dirs=%d bytes=%d issues=%d",
+		task.taskID, finalState, time.Since(scanStarted).Round(time.Millisecond),
+		walkEnded.Sub(scanStarted).Round(time.Millisecond),
+		time.Since(walkEnded).Round(time.Millisecond),
+		status.Nodes, status.Files, status.Directories, status.Bytes, len(result.Issues))
 	s.emitProgress(task)
 	s.scheduleCacheMaintenance()
 }
@@ -1261,8 +1289,11 @@ func (s *Service) GetMap(query MapQuery) (MapResult, error) {
 	if query.Depth < 0 {
 		return MapResult{}, errors.New("map depth cannot be negative")
 	}
-	if query.Depth > 4 {
-		query.Depth = 4
+	// ADR-0059 §3: twelve levels, matching the deepest the reference was observed
+	// to draw. It stays affordable because MinSweeps prunes sub-pixel arcs in the
+	// store rather than in the renderer.
+	if query.Depth > 11 {
+		query.Depth = 11
 	}
 	// ADR-0048 raised the density target to 2000 arcs; the slim projected entry
 	// shape keeps that inside the 256 KB payload ceiling.
@@ -1272,7 +1303,7 @@ func (s *Service) GetMap(query MapQuery) (MapResult, error) {
 	if query.ProjectionLimit > 2000 {
 		query.ProjectionLimit = 2000
 	}
-	result, err := s.store.Map(scan.MapQuery{SnapshotID: query.SnapshotID, ParentID: query.ParentID, Limit: query.Limit, Offset: query.Offset, Measure: query.Measure, Depth: query.Depth, ProjectionLimit: query.ProjectionLimit})
+	result, err := s.store.Map(scan.MapQuery{SnapshotID: query.SnapshotID, ParentID: query.ParentID, Limit: query.Limit, Offset: query.Offset, Measure: query.Measure, Depth: query.Depth, ProjectionLimit: query.ProjectionLimit, MinSweeps: query.MinSweeps})
 	if err != nil {
 		return MapResult{}, err
 	}
