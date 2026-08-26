@@ -1,5 +1,11 @@
-// minArcPixels: an arc thinner than this is a hair, not a slice.
-export const minArcPixels = 2.5;
+// An arc thinner than this is a hair, not a slice. Below it siblings fold into
+// one grey aggregate, and if even that would be a hair they are left out and the
+// background shows through.
+//
+// 4.6, not 2.5: measured on the reference, its narrowest drawn arc is 7-11px on a
+// 2x display and never smaller, while ours reached 0.3px and drew twice as many
+// arcs per ring. Those sub-pixel slivers are the "spiky" rim (R-060 §3.8).
+export const minArcPixels = 4.6;
 
 // Pure geometry and colour for the space map, split out of App.tsx so it can be
 // tested without a DOM. Everything here is sampled off the reference and pinned
@@ -112,7 +118,11 @@ export const sunburstGeometry = {
   thinRingRatio: 0.147,
   thinGapRatio: 0.46,
   radialGapRatio: 1 / 33.5,
-  separatorRatio: 1.5 / 33.5,
+  // 0.5pt against a 33.5pt ring -- a hairline. The first pass used 1.5pt, taken
+  // from a mean over every narrow background gap; most of those are holes where a
+  // child was culled, not separators. The low percentiles put the reference's
+  // separator at about 1px on a 2x display (R-060 §3.6, corrected).
+  separatorRatio: 0.5 / 33.5,
 };
 
 // radiusUnits walks the ring sequence with a unit ring width, so the total is

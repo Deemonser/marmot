@@ -480,9 +480,14 @@ function Sunburst({
       const to = (next - startAngle) / span;
       const own = subBand(from, to, band);
       const hue = own.center;
-      // The separator is background, not a stroke: siblings are inset by half of
-      // it on each side. Clamped so a wedge narrower than the separator collapses
-      // to a hairline instead of inverting.
+      // Inset on both sides, including the ends of the level's own span: the
+      // reference draws a hairline at every boundary, parent boundaries included.
+      // (An earlier attempt skipped the ends, on the theory that a child's gap was
+      // compounding with its parent's. That theory came from reading a *mean* over
+      // every narrow background run, and at the outer rings most of those runs are
+      // holes left by culled children, not separators. Reading the low percentiles
+      // instead shows the separator is constant with radius; it was only ever too
+      // wide.)
       const inset = Math.min(separatorArc / ((r0 + r1) / 2) / 2, (next - cursor) / 2.5);
       const geom: ArcGeom = { a0: cursor + inset, a1: next - inset, r0, r1 };
       slices.push({

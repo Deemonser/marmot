@@ -29,7 +29,11 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
 /* The native hidden-inset titlebar keeps its own drag region — roughly the top
    48px, where the traffic lights sit. Anything interactive placed there is
    swallowed by window dragging, so the chrome row is bottom-aligned below it. */
-.topbar { display: flex; align-items: flex-end; gap: 10px; height: 62px; padding: 0 16px 9px 92px; color: #c9c9ce; --wails-draggable: drag; }
+/* 45px, not 62: the reference's breadcrumb chip sits with its centre 25.75pt
+   from the window top and ours sat at 40.25pt, which pushed everything below it
+   down — including the chart, whose centre was 4% of the window height too low
+   (R-060 §3.8). */
+.topbar { display: flex; align-items: flex-end; gap: 10px; height: 45px; padding: 0 16px 7px 92px; color: #c9c9ce; --wails-draggable: drag; }
 .topbar-source { height: 52px; align-items: center; padding-bottom: 0; }
 /* Everything interactive in the titlebar band must opt out of dragging, or the
    window moves instead of the control reacting. */
@@ -44,7 +48,7 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
 
 /* Breadcrumb trail: chevron-shaped segments, the root one highlighted. */
 .crumbs { display: flex; align-items: center; min-width: 0; overflow: hidden; margin-left: 6px; }
-.crumb { max-width: 210px; overflow: hidden; padding: 5px 16px 5px 22px; margin-left: -9px; border: 0; border-radius: 0; background: #3a3b41; color: #cfd0d5; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%, 9px 50%); }
+.crumb { max-width: 210px; overflow: hidden; padding: 3px 16px 3px 22px; margin-left: -9px; border: 0; border-radius: 0; background: #3a3b41; color: #cfd0d5; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%, 9px 50%); }
 .crumb:first-child { margin-left: 0; padding-left: 14px; border-radius: 4px 0 0 4px; clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%); }
 .crumb-root { background: #4671b8; color: #fff; }
 .crumb:hover { background: #4a4b52; color: #fff; }
@@ -179,12 +183,16 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .map-panel, .directory-panel { min-width: 0; min-height: 0; background: transparent; }
 .map-panel { display: flex; flex-direction: column; }
 .map-heading { display: none; }
-.map-stage { position: relative; display: grid; min-height: 0; flex: 1; place-items: center; overflow: hidden; }
+/* The collector dock is fixed-position, so it reserves no space and the chart
+   used to centre over the whole height and run into it. Reserving the dock's band
+   here both clears the overlap and lifts the chart to where the reference has it. */
+.map-stage { position: relative; display: grid; min-height: 0; flex: 1; place-items: center; padding-bottom: 96px; overflow: hidden; }
 /* Sized off the stage's height, not the viewport: the five main rings have to
    land at ~75% of the available height to match the reference (ADR-0059 §2), and
    they are 0.809 of the whole chart's radius once the thin outer levels are
-   counted, so the chart box is 0.748 / 0.809 of it. */
-.sunburst-wrap { position: relative; height: 92.5%; max-width: 100%; aspect-ratio: 1; }
+   counted. The first pass derived 92.5% from that and came out 8% too big when
+   measured side by side against the reference, so this is the measured value. */
+.sunburst-wrap { position: relative; height: 85.5%; max-width: 100%; aspect-ratio: 1; }
 .sunburst { width: 100%; height: 100%; overflow: visible; }
 .sunburst-slice:focus, .sunburst-slice:focus-visible { outline: none; }
 /* No separating stroke: the gap between siblings is real background now
