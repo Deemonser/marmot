@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
+import { paintMorph, clearMorphStyles, arcPath, morphDuration, morphArcCeiling } from "./morph";
+import type { ArcGeom, MorphPlan } from "./morph";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
-import { arc } from "d3-shape";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
 import { Service as MarmotService } from "../bindings/example.com/marmot/internal/presentation/wails";
 import type * as Models from "../bindings/example.com/marmot/internal/presentation/wails/models";
@@ -208,49 +209,6 @@ function entryKey(entry: MapEntry): string {
 // full circle and moves every ring inward by one, so a slice that survives the
 // navigation can be tweened from its old geometry to its new one and the level
 // change reads as a zoom instead of a cut.
-type ArcGeom = { a0: number; a1: number; r0: number; r1: number };
-
-// One generator, reconfigured per call: building a new one per arc costs more
-// than the path itself, and the morph rebuilds every arc on every frame.
-const arcGenerator = arc<unknown>();
-
-function arcPath(geom: ArcGeom): string {
-  return arcGenerator.innerRadius(geom.r0).outerRadius(geom.r1)({ startAngle: geom.a0, endAngle: geom.a1 }) ?? "";
-}
-
-// paintMorph writes one frame of the tween straight to the DOM. React is not
-// involved: a level can carry ~1600 arcs, and reconciling that many elements per
-// frame would not hold 60fps.
-function paintMorph(
-  state: { tweens: Array<{ renderKey: string; from: ArcGeom; to: ArcGeom }>; started: number },
-  progress: number,
-  nodes: Map<string, SVGPathElement>,
-): void {
-  const eased = easeOutCubic(progress);
-  for (const tween of state.tweens) {
-    const node = nodes.get(tween.renderKey);
-    if (!node) continue;
-    node.setAttribute("d", arcPath({
-      a0: tween.from.a0 + (tween.to.a0 - tween.from.a0) * eased,
-      a1: tween.from.a1 + (tween.to.a1 - tween.from.a1) * eased,
-      r0: tween.from.r0 + (tween.to.r0 - tween.from.r0) * eased,
-      r1: tween.from.r1 + (tween.to.r1 - tween.from.r1) * eased,
-    }));
-  }
-}
-
-function easeOutCubic(t: number): number {
-  const inverse = 1 - t;
-  return 1 - inverse * inverse * inverse;
-}
-
-// Duration of the level-change morph. Long enough to read as motion, short
-// enough that it never delays the next click.
-const morphDuration = 420;
-// Above this many arcs the morph is skipped rather than allowed to stutter: each
-// frame rewrites every arc's `d`, so the cost is linear in arc count.
-const morphArcCeiling = 2600;
-
 // projectedArc normalizes a slim projected descendant into a drawable arc.
 function projectedArc(child: ProjectedEntry) {
   return {
@@ -402,11 +360,11 @@ function Sunburst({
   // (hovering, which happens immediately: the pointer is still over the wheel
   // when the click lands) rewrites every `d` back to the destination, so the
   // current frame has to be re-applied afterwards.
-  const morphState = useRef<{ tweens: Array<{ renderKey: string; from: ArcGeom; to: ArcGeom }>; started: number } | null>(null);
+  const morphState = useRef<MorphPlan | null>(null);
   // Arcs that the level change removes. Without them the wedges that are not
   // part of the destination vanish on the first frame and leave a hole in the
   // wheel; the original sweeps them out of the circle instead.
-  const [ghosts, setGhosts] = useState<Array<{ renderKey: string; color: string; from: ArcGeom; to: ArcGeom }>>([]);
+  const [ghosts, setGhosts] = useState<Array<{ renderKey: string; color: string; geom: ArcGeom }>>([]);
   const paintedSlices = useRef<Array<{ key: string; geom: ArcGeom; color: string }>>([]);
   // The level we are leaving, so a hub click can fold the old level back into
   // the wedge it came from.
@@ -567,78 +525,47 @@ function Sunburst({
       commit();
       return;
     }
-    // An arc that also existed in the previous level starts where it was; a
-    // genuinely new one starts as a zero-thickness sliver at its own inner edge,
-    // so it grows outward instead of appearing.
-    const tweens = sliceSnapshot.map((slice) => {
-      const from = previous.get(slice.key) ?? { a0: slice.geom.a0, a1: slice.geom.a1, r0: slice.geom.r0, r1: slice.geom.r0 };
-      return { renderKey: slice.renderKey, from, to: slice.geom };
-    });
-
-    // Where the departing arcs go. Drilling in maps the clicked wedge's angular
-    // span onto the whole circle, so applying that same map to the rest of the
-    // old level sweeps it past 0 or 2π — out of the wheel, which is what the
-    // original does. Going up is the inverse: everything folds back into the
-    // wedge it came from.
-    const ringShift = ringWidth + ringGap(0);
-    const focusIn = map ? previous.get("node:" + map.parent.id) : undefined;
-    const focusOut = previousParentKey.current
-      ? sliceSnapshot.find((slice) => slice.key === previousParentKey.current)?.geom
-      : undefined;
-    const sweep = (geom: ArcGeom): ArcGeom | null => {
-      if (focusIn && focusIn.a1 > focusIn.a0) {
-        const scale = (Math.PI * 2) / (focusIn.a1 - focusIn.a0);
-        return {
-          a0: (geom.a0 - focusIn.a0) * scale,
-          a1: (geom.a1 - focusIn.a0) * scale,
-          r0: Math.max(innerRadius, geom.r0 - ringShift),
-          r1: Math.max(innerRadius, geom.r1 - ringShift),
-        };
+    // Split by what each arc does, rather than tweening everything at once.
+    // An arc present in both levels *moves*; one only in the new level *arrives*
+    // and must not be visible until the movement is over; one only in the old
+    // level *departs* and must be gone before it starts.
+    const moving: MorphPlan["moving"] = [];
+    const arriving: MorphPlan["arriving"] = [];
+    for (const slice of sliceSnapshot) {
+      const from = previous.get(slice.key);
+      if (from) {
+        moving.push({ renderKey: slice.renderKey, from, to: slice.geom });
+      } else {
+        arriving.push({ renderKey: slice.renderKey, geom: slice.geom });
       }
-      if (focusOut && focusOut.a1 > focusOut.a0) {
-        const scale = (focusOut.a1 - focusOut.a0) / (Math.PI * 2);
-        return {
-          a0: focusOut.a0 + geom.a0 * scale,
-          a1: focusOut.a0 + geom.a1 * scale,
-          r0: geom.r0 + ringShift,
-          r1: geom.r1 + ringShift,
-        };
-      }
-      return null;
-    };
+    }
     const live = new Set(sliceSnapshot.map((slice) => slice.key));
-    const departing: Array<{ renderKey: string; color: string; from: ArcGeom; to: ArcGeom }> = [];
+    const departingSlices: Array<{ renderKey: string; color: string; geom: ArcGeom }> = [];
     previousSlices.forEach((slice, index) => {
       if (live.has(slice.key)) return;
-      const to = sweep(slice.geom);
-      if (!to) return;
-      departing.push({ renderKey: "ghost:" + index, color: slice.color, from: slice.geom, to });
+      // At its own geometry. The reference does not move these; it removes them.
+      departingSlices.push({ renderKey: "ghost:" + index, color: slice.color, geom: slice.geom });
     });
-    setGhosts(departing);
-    if (departing.length > 0) {
-      // The fade has to start on a later frame than the mount, or the browser
-      // has no starting value to transition from. Its duration follows
-      // morphDuration so the two never drift apart.
-      requestAnimationFrame(() => {
-        const group = ghostGroupRef.current;
-        if (group) group.style.opacity = "0";
-      });
-    }
+    setGhosts(departingSlices);
+
     morphState.current = {
-      tweens: tweens.concat(departing.map((ghost) => ({ renderKey: ghost.renderKey, from: ghost.from, to: ghost.to }))),
+      moving,
+      arriving,
+      departing: departingSlices.map((ghost) => ({ renderKey: ghost.renderKey, geom: ghost.geom })),
       started: performance.now(),
     };
-    paintMorph(morphState.current, 0, morphRefs.current);
+    paintMorph(morphState.current, 0, morphRefs.current, ghostGroupRef.current);
     const step = () => {
       const state = morphState.current;
       if (!state) return;
-      const progress = Math.min(1, (performance.now() - state.started) / morphDuration);
-      paintMorph(state, progress, morphRefs.current);
-      if (progress < 1) {
+      const elapsed = performance.now() - state.started;
+      paintMorph(state, elapsed, morphRefs.current, ghostGroupRef.current);
+      if (elapsed < morphDuration) {
         morphFrame.current = requestAnimationFrame(step);
         return;
       }
       morphFrame.current = null;
+      clearMorphStyles(state, morphRefs.current, ghostGroupRef.current);
       morphState.current = null;
       commit();
     };
@@ -650,7 +577,9 @@ function Sunburst({
       }
       // Interrupted mid-tween: record where the arcs actually are, so the next
       // navigation starts from what the user can see rather than from a level
-      // that was never painted.
+      // that was never painted. The inline styles have to go with it.
+      const interrupted = morphState.current;
+      if (interrupted) clearMorphStyles(interrupted, morphRefs.current, ghostGroupRef.current);
       morphState.current = null;
       commit();
     };
@@ -661,7 +590,7 @@ function Sunburst({
   useLayoutEffect(() => {
     const state = morphState.current;
     if (!state) return;
-    paintMorph(state, Math.min(1, (performance.now() - state.started) / morphDuration), morphRefs.current);
+    paintMorph(state, performance.now() - state.started, morphRefs.current, ghostGroupRef.current);
   });
 
   useEffect(() => {
@@ -690,7 +619,7 @@ function Sunburst({
               className="sunburst-ghosts"
               aria-hidden="true"
               ref={ghostGroupRef}
-              style={{ opacity: 1, transition: "opacity " + morphDuration + "ms ease-out" }}
+              style={{ opacity: 1 }}
             >
               {ghosts.map((ghost) => (
                 <path
@@ -700,7 +629,7 @@ function Sunburst({
                     else morphRefs.current.delete(ghost.renderKey);
                   }}
                   className="sunburst-slice is-ghost"
-                  d={arcPath(ghost.from)}
+                  d={arcPath(ghost.geom)}
                   fill={ghost.color}
                 />
               ))}
