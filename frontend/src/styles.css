@@ -198,10 +198,10 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* No separating stroke: the gap between siblings is real background now
    (ADR-0059 SS2), so a stroke on top would double it. The stroke is kept only for
    the focus and selection states. */
-/* transform is in the list for the pull-out: it is what animates the arc back
-   into the ring when a drag is abandoned, and the base rule is what is in force
-   once .is-pulled comes off. */
-.sunburst-slice { stroke: none; cursor: pointer; transition: opacity .13s, filter .13s, fill-opacity .19s ease, transform .22s cubic-bezier(.22, .61, .36, 1); }
+/* fill-opacity is in the list because it is what fades an arc to the staged look
+   and back again when a drag is abandoned; the base rule is what is in force once
+   .is-collected comes off. */
+.sunburst-slice { stroke: none; cursor: pointer; transition: opacity .13s, filter .13s, fill-opacity .19s ease; }
 /* No outline on the focused or selected wedge. The reference marks the arc under
    the pointer by breathing its opacity instead, which reads on a wedge of any
    size — a 1px stroke round a hairline arc is mostly stroke. */
@@ -401,16 +401,20 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .directory-partial { margin: 10px 2px 0; color: #8e8f96; font-size: 11px; line-height: 1.4; }
 
 /* Chip that rides under the cursor while an arc or a row is dragged to the dock.
-   Offset off the hotspot so it never covers what is being dropped on. */
-.drag-chip { position: fixed; z-index: 60; display: flex; align-items: center; gap: 9px; max-width: 320px; padding: 5px 11px; border: 1px solid #4a4b51; border-radius: 6px; background: rgba(44, 45, 51, .96); color: #e0e0e4; font-size: 13px; pointer-events: none; transform: translate(14px, 12px); box-shadow: 0 6px 18px rgba(0, 0, 0, .45); }
-.drag-chip-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; }
+   It wears the wedge's own colour, so what is in the air is identifiable without
+   a legend; the text colour comes from that colour's luminance (readableOn),
+   because the palette runs through yellow where white would not read.
+   left/top stay at 0 and the position is a transform written by the pointer
+   handler -- see placeDragChip. The margins are the offset off the cursor
+   hotspot: enough to clear the arrow, not enough to read as a separate object. */
+.drag-chip { position: fixed; left: 0; top: 0; z-index: 60; display: flex; align-items: center; gap: 10px; max-width: 320px; margin: 7px 0 0 9px; padding: 5px 11px; border-radius: 6px; font-size: 13px; font-weight: 500; pointer-events: none; box-shadow: 0 5px 16px rgba(0, 0, 0, .5); }
 .drag-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.drag-chip-size { flex: 0 0 auto; color: #9a9ba1; font-variant-numeric: tabular-nums; }
-/* Over the dock the chip commits to the dock's blue, so the drop is readable
-   without looking away from the cursor. */
-.drag-chip.is-over { border-color: #4c7cc4; box-shadow: 0 6px 18px rgba(0, 0, 0, .45), 0 0 0 3px rgba(76, 124, 196, .28); }
-/* Refused outright: no blue, whether or not the pointer is over the dock. */
-.drag-chip.is-refused { border-color: #d0453a; box-shadow: 0 6px 18px rgba(0, 0, 0, .45), 0 0 0 3px rgba(208, 69, 58, .22); }
+/* Secondary in either text colour, rather than a grey that only works on one. */
+.drag-chip-size { flex: 0 0 auto; opacity: .7; font-variant-numeric: tabular-nums; }
+/* Over the dock, and refused: a ring around the chip rather than a border, so the
+   wedge colour keeps the whole box. */
+.drag-chip.is-over { box-shadow: 0 5px 16px rgba(0, 0, 0, .5), 0 0 0 3px rgba(255, 255, 255, .35); }
+.drag-chip.is-refused { box-shadow: 0 5px 16px rgba(0, 0, 0, .5), 0 0 0 3px #d0453a; }
 
 /* Pointer-dragging a slice must not select the page text underneath. */
 .app-shell { user-select: none; }
@@ -474,19 +478,18 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Projected descendants are visual only: no pointer affordance. */
 .sunburst-slice.is-projected { cursor: default; }
 
-/* In the air: being dragged out right now. The arc slides out along its own
-   midline (the inline transform, which needs the arc's angle) and fades, and its
-   slot is not re-flowed away -- an abandoned drag puts it straight back.
-   animation: none stops a breath that was running when the drag started. */
-.sunburst-slice.is-pulled { opacity: 0; pointer-events: none; animation: none; transition: opacity .19s ease .03s, transform .22s cubic-bezier(.22, .61, .36, 1); }
-
-/* Staged in the dock: still drawn, in its own slot, at a fraction of its paint,
-   and out of reach for pointer and focus alike. It is not gone -- it is queued,
-   and still on disk until the dock's action runs -- so an empty slot would say
-   more than is true, and in a space map the slot itself carries the meaning.
+/* Being dragged out, or already staged in the dock -- one state, on purpose. The
+   arc stays in its slot and fades to a fraction of its paint, and it is out of
+   reach for pointer and focus alike.
+   Dragging used to slide the arc out and take it to zero, which meant the drop
+   played a second animation putting a translucent arc back where the first one
+   had just removed it. The wedge popped. Fading straight to the staged look makes
+   the drop change nothing on screen, which is what a drop into the dock actually
+   does: the object is queued, not gone -- it is still on disk until the dock's
+   action runs -- and in a space map the slot itself carries the meaning.
    fill-opacity, not opacity, on purpose: paintMorph writes `style.opacity` frame
    by frame during a level change, and the two multiply instead of fighting, so a
-   collected arc travels with everything else and stays faded while it does. */
+   faded arc travels with everything else and stays faded while it does. */
 .sunburst-slice.is-collected { fill-opacity: .17; pointer-events: none; animation: none; }
 
 /* The same object's row leaves the list with it: collapsed to nothing and slid
@@ -498,10 +501,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 @media (prefers-reduced-motion: reduce) {
   /* The object still has to leave the wheel and the list -- it is the travel
      that goes, not the change of state. */
-  .sunburst-slice, .sunburst-slice.is-pulled, .sunburst-slice.is-collected, .directory-row, .directory-row.is-pulled { transition: none; }
-  /* The arc's slide is an inline transform, which a rule here cannot reach --
-     but with the transition gone it is already invisible when it moves. The
-     row's slide is ours to drop. */
+  .sunburst-slice, .sunburst-slice.is-collected, .directory-row, .directory-row.is-pulled { transition: none; }
   .directory-row.is-pulled { transform: none; }
 }
 

@@ -168,6 +168,19 @@ const phaseLabels: Record<string, string> = {
   finalize: "整理结果",
 };
 const browsableScanStates = new Set(["completed", "completed_with_issues", "cancelled", "interrupted"]);
+// The wheel's palette runs all the way through yellow, where white text is
+// unreadable, so the chip picks its text from the wedge's own luminance rather
+// than assuming one colour works on every hue. sRGB relative luminance, the same
+// definition WCAG contrast uses.
+function readableOn(hex: string): string {
+  const channel = (index: number) => {
+    const c = parseInt(hex.slice(index, index + 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  const luminance = 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+  return luminance > 0.35 ? "#1b1c20" : "#ffffff";
+}
+
 // Why a refusal happened, in words. The backend sends a code, not a sentence:
 // the policy is its to decide (cleanup.DeleteBlock) but a sentence per entry
 // would repeat across a space map payload that is already capped, and the wording
@@ -863,35 +876,18 @@ function Sunburst({
             const collectable = !collected && !dragging && !aggregate && id > 0
               && (entry ? entry.kind === "node" : true);
             const selected = key === selectedKey;
-            // The arc being dragged slides out along its own midline before it
-            // fades, so it reads as taken out of the ring rather than switched
-            // off. d3 measures angles from twelve o'clock, so the outward
-            // direction at angle a is (sin a, -cos a). A collected arc does not
-            // travel: it settles back into its slot at a fraction of its opacity.
-            const pullMid = (geom.a0 + geom.a1) / 2;
-            const pullBy = ringWidth * 0.5;
             return (
               <path
                 key={renderKey}
                 ref={(node) => {
                   pathRefs.current[key] = node;
-                  // The arc in the air is deliberately kept out of the morph:
-                  // paintMorph writes opacity inline, which would override its
-                  // state for the length of a level change. A collected arc is
-                  // still on screen and still tweens -- it fades with
-                  // fill-opacity, which paintMorph never touches, so the two
-                  // multiply instead of fighting.
-                  if (node && !dragging) morphRefs.current.set(renderKey, node);
+                  if (node) morphRefs.current.set(renderKey, node);
                   else morphRefs.current.delete(renderKey);
                 }}
                 d={path}
                 role={interactive ? "button" : "presentation"}
                 tabIndex={interactive && !collected && !dragging ? 0 : -1}
-                aria-hidden={dragging || undefined}
-                aria-disabled={collected || undefined}
-                style={dragging
-                  ? { transform: "translate(" + (Math.sin(pullMid) * pullBy).toFixed(2) + "px, " + (-Math.cos(pullMid) * pullBy).toFixed(2) + "px)" }
-                  : undefined}
+                aria-disabled={collected || dragging || undefined}
                 onPointerDown={(event) => {
                   if (collectable) onDragEntry({ key, name, size, color, entry, nodeId: id, protection }, event);
                 }}
@@ -902,8 +898,7 @@ function Sunburst({
                   (key === breathingKey ? " is-breathing" : "") +
                   (aggregate ? " is-aggregate" : "") +
                   (stale ? " is-stale" : "") +
-                  (dragging ? " is-pulled" : "") +
-                  (collected ? " is-collected" : "") +
+                  (collected || dragging ? " is-collected" : "") +
                   (interactive ? "" : " is-projected")
                 }
                 fill={color}
@@ -1339,14 +1334,19 @@ export default function App() {
     label: string;
     size: number;
     color: string;
-    x: number;
-    y: number;
     over: boolean;
     // Why this one cannot be collected, in words, or empty when it can. Known
     // before the first frame on every ring: the projection carries the reason, so
     // the dock never has to wait to answer.
     blocked: string;
   } | null>(null);
+  // Where the chip is, and the node it is written to. Kept out of React state on
+  // purpose: a state update per pointermove re-rendered every arc in the wheel to
+  // move one small box, so the chip trailed the cursor. The pointer handler writes
+  // the transform straight to the DOM now, and React re-renders only when the
+  // chip's *appearance* changes -- which is when it crosses the dock's edge.
+  const dragChip = useRef<HTMLDivElement | null>(null);
+  const dragAt = useRef({ x: 0, y: 0 });
   // An outer ring's arc has to be looked up before it can be collected, and the
   // lookup lands a tick after the drop. Holding its key here keeps it pulled out
   // across that gap, so it does not snap back into the wheel for one frame.
@@ -1710,6 +1710,18 @@ export default function App() {
     void goToPage({ ...currentPage, offset: currentPage.offset + Math.max(1, visibleNodes) }, "replace");
   }
 
+  // The chip follows the pointer, not the render. Called from the pointer handler
+  // and again from a layout effect, because the element does not exist yet on the
+  // move that starts the drag.
+  function placeDragChip() {
+    const node = dragChip.current;
+    if (node) node.style.transform = "translate3d(" + dragAt.current.x + "px, " + dragAt.current.y + "px, 0)";
+  }
+  // Deliberately dependency-free, like the morph's repaint: the position lives
+  // outside React, so it has to be re-applied after any render that mounts or
+  // touches the chip.
+  useLayoutEffect(placeDragChip);
+
   // overDock is the drop test for both drag sources: coordinates against the
   // dock's own box, not the event target, because the chip sits under the cursor
   // and the shell stops hit-testing while a drag is in flight.
@@ -1749,7 +1761,14 @@ export default function App() {
     const move = (moveEvent: PointerEvent) => {
       if (!dragging && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < dragThreshold) return;
       dragging = true;
-      setDrag({ ...chip, x: moveEvent.clientX, y: moveEvent.clientY, over: overDock(moveEvent.clientX, moveEvent.clientY) });
+      dragAt.current = { x: moveEvent.clientX, y: moveEvent.clientY };
+      placeDragChip();
+      const over = overDock(moveEvent.clientX, moveEvent.clientY);
+      // Returning the same object is React's own bail-out: no re-render while the
+      // pointer is moving inside or outside the dock, only when it crosses.
+      setDrag((current) => current && current.key === chip.key && current.over === over
+        ? current
+        : { ...chip, over });
     };
     const finish = (upEvent: PointerEvent) => {
       window.removeEventListener("pointermove", move);
@@ -2284,8 +2303,11 @@ export default function App() {
       {drag && (
         /* The chip is the collected row, drawn early: same dot, name and size,
            so what you drag looks like what lands in the dock. */
-        <div className={"drag-chip" + (drag.blocked ? " is-refused" : drag.over ? " is-over" : "")} style={{ left: drag.x, top: drag.y }}>
-          <span className="drag-chip-dot" style={{ background: drag.color }} aria-hidden="true" />
+        <div
+          ref={dragChip}
+          className={"drag-chip" + (drag.blocked ? " is-refused" : drag.over ? " is-over" : "")}
+          style={{ background: drag.color, color: readableOn(drag.color) }}
+        >
           <span className="drag-chip-name">{drag.label}</span>
           <span className="drag-chip-size">{formatBytes(drag.size)}</span>
         </div>
