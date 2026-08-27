@@ -304,6 +304,12 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .collector-dock.is-refused .collector-empty-state .collector-target,
 .collector-dock.is-refused .collector-bar .collector-target { border-color: #7c7d84; box-shadow: inset 0 0 0 4px #232429; }
 .collector-dock.is-refused .collector-empty-state .collector-target { transform: none; }
+/* The refusal is a sentence, not a label, and the dock's usual 420px wraps it to
+   two lines -- where the drag chip, which follows the cursor at z-index 60, lands
+   on top of the second one. The reference gives the message a wide bar, so this
+   does too. */
+.app-shell-result .collector-dock.is-refused { max-width: min(62vw, 1060px); }
+.collector-dock.is-refused .collector-caption { line-height: 1.4; }
 .collector-dock.is-refused .collector-target::after {
   content: "";
   position: absolute;

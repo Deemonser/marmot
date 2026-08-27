@@ -171,6 +171,10 @@ const browsableScanStates = new Set(["completed", "completed_with_issues", "canc
 // belongs with the rest of the UI's wording.
 const protectionReasons: Record<string, (name: string) => string> = {
   system_dependency: (name) => "“" + name + "” 是 macOS 系统的依赖文件，您不应该将其删除。",
+  // Not the same statement as the one above, and it matters: this folder is the
+  // account's own data, not something the system depends on.
+  home_folder: (name) => "“" + name + "” 是用户的个人文件夹，删除它会一并移除该账户的全部数据。",
+  volume_root: (name) => "“" + name + "” 是一个已挂载的卷，不能当作文件夹删除。",
 };
 
 function protectionMessage(entry: MapEntry | null): string {

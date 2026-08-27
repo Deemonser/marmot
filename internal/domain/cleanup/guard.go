@@ -5,12 +5,23 @@ import (
 	"strings"
 )
 
-// ProtectionSystemDependency is the one reason code the guard returns today: the
-// path is part of what macOS itself depends on. It is a code and not a sentence
-// because the wording belongs to the presentation layer, and because a sentence
-// per entry would be repeated across every entry of a space map payload that is
-// already capped (ADR-0048's density budget).
-const ProtectionSystemDependency = "system_dependency"
+// Why a path is protected. Codes and not sentences: the wording belongs to the
+// presentation layer, and a sentence per entry would be repeated across every
+// entry of a space map payload that is already capped (ADR-0048's density
+// budget).
+//
+// Three codes and not one because they are three different statements, and one
+// of them was visibly wrong when they shared: a home folder is not "something
+// macOS depends on", it is the account's own data, and a mount point is not a
+// folder at all. The refusal exists to tell the user something true.
+const (
+	// Part of what macOS itself depends on.
+	ProtectionSystemDependency = "system_dependency"
+	// A user account's home folder. Everything inside it stays deletable.
+	ProtectionHomeFolder = "home_folder"
+	// A mounted volume's own mount point, which is not an ordinary directory.
+	ProtectionVolumeRoot = "volume_root"
+)
 
 // protectedExactly may not be deleted themselves, while what is inside them may.
 // Losing any of these breaks the system or the account even though every file
@@ -76,20 +87,24 @@ func DeleteBlock(path string) string {
 	if _, blocked := protectedExactly[clean]; blocked {
 		return ProtectionSystemDependency
 	}
+	// Before the trees below, because the more specific statement has to win: the
+	// firmlinked spelling /System/Volumes/Data/Users/alice reaches the same home
+	// folder, and answering "macOS depends on it" there would be the same untruth
+	// as answering it for /Users/alice. Matched on the parent rather than a
+	// literal list so it holds for every account, and for both spellings so the
+	// answer does not depend on which of the two the scan happened to walk.
+	if parent := filepath.Dir(clean); parent == "/Users" || parent == "/System/Volumes/Data/Users" {
+		return ProtectionHomeFolder
+	}
 	for _, tree := range protectedTrees {
 		if clean == tree || IsPathWithin(tree, clean) {
 			return ProtectionSystemDependency
 		}
 	}
-	// A home folder itself, but not what is in it: /Users/alice is protected,
-	// /Users/alice/Downloads is not.
-	if parent := filepath.Dir(clean); parent == "/Users" && clean != "/Users" {
-		return ProtectionSystemDependency
-	}
 	// A volume's own root, for the same reason the scan root is refused: the mount
 	// point is not an ordinary directory.
 	if strings.HasPrefix(clean, "/Volumes/") && filepath.Dir(clean) == "/Volumes" {
-		return ProtectionSystemDependency
+		return ProtectionVolumeRoot
 	}
 	return ""
 }
