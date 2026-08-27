@@ -62,7 +62,7 @@ func buildMap(source mapSource, query scan.MapQuery) (scan.MapResult, error) {
 	}
 	entries := make([]scan.MapEntry, 0, len(nodes)+1)
 	for _, node := range nodes {
-		entries = append(entries, nodeMapEntry(node))
+		entries = append(entries, scan.NodeEntry(node))
 	}
 	tailOffset := query.Offset + len(nodes)
 	remaining := emptyRemainingEntry("map_remaining_v1")
@@ -359,10 +359,6 @@ func normalizePageLimit(limit int) (int, error) {
 		return 0, fmt.Errorf("%w: page limit %d exceeds %d", ErrInvalidRequest, limit, maxPageSize)
 	}
 	return limit, nil
-}
-
-func nodeMapEntry(node scan.Node) scan.MapEntry {
-	return scan.MapEntry{Kind: "node", Node: node, Name: node.Name, LogicalSize: node.LogicalSize, AllocatedSize: node.AllocatedSize, OwnedAllocated: node.OwnedAllocated, Confidence: node.Confidence, SizeBasis: node.SizeBasis}
 }
 
 func mergeMapConfidence(parent, remaining string) string {

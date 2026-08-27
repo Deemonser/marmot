@@ -104,6 +104,18 @@ type MapEntry struct {
 	ChildrenHasMore bool
 }
 
+// NodeEntry is the space map's one way of turning a snapshot node into a map
+// entry, so a node reached by walking a level and the same node looked up by ID
+// describe themselves identically. Capabilities are deliberately absent: they
+// are granted a layer above, by the application, for both routes alike.
+func NodeEntry(node Node) MapEntry {
+	return MapEntry{
+		Kind: "node", Node: node, Name: node.Name,
+		LogicalSize: node.LogicalSize, AllocatedSize: node.AllocatedSize, OwnedAllocated: node.OwnedAllocated,
+		Confidence: node.Confidence, SizeBasis: node.SizeBasis,
+	}
+}
+
 // ProjectedEntry is one arc of the space map below the current level. It carries
 // only what drawing an arc needs: identity, name, size and kind. It deliberately
 // omits Path, Device, Inode, ModifiedAt, VolumeID and the per-entry confidence

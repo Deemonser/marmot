@@ -33,6 +33,16 @@ export function GetMap(query: $models.MapQuery): $CancellablePromise<$models.Map
     return $Call.ByID(2827691950, query);
 }
 
+/**
+ * GetNodeEntry is how the frontend collects an arc from a ring below the current
+ * level: the projection it drew that arc from carries no path and no
+ * capabilities, so the node has to be looked up by ID before anything may act on
+ * it (ADR-0048).
+ */
+export function GetNodeEntry(snapshotID: number, nodeID: number): $CancellablePromise<$models.MapEntry> {
+    return $Call.ByID(1974114536, snapshotID, nodeID);
+}
+
 export function GetPermissionStatus(): $CancellablePromise<$models.PermissionStatus> {
     return $Call.ByID(37670297);
 }

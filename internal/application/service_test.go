@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -661,5 +662,69 @@ func TestRootMapBalancesToVolumeUsedBytes(t *testing.T) {
 	}
 	if againSum != int64(used) {
 		t.Fatalf("a repeat query lost the balance: sum=%d used=%d", againSum, used)
+	}
+}
+
+// A projected arc on an outer ring carries only a node id (ADR-0048), so
+// collecting one goes back to the snapshot for the real entry. The point of this
+// test is that the lookup route grants exactly what walking the level grants --
+// no more, and never a fabricated capability.
+func TestGetNodeEntryResolvesProjectedArcWithTheSameCapabilities(t *testing.T) {
+	service := testService(t)
+	root := t.TempDir()
+	path := filepath.Join(root, "collectable.txt")
+	if err := os.WriteFile(path, []byte("collectable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	started, err := service.StartScan(ScanOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := started
+	for i := 0; i < 200 && status.State == "running"; i++ {
+		time.Sleep(5 * time.Millisecond)
+		status, err = service.GetScanStatus(started.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status.State != "completed" {
+		t.Fatalf("scan did not complete: %#v", status)
+	}
+
+	walked, err := service.GetMap(MapQuery{SnapshotID: status.SnapshotID, ParentID: 1, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expected MapEntry
+	for _, entry := range walked.Entries {
+		if entry.Kind == "node" && entry.Node.Path == path {
+			expected = entry
+		}
+	}
+	if expected.Node.ID == 0 {
+		t.Fatalf("the walked level did not carry the file: %#v", walked.Entries)
+	}
+
+	looked, err := service.GetNodeEntry(status.SnapshotID, expected.Node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if looked.Node.Path != expected.Node.Path || looked.Name != expected.Name || looked.OwnedAllocated != expected.OwnedAllocated {
+		t.Fatalf("lookup by id described the node differently: %#v vs %#v", looked, expected)
+	}
+	if fmt.Sprint(looked.Capabilities) != fmt.Sprint(expected.Capabilities) {
+		t.Fatalf("lookup by id granted different capabilities: %v vs %v", looked.Capabilities, expected.Capabilities)
+	}
+	if !slices.Contains(looked.Capabilities, "collect") {
+		t.Fatalf("a real file must be collectable: %#v", looked)
+	}
+
+	if _, err := service.GetNodeEntry(status.SnapshotID, 0); err == nil {
+		t.Fatal("expected a missing node id to be rejected")
+	}
+	if _, err := service.GetNodeEntry(status.SnapshotID, expected.Node.ID+9999); err == nil {
+		t.Fatal("expected an unknown node id to be rejected")
 	}
 }

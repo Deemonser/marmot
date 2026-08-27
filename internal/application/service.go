@@ -1328,6 +1328,24 @@ func (s *Service) RevealNode(snapshotID, nodeID int64) (NodeActionResult, error)
 	})
 }
 
+// GetNodeEntry resolves one node ID into the map entry the current level would
+// have carried for it. The space map's outer rings are slim projections with no
+// path and no capabilities by design, so acting on one means looking its node up
+// by ID (ADR-0048, DDD invariant 17) -- this is that lookup, and it is the only
+// way an arc below the current level can be collected. Capabilities come from
+// mapEntry, the same place the walked level gets them, so a projected arc gains
+// nothing the current level would not already grant.
+func (s *Service) GetNodeEntry(snapshotID, nodeID int64) (MapEntry, error) {
+	if snapshotID <= 0 || nodeID <= 0 {
+		return MapEntry{}, errors.New("snapshot and node are required")
+	}
+	node, err := s.store.NodeByID(snapshotID, nodeID)
+	if err != nil {
+		return MapEntry{}, fmt.Errorf("node %d is no longer in the current scan result: %w", nodeID, err)
+	}
+	return mapEntry(scan.NodeEntry(node)), nil
+}
+
 func (s *Service) nodeAction(snapshotID, nodeID int64, action func(string) (string, error)) (NodeActionResult, error) {
 	if snapshotID <= 0 || nodeID <= 0 {
 		return NodeActionResult{Code: "invalid_request", Message: "snapshot and node are required"}, nil

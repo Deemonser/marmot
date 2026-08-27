@@ -28,7 +28,11 @@ type CleanupValidation = Models.CleanupValidation;
 // therefore do come out similar in both, because their arcs are adjacent.
 // A wedge's own hue is constant across its whole arc, and its children inherit
 // its slice of the band, so an entry's colour does not change when you drill in.
-type Breadcrumb = { id: number; path: string; hue: HueBand; endAngle: number };
+// name is what labels the crumb when there is no path yet: a level entered
+// through a projected arc has only an id and a name, because the projection
+// carries no path by design (ADR-0048). loadMap fills the path in once that
+// level is actually opened.
+type Breadcrumb = { id: number; path: string; name: string; hue: HueBand; endAngle: number };
 
 // What the list shows while the pointer is over an arc. The reference switches
 // the right-hand panel to the hovered node's own heading and children, on every
@@ -48,6 +52,19 @@ type HoverPreview = {
   band: HueBand;
   depth: number;
 };
+// What one drag carries. `entry` is set when the arc or row came from the current
+// level, which already has its path and capabilities; it is null for an arc on an
+// outer ring, which was drawn from a projection and has to be looked up by
+// nodeId before anything may act on it (ADR-0048).
+type DragSource = {
+  key: string;
+  name: string;
+  size: number;
+  color: string;
+  entry: MapEntry | null;
+  nodeId: number;
+};
+
 type Capability = "enter" | "preview" | "reveal" | "collect" | "rescan";
 type NavigationMode = "push" | "replace" | "travel";
 type ProjectedEntry = Models.ProjectedEntry;
@@ -80,6 +97,13 @@ const pageSize = 256;
 const smallEntryShare = 0.0005;
 // Seconds the destructive action waits before running, so it can be stopped.
 const countdownSeconds = 5;
+// Pixels the pointer must travel before a press turns into a drag instead of a
+// click. Below this the wheel still navigates and the list still selects.
+const dragThreshold = 6;
+// How far outside the dock a release still counts as a drop. The empty dock is a
+// 52px ring at the bottom-left corner; the original takes a drop that lands near
+// it, not only on it, and the corner has nothing else to hit.
+const dropSlack = 26;
 
 // foldSmallEntries merges the long tail of tiny children into the aggregate the
 // backend already provides, keeping totals intact.
@@ -241,6 +265,13 @@ function projectedArc(child: ProjectedEntry) {
     // navigation is by id — which is why every ring is clickable in the
     // reference and now here too.
     nodeId: child.kind === "directory" ? child.id : 0,
+    // Same id, without the "can I be entered" question: a projected file can be
+    // dragged to the dock but not navigated into, so collecting reads this and
+    // navigation reads nodeId. Both go through the backend by id.
+    id: child.kind === "aggregate" ? 0 : child.id,
+    // Empty, and it stays empty: the projection has no path (ADR-0048). The
+    // crumb this arc contributes is labelled by name until its level is opened.
+    path: "",
     name: child.name,
     hasMore: Boolean(child.more),
     children: (child.children ?? []).filter(Boolean),
@@ -276,10 +307,16 @@ function crumbLabel(path: string, index: number): string {
   return path.split("/").pop() || path;
 }
 
+// The trail's label for one crumb: its path when it has one, and the name the
+// projection carried when it does not.
+function breadcrumbLabel(crumb: Breadcrumb, index: number): string {
+  return crumb.path ? crumbLabel(crumb.path, index) : crumb.name;
+}
+
 function rootPage(snapshotId: number, path: string): Page {
   return {
     snapshotId, parentId: 1, path, offset: 0,
-    crumbs: [{ id: 1, path, hue: rootHueBand, endAngle: sunburstEndAngle }],
+    crumbs: [{ id: 1, path, name: path, hue: rootHueBand, endAngle: sunburstEndAngle }],
     hue: rootHueBand, endAngle: sunburstEndAngle,
   };
 }
@@ -338,8 +375,9 @@ function Sunburst({
   hueRange,
   baseDepth,
   levelEndAngle,
-  onEnterNodeId,
+  onEnterProjected,
   onDragEntry,
+  pulledKeys,
 }: {
   map: MapResult | null;
   hoveredKey: string | null;
@@ -357,8 +395,15 @@ function Sunburst({
   hueRange: HueBand;
   baseDepth: number;
   levelEndAngle: number;
-  onEnterNodeId: (nodeId: number, geom: ArcGeom, band: HueBand) => void;
-  onDragEntry: (entry: MapEntry, event: ReactPointerEvent) => void;
+  // Takes the whole chain, not just the clicked node: the trail is what the
+  // breadcrumb needs, and only the wheel knows it.
+  onEnterProjected: (trail: Breadcrumb[]) => void;
+  onDragEntry: (source: DragSource, event: ReactPointerEvent) => void;
+  // Arcs that have been pulled out of the wheel: the one being dragged right
+  // now, and everything already sitting in the dock. They keep their slot so the
+  // rest of the ring does not re-flow, and they take their projected descendants
+  // with them.
+  pulledKeys: Set<string>;
 }) {
   const entries = foldSmallEntries((map?.entries ?? []).filter(Boolean), map?.parent.ownedAllocated ?? 0);
   // Geometry from ADR-0059 SS2, all as ratios of the main ring width so the chart
@@ -390,7 +435,8 @@ function Sunburst({
   // needs one handle per drawn arc, and the same node can be drawn at more than
   // one place across a transition.
   const morphRefs = useRef<Map<string, SVGPathElement>>(new Map());
-  // Geometry of the last painted level, keyed by node. The source of the tween.
+  // Geometry of the last painted level, keyed by morph identity. The source of
+  // the tween.
   const paintedGeom = useRef<Map<string, ArcGeom>>(new Map());
   const morphFrame = useRef<number | null>(null);
   // The in-flight tween. Held in a ref because any re-render during the morph
@@ -402,7 +448,8 @@ function Sunburst({
   // part of the destination vanish on the first frame and leave a hole in the
   // wheel; the original sweeps them out of the circle instead.
   const [ghosts, setGhosts] = useState<Array<{ renderKey: string; color: string; geom: ArcGeom }>>([]);
-  const paintedSlices = useRef<Array<{ key: string; geom: ArcGeom; color: string }>>([]);
+  // Also keyed by morph identity: this is what decides which arcs need a ghost.
+  const paintedSlices = useRef<Array<{ morphKey: string; geom: ArcGeom; color: string }>>([]);
   // The level we are leaving, so a hub click can fold the old level back into
   // the wedge it came from.
   const previousParentKey = useRef<string | null>(null);
@@ -412,6 +459,11 @@ function Sunburst({
   // no path and therefore cannot authorise any file operation (ADR-0048).
   type Arc = {
     key: string;
+    // Identity across a level change. The same as `key` for a real node; for a
+    // grey block, scoped to the parent whose tail it stands for, because an
+    // aggregate's name and the folded block's position both repeat at every
+    // level. See planMorph.
+    morphKey: string;
     renderKey: string;
     depth: number;
     hue: number;
@@ -430,6 +482,19 @@ function Sunburst({
     preview: HoverPreview | null;
     aggregate: boolean;
     stale: boolean;
+    // The snapshot node id, on every ring. Non-zero means the arc can be looked
+    // up, which is what collecting one below the current level needs.
+    id: number;
+    name: string;
+    size: number;
+    // Pulled out of the wheel: this arc, or one of its ancestors, is being
+    // dragged or is already in the dock.
+    pulled: boolean;
+    // The crumbs for every level between the current one and this arc, this arc
+    // included. Entering an outer ring crosses all of them at once, and this is
+    // where their ids, bands and seams come from -- the wheel drew those levels,
+    // so it is the only thing that knows them (ADR-0060 SS5c).
+    trail: Breadcrumb[];
   };
   const slices: Arc[] = [];
   const pushLevel = (
@@ -438,6 +503,9 @@ function Sunburst({
     endAngle: number,
     depth: number,
     band: HueBand,
+    pulled = false,
+    parentKey = "",
+    trail: Breadcrumb[] = [],
   ) => {
     if (depth >= maxDepth || items.length === 0) return;
     const levelTotal = items.reduce((sum, item) => sum + item.size, 0) || items.length;
@@ -463,7 +531,7 @@ function Sunburst({
     // which is what the reference does rather than drawing hairs.
     if (foldedCount > 0 && (foldedSize / levelTotal) * span >= minAngle) {
       drawn.push({
-        key: "folded:" + depth + ":" + slices.length,
+        key: "folded:" + parentKey,
         size: foldedSize,
         isDirectory: false,
         aggregate: true,
@@ -493,8 +561,31 @@ function Sunburst({
       // wide.)
       const inset = Math.min(separatorArc / ((r0 + r1) / 2) / 2, (next - cursor) / 2.5);
       const geom: ArcGeom = { a0: cursor + inset, a1: next - inset, r0, r1 };
+      const itemPulled = pulled || pulledKeys.has(item.key);
+      // A grey block is a wedge like any other and must animate like one, so it
+      // needs an identity that survives a level change. Its own key cannot serve:
+      // the projection and the current level spell an aggregate's key
+      // differently, and the folded tail has no name at all. The parent it hangs
+      // from plus what it is called is the same on both sides.
+      const morphKey = item.aggregate
+        ? parentKey + ">agg:" + ((item as { name?: string }).name ?? "folded")
+        : item.key;
+      const itemId = (item as { id?: number }).id ?? 0;
+      const itemName = (item as { name?: string }).name ?? "";
+      // The chain down to this arc. Aggregates are never in it: nothing recurses
+      // through one, so no arc has an aggregate for an ancestor.
+      const ownTrail = item.aggregate || itemId <= 0
+        ? trail
+        : trail.concat({
+          id: itemId,
+          path: (item as { path?: string }).path ?? "",
+          name: itemName,
+          hue: own,
+          endAngle: childEndAngle(geom, endAngle),
+        });
       slices.push({
         key: item.key,
+        morphKey,
         renderKey: item.key + ":" + depth + ":" + slices.length,
         depth,
         hue,
@@ -514,9 +605,14 @@ function Sunburst({
         },
         aggregate: item.aggregate,
         stale: item.stale,
+        id: itemId,
+        name: itemName,
+        size: item.size,
+        pulled: itemPulled,
+        trail: ownTrail,
       });
       if (item.isDirectory && item.children.length > 0) {
-        pushLevel(item.children.map(projectedArc), cursor, next, depth + 1, own);
+        pushLevel(item.children.map(projectedArc), cursor, next, depth + 1, own, itemPulled, item.key, ownTrail);
       }
       cursor = next;
       if (index === items.length - 1) cursor = endAngle;
@@ -538,6 +634,8 @@ function Sunburst({
       isDirectory: entry.kind === "node" && entry.node.kind === "directory",
       aggregate: entry.kind !== "node",
       stale: entry.displayState === "stale",
+      id: entry.kind === "node" ? entry.node.id : 0,
+      path: entryPath(entry),
       entry,
       name: entry.name,
       hasMore: Boolean(entry.childrenHasMore),
@@ -547,6 +645,8 @@ function Sunburst({
     levelEndAngle,
     0,
     hueRange,
+    false,
+    map ? "node:" + map.parent.id : "",
   );
 
   // One key per level, so the morph runs on navigation and not on hover.
@@ -562,13 +662,12 @@ function Sunburst({
     const commit = () => {
       const next = new Map<string, ArcGeom>();
       for (const slice of sliceSnapshot) {
-        // Aggregates are deliberately absent: see planMorph.
-        if (!slice.aggregate && !next.has(slice.key)) next.set(slice.key, slice.geom);
+        if (!next.has(slice.morphKey)) next.set(slice.morphKey, slice.geom);
       }
       paintedGeom.current = next;
       previousParentKey.current = map ? "node:" + map.parent.id : null;
       paintedSlices.current = sliceSnapshot.map((slice) => ({
-        key: slice.key,
+        morphKey: slice.morphKey,
         geom: slice.geom,
         color: slice.aggregate ? sunburstAggregate : sliceColor(slice.hue, baseDepth + slice.depth + 1),
       }));
@@ -587,10 +686,12 @@ function Sunburst({
     // What each arc does across the change is decided in planMorph, which also
     // holds the rule that aggregates never match by identity (their keys repeat
     // across levels).
-    const live = new Set(sliceSnapshot.map((slice) => slice.key));
+    // Same identity the tween matches on, or a grey block that is really gone
+    // counts as surviving and never gets a ghost to fade out with.
+    const live = new Set(sliceSnapshot.map((slice) => slice.morphKey));
     const departingSlices: Array<{ renderKey: string; color: string; geom: ArcGeom }> = [];
     previousSlices.forEach((slice, index) => {
-      if (live.has(slice.key)) return;
+      if (live.has(slice.morphKey)) return;
       // At its own geometry. The reference does not move these; it removes them.
       departingSlices.push({ renderKey: "ghost:" + index, color: slice.color, geom: slice.geom });
     });
@@ -659,7 +760,17 @@ function Sunburst({
 
   return (
     <div className="sunburst-wrap" aria-label="空间图">
-      <svg className="sunburst" viewBox="0 0 600 600" role="img">
+      {/* The pointer being outside the wheel must mean nothing in the wheel is
+          breathing, and one arc's own pointerleave cannot promise that: it does
+          not fire if the arc is rebuilt or unmounted while the pointer stands
+          still. This one fires on leaving the chart whatever happened inside it,
+          which is what makes the hover state self-correcting. */}
+      <svg
+        className="sunburst"
+        viewBox="0 0 600 600"
+        role="img"
+        onPointerLeave={() => { onHover(null); onHoverArc(null); }}
+      >
         <g transform="translate(300 300)">
           {/* Departing arcs: drawn under the live ones, never interactive. */}
           {ghosts.length > 0 && (
@@ -683,7 +794,7 @@ function Sunburst({
               ))}
             </g>
           )}
-          {slices.map(({ entry, key, renderKey, depth, path, hue, aggregate, stale, nodeId, geom, band, preview }) => {
+          {slices.map(({ entry, key, renderKey, depth, path, hue, aggregate, stale, nodeId, geom, preview, id, name, size, pulled, trail }) => {
             // Only current-level arcs are interactive: a projected descendant
             // carries no path, so it can neither be activated nor collected
             // (ADR-0048, ADR-0017 §2).
@@ -693,21 +804,42 @@ function Sunburst({
             // navigates by node id (ADR-0060 §6); it stays non-interactive for
             // hover, focus, collect and reveal, all of which need a path.
             const canEnterProjected = !interactive && nodeId > 0;
-            const draggable = interactive && entry.kind === "node" && hasCapability(entry, "collect");
+            // Draggable on every ring, not only the current level. The current
+            // level's own entries carry their capabilities; an outer ring's arc
+            // is a projection, so all we can check here is that it is a real
+            // node -- whether it may be collected is decided by the backend when
+            // the drop looks it up (ADR-0048).
+            const collectable = !pulled && !aggregate && id > 0
+              && (entry ? entry.kind === "node" && hasCapability(entry, "collect") : true);
             const selected = key === selectedKey;
             const color = aggregate ? sunburstAggregate : sliceColor(hue, baseDepth + depth + 1);
+            // A pulled arc slides out along its own midline before it fades, so
+            // it reads as taken out of the ring rather than switched off. d3
+            // measures angles from twelve o'clock, so the outward direction at
+            // angle a is (sin a, -cos a).
+            const pullMid = (geom.a0 + geom.a1) / 2;
+            const pullBy = ringWidth * 0.5;
             return (
               <path
                 key={renderKey}
                 ref={(node) => {
                   pathRefs.current[key] = node;
-                  if (node) morphRefs.current.set(renderKey, node);
+                  // A pulled arc is deliberately kept out of the morph: paintMorph
+                  // writes opacity inline, which would override the pulled state
+                  // for the length of a level change.
+                  if (node && !pulled) morphRefs.current.set(renderKey, node);
                   else morphRefs.current.delete(renderKey);
                 }}
                 d={path}
                 role={interactive ? "button" : "presentation"}
-                tabIndex={interactive ? 0 : -1}
-                onPointerDown={(event) => { if (draggable && entry) onDragEntry(entry, event); }}
+                tabIndex={interactive && !pulled ? 0 : -1}
+                aria-hidden={pulled || undefined}
+                style={pulled
+                  ? { transform: "translate(" + (Math.sin(pullMid) * pullBy).toFixed(2) + "px, " + (-Math.cos(pullMid) * pullBy).toFixed(2) + "px)" }
+                  : undefined}
+                onPointerDown={(event) => {
+                  if (collectable) onDragEntry({ key, name, size, color, entry, nodeId: id }, event);
+                }}
                 className={
                   "sunburst-slice" +
                   " depth-" + depth +
@@ -715,6 +847,7 @@ function Sunburst({
                   (key === breathingKey ? " is-breathing" : "") +
                   (aggregate ? " is-aggregate" : "") +
                   (stale ? " is-stale" : "") +
+                  (pulled ? " is-pulled" : "") +
                   (interactive ? "" : " is-projected")
                 }
                 fill={color}
@@ -733,7 +866,7 @@ function Sunburst({
                 onFocus={() => { if (entry) onFocus(entry); }}
                 onClick={(event) => {
                   if (canEnterProjected) {
-                    onEnterNodeId(nodeId, geom, band);
+                    onEnterProjected(trail);
                     return;
                   }
                   if (!canActivate || !entry) return;
@@ -922,6 +1055,8 @@ function DirectoryList({
   onReveal,
   onEnter,
   onCollect,
+  onDragEntry,
+  pulledKeys,
 }: {
   entryColors_: Record<string, string>;
   // While the pointer is over an arc the panel shows that node instead of the
@@ -946,6 +1081,14 @@ function DirectoryList({
   onReveal: (entry: MapEntry) => void;
   onEnter: (entry: MapEntry) => void;
   onCollect: (entry: MapEntry) => void;
+  // Rows drag to the dock the same way arcs do, through the pointer path in
+  // beginEntryDrag rather than HTML5 drag and drop.
+  onDragEntry: (source: DragSource, event: ReactPointerEvent) => void;
+  // Rows whose object has left the current directory: the one being dragged, and
+  // everything already in the dock. R-014 SS3.6 -- dragging an item back out of
+  // the Collector restores it to this list, so it is out of the list while it is
+  // in there. The row stays mounted and collapses, so both directions animate.
+  pulledKeys: Set<string>;
 }) {
   return (
     <aside className="directory-panel" data-testid="directory-list">
@@ -976,15 +1119,20 @@ function DirectoryList({
           const isSelected = key === selectedKey;
           const isFocused = key === focusedKey;
           const isHovered = key === hoveredKey;
+          const pulled = pulledKeys.has(key);
           const kindClass = entry.kind === "aggregate" || entry.kind === "virtual" ? "virtual" : entry.node.kind === "directory" ? "directory" : "file";
           return (
             <div
               key={key}
-              className={"directory-row" + (isSelected ? " is-selected" : "") + (isFocused ? " is-focused" : "") + (isHovered ? " is-hovered" : "")}
+              className={"directory-row" + (isSelected ? " is-selected" : "") + (isFocused ? " is-focused" : "") + (isHovered ? " is-hovered" : "") + (pulled ? " is-pulled" : "")}
               role="option"
               aria-selected={isSelected}
-              tabIndex={isFocused || (index === 0 && !focusedKey) ? 0 : -1}
-              draggable={entry.kind === "node" && hasCapability(entry, "collect")}
+              aria-hidden={pulled || undefined}
+              tabIndex={pulled ? -1 : isFocused || (index === 0 && !focusedKey) ? 0 : -1}
+              onPointerDown={(event) => {
+                if (pulled || entry.kind !== "node" || !hasCapability(entry, "collect")) return;
+                onDragEntry({ key, name: entry.name, size: entrySize(entry), color: entryColors_[key] ?? "#7fb96a", entry, nodeId: entry.node.id }, event);
+              }}
               onMouseEnter={() => onHover(entry)}
               onMouseLeave={() => onHover(null)}
               onFocus={() => onFocus(entry)}
@@ -997,10 +1145,6 @@ function DirectoryList({
                   event.preventDefault();
                   onPreview(entry);
                 }
-              }}
-              onDragStart={(event) => {
-                event.dataTransfer.setData("application/marmot-entry", JSON.stringify(entry));
-                event.dataTransfer.effectAllowed = "copy";
               }}
               title={entryPath(entry)}
             >
@@ -1095,6 +1239,25 @@ export default function App() {
       setHoverPreview(preview);
     }, previewDwellMs);
   }
+
+  // Identity of the level being drawn -- the same one the wheel's morph runs on,
+  // because it is the same event: every arc is rebuilt with new geometry.
+  const levelKey = map ? map.snapshotId + ":" + map.parent.id + ":" + map.offset : "";
+
+  // A level change rebuilds every arc under a pointer that has not moved, so the
+  // pointerenter that started a wedge breathing never gets its pointerleave:
+  // WebKit only re-decides what is under the cursor on the next move. Nothing
+  // else clears it -- loadMap resets hoveredEntry but not the arc hover, and the
+  // arc hover is what breathes. So the old wedge kept breathing after a
+  // drill-in, and going back up brought it into view still going, with the
+  // pointer parked on the hub.
+  useEffect(() => {
+    setHoveredArcKey(null);
+    setHoveredEntry(null);
+    window.clearTimeout(previewTimer.current);
+    shownPreviewKey.current = null;
+    setHoverPreview(null);
+  }, [levelKey]);
   const [focusedEntry, setFocusedEntry] = useState<MapEntry | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<MapEntry | null>(null);
   const [staleEntry, setStaleEntry] = useState<MapEntry | null>(null);
@@ -1108,7 +1271,25 @@ export default function App() {
   // The hub takes the colour the current node had in its parent's wheel, so a
   // drill-down keeps its identity. Unknown after a restore or a back step.
   const [centerColor, setCenterColor] = useState<string | null>(null);
-  const [dragGhost, setDragGhost] = useState<{ label: string; x: number; y: number } | null>(null);
+  // The chip that rides under the cursor while an entry is dragged to the dock,
+  // plus whether the pointer is currently over the dock. `over` drives both the
+  // chip and the dock's own armed state, so the two always agree.
+  const [drag, setDrag] = useState<{
+    key: string;
+    label: string;
+    size: number;
+    color: string;
+    x: number;
+    y: number;
+    over: boolean;
+  } | null>(null);
+  // An outer ring's arc has to be looked up before it can be collected, and the
+  // lookup lands a tick after the drop. Holding its key here keeps it pulled out
+  // across that gap, so it does not snap back into the wheel for one frame.
+  const [pendingCollect, setPendingCollect] = useState<string | null>(null);
+  // A drag ends with a pointerup, and WebKit follows that with a click on
+  // whatever the press started on. Without this the drop would also navigate.
+  const dragSuppressesClick = useRef(false);
   // Delete runs on a countdown that can be stopped, the way the reference does.
   // The safety chain is unchanged: the plan is validated, re-validated at the
   // end of the countdown, and the items go to the Trash, never deleted outright.
@@ -1164,6 +1345,16 @@ export default function App() {
   }, [hoverPreview]);
   const inspectedInCollector = inspectorEntry ? collector.some((item) => entryKey(item) === entryKey(inspectorEntry)) : false;
   const collectorBytes = collector.reduce((sum, item) => sum + entrySize(item), 0);
+  // Everything that is currently out of the wheel and out of the list: the arc
+  // being dragged, one waiting on its lookup, and everything already collected.
+  // R-014 SS3.6 -- what is in the dock is not in the current directory, and
+  // taking it back out of the dock puts it back.
+  const pulledKeys = useMemo(() => {
+    const keys = new Set(collector.map(entryKey));
+    if (drag) keys.add(drag.key);
+    if (pendingCollect) keys.add(pendingCollect);
+    return keys;
+  }, [collector, drag?.key, pendingCollect]);
   // At the root the displayed total is the volume's used bytes, so the number in
   // the hub is the number the entries add up to — the tree total alone excludes
   // the balancing entry and would not add up (ADR-0052 §4).
@@ -1398,7 +1589,7 @@ export default function App() {
       parentId: node.id,
       path: node.path,
       offset: 0,
-      crumbs: currentPage.crumbs.concat({ id: node.id, path: node.path, hue: childBand, endAngle }),
+      crumbs: currentPage.crumbs.concat({ id: node.id, path: node.path, name: entry.name, hue: childBand, endAngle }),
       hue: childBand,
       endAngle,
     };
@@ -1409,17 +1600,29 @@ export default function App() {
   // path comes back with the map and loadMap fills it in. Its hue band is not
   // known here either — the wheel derived it while drawing — so the level keeps
   // its parent's band until the map arrives.
-  function enterNodeId(nodeId: number, geom: ArcGeom, band: HueBand) {
-    if (!currentPage || nodeId <= 0) return;
-    const endAngle = childEndAngle(geom, currentPage.endAngle);
+  // Entering an arc on an outer ring crosses several levels in one click, so
+  // every level it crossed gets its own crumb -- otherwise the trail reads
+  // "Macintosh HD > com_apple_MobileAsset_iOSSimulatorRuntime" for a node four
+  // levels down, which is not the path the object actually has (ADR-0060 SS5c,
+  // point 3 of its follow-up work).
+  //
+  // The chain comes from the wheel, because the wheel is what drew those levels:
+  // it has each one's id, band and seam. It does not have their paths, and does
+  // not invent any -- the projection carries none (ADR-0048). The intermediate
+  // crumbs are labelled by name, and loadMap fills a level's real path in from
+  // the store the moment that level is opened.
+  function enterProjected(trail: Breadcrumb[]) {
+    if (!currentPage || trail.length === 0) return;
+    const target = trail[trail.length - 1];
+    if (target.id <= 0) return;
     void goToPage({
       snapshotId: currentPage.snapshotId,
-      parentId: nodeId,
-      path: "",
+      parentId: target.id,
+      path: target.path,
       offset: 0,
-      crumbs: currentPage.crumbs.concat({ id: nodeId, path: "", hue: band, endAngle }),
-      hue: band,
-      endAngle,
+      crumbs: currentPage.crumbs.concat(trail),
+      hue: target.hue,
+      endAngle: target.endAngle,
     }, "push");
   }
 
@@ -1433,34 +1636,78 @@ export default function App() {
     void goToPage({ ...currentPage, offset: currentPage.offset + Math.max(1, visibleNodes) }, "replace");
   }
 
-  // SVG paths cannot start an HTML5 drag, so the wheel drags with pointer
-  // events: track the move, show a ghost, and collect on release over the ring.
-  function beginSliceDrag(entry: MapEntry, event: ReactPointerEvent) {
+  // overDock is the drop test for both drag sources: coordinates against the
+  // dock's own box, not the event target, because the chip sits under the cursor
+  // and the shell stops hit-testing while a drag is in flight.
+  function overDock(x: number, y: number): boolean {
+    const rect = collectorRef.current?.getBoundingClientRect();
+    if (!rect) return false;
+    return x >= rect.left - dropSlack && x <= rect.right + dropSlack
+      && y >= rect.top - dropSlack && y <= rect.bottom + dropSlack;
+  }
+
+  // Both the wheel and the list drag to the dock, and both do it with pointer
+  // events rather than HTML5 drag and drop: an SVG path cannot start a native
+  // drag at all, and WebKit refuses to start one on any element under
+  // `user-select: none`, which the whole shell sets so a drag does not select
+  // the text it passes over. One path for both also means one chip and one
+  // armed state, which is what the original shows.
+  function beginEntryDrag(source: DragSource, event: ReactPointerEvent) {
     if (event.button !== 0) return;
+    // The countdown is running against the set the plan was built from, so
+    // nothing may join it: the drop would look accepted and not be deleted.
+    if (countdown !== null) return;
+    // A current-level entry must already say it can be collected. A projected arc
+    // cannot say anything -- it has no capabilities by design -- so all we
+    // require here is a node to look up, and the answer comes from the backend.
+    if (source.entry ? !hasCapability(source.entry, "collect") || !entryNode(source.entry) : source.nodeId <= 0) return;
     const startX = event.clientX;
     const startY = event.clientY;
+    const chip = { key: source.key, label: source.name, size: source.size, color: source.color };
     let dragging = false;
     const move = (moveEvent: PointerEvent) => {
-      if (!dragging && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 6) return;
+      if (!dragging && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < dragThreshold) return;
       dragging = true;
-      setDragGhost({ label: entry.name, x: moveEvent.clientX, y: moveEvent.clientY });
+      setDrag({ ...chip, x: moveEvent.clientX, y: moveEvent.clientY, over: overDock(moveEvent.clientX, moveEvent.clientY) });
     };
     const finish = (upEvent: PointerEvent) => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", finish);
-      setDragGhost(null);
+      window.removeEventListener("pointercancel", finish);
+      setDrag(null);
       if (!dragging) return;
-      const target = collectorRef.current?.getBoundingClientRect();
-      if (!target) return;
-      const inside = upEvent.clientX >= target.left && upEvent.clientX <= target.right
-        && upEvent.clientY >= target.top && upEvent.clientY <= target.bottom;
-      if (inside) toggleCollector(entry);
+      // The click that follows this pointerup belongs to the drag, not to the
+      // arc or row underneath it.
+      dragSuppressesClick.current = true;
+      window.setTimeout(() => { dragSuppressesClick.current = false; }, 0);
+      if (upEvent.type !== "pointerup" || !overDock(upEvent.clientX, upEvent.clientY)) return;
+      if (source.entry) toggleCollector(source.entry, "add");
+      else void collectProjected(source);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  }
+
+  // An arc below the current level was drawn from a projection: no path, no
+  // capabilities, only a node id (ADR-0048). Collecting one therefore goes back
+  // to the snapshot for the real entry, which is where its capabilities are
+  // decided -- the frontend never invents them.
+  async function collectProjected(source: DragSource) {
+    const snapshotId = mapRef.current?.snapshotId ?? 0;
+    if (snapshotId <= 0) return;
+    setPendingCollect(source.key);
+    try {
+      toggleCollector(await MarmotService.GetNodeEntry(snapshotId, source.nodeId), "add");
+    } catch (error) {
+      setNotice("无法收集该对象：" + String(error));
+    } finally {
+      setPendingCollect(null);
+    }
   }
 
   function activateEntry(entry: MapEntry, geom?: ArcGeom) {
+    if (dragSuppressesClick.current) return;
     setFocusedEntry(entry);
     setSelectedEntry(entry);
     if (entry.kind === "node" && entry.node.kind === "directory") {
@@ -1498,7 +1745,7 @@ export default function App() {
       offset: 0,
       crumbs: viaCrumb
         ? currentPage.crumbs.slice(0, -1)
-        : currentPage.crumbs.slice(0, -1).concat({ id: parentId, path: "", hue: currentPage.hue, endAngle: currentPage.endAngle }),
+        : currentPage.crumbs.slice(0, -1).concat({ id: parentId, path: "", name: "", hue: currentPage.hue, endAngle: currentPage.endAngle }),
       hue: viaCrumb ? parentCrumb.hue : currentPage.hue,
       endAngle: viaCrumb ? parentCrumb.endAngle : currentPage.endAngle,
     }, "push");
@@ -1588,7 +1835,10 @@ export default function App() {
     setNotice("对象已变化，已停用文件操作。请重新读取当前目录。");
   }
 
-  function toggleCollector(entry: MapEntry | null) {
+  // mode "add" is what a drop does: the dock only ever takes things in, so
+  // dropping something already collected must not quietly remove it again.
+  // Removing is the row's own cross, and the keyboard's toggle.
+  function toggleCollector(entry: MapEntry | null, mode: "toggle" | "add" = "toggle") {
     if (!entry) return;
     if (staleEntry && entryKey(staleEntry) === entryKey(entry)) {
       setNotice("对象已变化，不能加入收集区。");
@@ -1598,9 +1848,10 @@ export default function App() {
       setNotice("聚合对象和受限对象不能加入收集区。");
       return;
     }
-    setCollector((current) => current.some((item) => entryKey(item) === entryKey(entry))
-      ? current.filter((item) => entryKey(item) !== entryKey(entry))
-      : current.concat(entry));
+    setCollector((current) => {
+      if (!current.some((item) => entryKey(item) === entryKey(entry))) return current.concat(entry);
+      return mode === "add" ? current : current.filter((item) => entryKey(item) !== entryKey(entry));
+    });
   }
 
   async function previewEntry(entry: MapEntry | null) {
@@ -1711,16 +1962,31 @@ export default function App() {
     }
   }
 
-  function handleCollectorDrop(event: ReactDragEvent<HTMLDivElement>) {
+  // Entries reach the dock through beginEntryDrag, not through HTML5 drag and
+  // drop. What arrives here is therefore a Finder drop, and a dropped path is
+  // not cleanup authorisation (R-012 SS4.4) -- so it is swallowed rather than
+  // left to bubble up to the shell, where it would re-root the scan.
+  function handleCollectorDrop(event: ReactDragEvent<HTMLElement>) {
     event.preventDefault();
     event.stopPropagation();
-    const raw = event.dataTransfer.getData("application/marmot-entry");
-    if (!raw) return;
-    try {
-      toggleCollector(JSON.parse(raw) as MapEntry);
-    } catch {
-      setNotice("无法读取拖入对象");
+    // Anything without files is one of the dock's own rows being dragged back
+    // over the dock, which is not a Finder drop and needs no explanation.
+    if (!event.dataTransfer.types.includes("Files")) return;
+    setNotice("收集区只接受扫描结果中的对象，不接受从 Finder 拖入的路径");
+  }
+
+  // A collected object is out of the current directory (R-014 SS3.6) and its row
+  // is collapsed to nothing, so keyboard focus must step over it: land on the
+  // wanted row, or the nearest one still in the list, looking the way the key was
+  // going first.
+  function settleFocus(target: number, direction: number): number {
+    for (let index = target; index >= 0 && index < entries.length; index += direction) {
+      if (!pulledKeys.has(entryKey(entries[index]))) return index;
     }
+    for (let index = target; index >= 0 && index < entries.length; index -= direction) {
+      if (!pulledKeys.has(entryKey(entries[index]))) return index;
+    }
+    return -1;
   }
 
   useEffect(() => {
@@ -1763,13 +2029,16 @@ export default function App() {
         event.preventDefault();
         const focusedIndex = focusedEntry ? entries.findIndex((entry) => entryKey(entry) === entryKey(focusedEntry)) : -1;
         let nextIndex = focusedIndex < 0 ? 0 : focusedIndex;
+        let direction = 1;
         if (event.key === "ArrowDown" || event.key === "ArrowRight") nextIndex = Math.min(entries.length - 1, nextIndex + 1);
-        if (event.key === "ArrowUp" || event.key === "ArrowLeft") nextIndex = Math.max(0, nextIndex - 1);
+        if (event.key === "ArrowUp" || event.key === "ArrowLeft") { nextIndex = Math.max(0, nextIndex - 1); direction = -1; }
         if (event.key === "PageDown") nextIndex = Math.min(entries.length - 1, nextIndex + Math.max(1, Math.floor(entries.length / 8)));
-        if (event.key === "PageUp") nextIndex = Math.max(0, nextIndex - Math.max(1, Math.floor(entries.length / 8)));
+        if (event.key === "PageUp") { nextIndex = Math.max(0, nextIndex - Math.max(1, Math.floor(entries.length / 8))); direction = -1; }
         if (event.key === "Home") nextIndex = 0;
-        if (event.key === "End") nextIndex = entries.length - 1;
-        setFocusedEntry(entries[nextIndex]);
+        if (event.key === "End") { nextIndex = entries.length - 1; direction = -1; }
+        const settled = settleFocus(nextIndex, direction);
+        if (settled < 0) return;
+        setFocusedEntry(entries[settled]);
         return;
       }
       if (event.key === "Enter" && focusedEntry) {
@@ -1787,7 +2056,7 @@ export default function App() {
   });
 
   return (
-    <div className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
+    <div className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source") + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
       {/* One chrome row, like the reference: window buttons, navigation and the
           breadcrumb trail. Everything else that used to live up here (title
           block, counters, history meta) is technical detail the reference never
@@ -1807,7 +2076,7 @@ export default function App() {
                   className={"crumb" + (index === (currentPage?.crumbs.length ?? 1) - 1 ? " is-current" : "")}
                   onClick={() => jumpToBreadcrumb(index)}
                 >
-                  {crumbLabel(crumb.path, index)}
+                  {breadcrumbLabel(crumb, index)}
                 </button>
               ))}
             </nav>
@@ -1833,11 +2102,12 @@ export default function App() {
               </div>
               <div className="map-stage">
                 <Sunburst
-                  onDragEntry={beginSliceDrag}
+                  onDragEntry={beginEntryDrag}
+                  pulledKeys={pulledKeys}
                   hueRange={hueRange}
                   baseDepth={baseDepth}
                   levelEndAngle={currentPage?.endAngle ?? sunburstEndAngle}
-                  onEnterNodeId={enterNodeId}
+                  onEnterProjected={enterProjected}
                   centerColor={centerColor}
                   map={map}
                   hoveredKey={hoveredKey}
@@ -1883,6 +2153,8 @@ export default function App() {
               onReveal={(entry) => void revealEntry(entry)}
               onEnter={(entry) => entry.kind === "node" ? openDirectory(entry) : expandEntry(entry)}
               onCollect={toggleCollector}
+              onDragEntry={beginEntryDrag}
+              pulledKeys={pulledKeys}
             />
           </section>
         </main>
@@ -1916,14 +2188,20 @@ export default function App() {
           </div>
 	        </main>
       )}
-      {dragGhost && (
-        <div className="drag-ghost" style={{ left: dragGhost.x + 12, top: dragGhost.y + 12 }}>{dragGhost.label}</div>
+      {drag && (
+        /* The chip is the collected row, drawn early: same dot, name and size,
+           so what you drag looks like what lands in the dock. */
+        <div className={"drag-chip" + (drag.over ? " is-over" : "")} style={{ left: drag.x, top: drag.y }}>
+          <span className="drag-chip-dot" style={{ background: drag.color }} aria-hidden="true" />
+          <span className="drag-chip-name">{drag.label}</span>
+          <span className="drag-chip-size">{formatBytes(drag.size)}</span>
+        </div>
       )}
       {notice && <div className="notice" role="status">{notice}</div>}
 
       {showResult && <section
         ref={collectorRef}
-        className={"collector-dock" + (collectorOpen ? " is-open" : "")}
+        className={"collector-dock" + (collectorOpen ? " is-open" : "") + (drag ? " is-target" : "") + (drag?.over ? " is-armed" : "")}
         onDragOver={(event) => event.preventDefault()}
         onDrop={handleCollectorDrop}
         data-testid="collector"

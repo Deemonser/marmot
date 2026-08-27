@@ -379,6 +379,18 @@ func aggregateMapEntries(entries []MapEntry) MapEntry {
 	return aggregate
 }
 
+// GetNodeEntry is how the frontend collects an arc from a ring below the current
+// level: the projection it drew that arc from carries no path and no
+// capabilities, so the node has to be looked up by ID before anything may act on
+// it (ADR-0048).
+func (s *Service) GetNodeEntry(snapshotID, nodeID int64) (MapEntry, error) {
+	entry, err := s.application.GetNodeEntry(snapshotID, nodeID)
+	if err != nil {
+		return MapEntry{}, err
+	}
+	return mapEntry(entry), nil
+}
+
 func (s *Service) PreviewNode(snapshotID, nodeID int64) (NodeActionResult, error) {
 	result, err := s.application.PreviewNode(snapshotID, nodeID)
 	return NodeActionResult{OK: result.OK, Code: result.Code, Message: result.Message, Path: result.Path}, err

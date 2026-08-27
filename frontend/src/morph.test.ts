@@ -4,7 +4,6 @@ import {
   paintMorph,
   clearMorphStyles,
   planMorph,
-  survivingKeys,
   arcPath,
   morphEase,
   morphPrune,
@@ -140,44 +139,45 @@ test("cleanup leaves the departing group hidden", () => {
   assert.equal(group.opacity, "0", "the cleanup made the departing arcs visible again");
 });
 
-// The grey blocks were the only arcs the morph thought had survived a level
-// change: a folded block is keyed by depth and position, an aggregate by name,
-// and both keys repeat between two different levels. So every real wedge
-// departed and arrived correctly while the grey ones alone slid across.
-test("aggregates never match identity across a level change", () => {
+// A grey block travels with the coloured ones when it is the same grey block.
+// Both earlier readings were visible on screen: matched bare, the grey keys
+// collided between levels and the grey blocks were the *only* arcs that slid;
+// excluded outright, they were the only arcs that did not, sitting invisible
+// through the whole motion and appearing at the end.
+test("a grey block scoped to the same parent travels with the coloured arcs", () => {
   const previous = new Map<string, ArcGeom>([
     ["node:7", oldGeom],
-    // The key a folded block had in the previous level. It is a different set of
-    // children now, and must not be recognised.
-    ["folded:1:4", oldGeom],
+    ["node:7>agg:folded", oldGeom],
+    ["node:7>agg:较小对象", oldGeom],
   ]);
   const plan = planMorph(
     previous,
     [
-      { key: "node:7", renderKey: "a", geom: newGeom, aggregate: false },
-      { key: "folded:1:4", renderKey: "b", geom: newGeom, aggregate: true },
+      { morphKey: "node:7", renderKey: "a", geom: newGeom },
+      { morphKey: "node:7>agg:folded", renderKey: "b", geom: newGeom },
+      { morphKey: "node:7>agg:较小对象", renderKey: "c", geom: newGeom },
     ],
     [],
     0,
   );
-  assert.deepEqual(plan.moving.map((t) => t.renderKey), ["a"]);
-  assert.deepEqual(plan.arriving.map((t) => t.renderKey), ["b"], "a grey block was tweened across levels");
+  assert.deepEqual(plan.moving.map((t) => t.renderKey), ["a", "b", "c"], "a grey block was left out of the motion");
+  assert.equal(plan.arriving.length, 0);
+});
+
+// The other half of the rule: the destination's tail is a different tail, and
+// must not be tweened out of the one that belonged to another parent.
+test("a grey block under a different parent is a different block", () => {
+  const previous = new Map<string, ArcGeom>([["node:7>agg:较小对象", oldGeom]]);
+  const plan = planMorph(previous, [{ morphKey: "node:9>agg:较小对象", renderKey: "b", geom: newGeom }], [], 0);
+  assert.equal(plan.moving.length, 0, "two levels' tails were treated as one object");
+  assert.deepEqual(plan.arriving.map((t) => t.renderKey), ["b"]);
 });
 
 test("real nodes still match across a level change", () => {
   const previous = new Map<string, ArcGeom>([["node:7", oldGeom]]);
-  const plan = planMorph(previous, [{ key: "node:7", renderKey: "a", geom: newGeom, aggregate: false }], [], 0);
+  const plan = planMorph(previous, [{ morphKey: "node:7", renderKey: "a", geom: newGeom }], [], 0);
   assert.equal(plan.moving.length, 1);
   assert.equal(plan.arriving.length, 0);
-});
-
-test("what the next change matches against excludes aggregates", () => {
-  const keys = survivingKeys([
-    { key: "node:7", aggregate: false },
-    { key: "folded:1:4", aggregate: true },
-  ]);
-  assert.ok(keys.has("node:7"));
-  assert.ok(!keys.has("folded:1:4"));
 });
 
 // The interpolator has to be gentle at both ends. easeOutCubic was not: a sixth

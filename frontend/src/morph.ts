@@ -125,23 +125,30 @@ export const morphArcCeiling = 2600;
 
 // planMorph decides what each arc does across a level change.
 //
-// Identity is matched by key, so anything whose key can repeat across levels
-// must be excluded: a folded block is keyed by its depth and position and an
-// aggregate by its name, and both collide between two different levels. When
-// they did, the grey blocks were the only arcs the morph thought had survived —
-// so every real wedge correctly departed or arrived while the grey ones alone
-// slid across the wheel. They are never the same object; they always depart and
-// arrive.
+// Identity is matched on morphKey, and the caller owns the job of making that
+// key mean "the same object, at the same place in the tree". A node's id says it
+// on its own. A grey block's does not: an aggregate is named after what it
+// stands for and the folded tail is not named at all, so both repeat at every
+// level — which is why the caller scopes them to the parent they belong to.
+//
+// Two earlier readings of this, both wrong. First the grey keys were matched
+// bare, so they collided between levels: the grey blocks were the only arcs the
+// morph thought had survived, and they alone slid across the wheel while every
+// real wedge departed or arrived. Then they were excluded outright, which swung
+// it the other way — every grey block sat at opacity 0 through the whole motion
+// and appeared only in the reveal, while the coloured arcs travelled. Neither is
+// what the reference shows: a grey block is a wedge like any other, and it
+// survives a level change exactly when the object it stands for does.
 export function planMorph(
   previous: Map<string, ArcGeom>,
-  slices: Array<{ key: string; renderKey: string; geom: ArcGeom; aggregate: boolean }>,
+  slices: Array<{ morphKey: string; renderKey: string; geom: ArcGeom }>,
   departing: Array<{ renderKey: string; geom: ArcGeom }>,
   started: number,
 ): MorphPlan {
   const moving: MorphPlan["moving"] = [];
   const arriving: MorphPlan["arriving"] = [];
   for (const slice of slices) {
-    const from = slice.aggregate ? undefined : previous.get(slice.key);
+    const from = previous.get(slice.morphKey);
     if (from) {
       moving.push({ renderKey: slice.renderKey, from, to: slice.geom });
     } else {
@@ -149,14 +156,4 @@ export function planMorph(
     }
   }
   return { moving, arriving, departing, started };
-}
-
-// survivingKeys is what the *next* level change will match against. Aggregates
-// are left out for the same reason.
-export function survivingKeys(slices: Array<{ key: string; aggregate: boolean }>): Set<string> {
-  const keys = new Set<string>();
-  for (const slice of slices) {
-    if (!slice.aggregate) keys.add(slice.key);
-  }
-  return keys;
 }

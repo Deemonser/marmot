@@ -198,7 +198,10 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* No separating stroke: the gap between siblings is real background now
    (ADR-0059 SS2), so a stroke on top would double it. The stroke is kept only for
    the focus and selection states. */
-.sunburst-slice { stroke: none; cursor: pointer; transition: opacity .13s, filter .13s; }
+/* transform is in the list for the pull-out: it is what animates the arc back
+   into the ring when a drag is abandoned, and the base rule is what is in force
+   once .is-pulled comes off. */
+.sunburst-slice { stroke: none; cursor: pointer; transition: opacity .13s, filter .13s, transform .22s cubic-bezier(.22, .61, .36, 1); }
 /* No outline on the focused or selected wedge. The reference marks the arc under
    the pointer by breathing its opacity instead, which reads on a wedge of any
    size — a 1px stroke round a hairline arc is mostly stroke. */
@@ -276,7 +279,17 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .collector-summary { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 74px; width: 100%; margin: 0; }
 .collector-toggle { display: flex; align-items: center; gap: 14px; width: auto; min-height: 56px; padding: 4px 6px; border: 0; border-radius: 8px; background: transparent; color: #b9bac0; text-align: left; }
 .collector-toggle:hover { background: rgba(255, 255, 255, .04); color: #e4e4e8; }
-.collector-target { position: relative; display: grid; place-items: center; width: 52px; height: 52px; flex: 0 0 auto; border: 3px solid #7c7d84; border-radius: 50%; box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #7c7d84; }
+.collector-target { position: relative; display: grid; place-items: center; width: 52px; height: 52px; flex: 0 0 auto; border: 3px solid #7c7d84; border-radius: 50%; box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #7c7d84; transition: border-color .12s ease, transform .12s ease; }
+/* A drag is in flight: the empty ring lifts to say it is a target, and turns
+   blue once the pointer is inside the drop area. The caption comes up with it.
+   Only the empty ring scales -- the filled badge is absolutely positioned off
+   the action bar's left edge by a transform of its own, so it says the same
+   thing with its border and the panel's outline instead. */
+.collector-dock.is-target .collector-empty-state .collector-target { border-color: #a3a4ab; transform: scale(1.06); }
+.collector-dock.is-target .collector-caption { color: #e4e4e8; }
+.collector-dock.is-armed .collector-empty-state .collector-target { border-color: #4c7cc4; transform: scale(1.14); box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #4c7cc4, 0 0 0 6px rgba(76, 124, 196, .18); }
+.collector-dock.is-armed .collector-bar .collector-target { border-color: #6f9ede; }
+.collector-dock.is-armed .collector-panel { box-shadow: 0 10px 26px rgba(0, 0, 0, .35), 0 0 0 2px rgba(76, 124, 196, .55); }
 .collector-target.is-filled { border-color: #4c7cc4; box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #4c7cc4; }
 .collector-caption { min-width: 0; font-size: 12px; }
 .collector-toggle > span:last-child { display: grid; gap: 3px; min-width: 0; }
@@ -348,11 +361,24 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Partial-result marker sits inline on the title line, muted. */
 .directory-partial { margin: 10px 2px 0; color: #8e8f96; font-size: 11px; line-height: 1.4; }
 
-/* Ghost that follows the cursor while a slice is dragged to the drop ring. */
-.drag-ghost { position: fixed; z-index: 60; padding: 4px 9px; border-radius: 4px; background: rgba(70, 113, 184, .92); color: #fff; font-size: 11px; pointer-events: none; box-shadow: 0 4px 12px rgba(0,0,0,.35); }
+/* Chip that rides under the cursor while an arc or a row is dragged to the dock.
+   Offset off the hotspot so it never covers what is being dropped on. */
+.drag-chip { position: fixed; z-index: 60; display: flex; align-items: center; gap: 9px; max-width: 320px; padding: 5px 11px; border: 1px solid #4a4b51; border-radius: 6px; background: rgba(44, 45, 51, .96); color: #e0e0e4; font-size: 13px; pointer-events: none; transform: translate(14px, 12px); box-shadow: 0 6px 18px rgba(0, 0, 0, .45); }
+.drag-chip-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; }
+.drag-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drag-chip-size { flex: 0 0 auto; color: #9a9ba1; font-variant-numeric: tabular-nums; }
+/* Over the dock the chip commits to the dock's blue, so the drop is readable
+   without looking away from the cursor. */
+.drag-chip.is-over { border-color: #4c7cc4; box-shadow: 0 6px 18px rgba(0, 0, 0, .45), 0 0 0 3px rgba(76, 124, 196, .28); }
 
 /* Pointer-dragging a slice must not select the page text underneath. */
 .app-shell { user-select: none; }
+
+/* While a drag is in flight the wheel and the list stop hit-testing, so passing
+   over them neither breathes an arc nor swings the list to another node. The
+   drop test is by coordinates, so nothing here needs the events. */
+.app-shell.is-dragging .sunburst, .app-shell.is-dragging .directory-list { pointer-events: none; }
+.app-shell.is-dragging { cursor: grabbing; }
 
 .sunburst-hub { cursor: pointer; }
 .sunburst-center-label { pointer-events: none; }
@@ -367,7 +393,10 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .app-shell-result .collector-actions { margin-left: 4px; }
 .danger-button.compact { width: auto; min-height: 26px; padding: 0 12px; }
 .collector-drawer { width: min(430px, calc(100vw - 60px)); padding: 8px; border: 1px solid #43444a; border-radius: 8px; background: rgba(38, 39, 44, .97); box-shadow: 0 10px 26px rgba(0,0,0,.4); }
-.collector-item { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 34px; padding: 2px 10px; border-radius: 5px; color: #e0e0e4; font-size: 15px; }
+/* -webkit-user-drag is what lets these rows start a native drag out to Finder:
+   the shell sets `user-select: none`, and WebKit otherwise refuses to begin an
+   HTML5 drag anywhere under it. */
+.collector-item { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 34px; padding: 2px 10px; border-radius: 5px; color: #e0e0e4; font-size: 15px; -webkit-user-drag: element; }
 .collector-item:hover { background: rgba(255, 255, 255, .07); }
 .collector-item strong { overflow: hidden; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .collector-item b { font-weight: 400; }
@@ -403,6 +432,29 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 
 /* Projected descendants are visual only: no pointer affordance. */
 .sunburst-slice.is-projected { cursor: default; }
+
+/* Pulled out of the wheel -- being dragged, or already in the dock. The arc
+   slides out along its own midline (the inline transform, which needs the arc's
+   angle) and fades, leaving its slot empty rather than re-flowing the ring: the
+   gap is where the object was, and a drag that is abandoned puts it back.
+   animation: none stops a breath that was running when the drag started. */
+.sunburst-slice.is-pulled { opacity: 0; pointer-events: none; animation: none; transition: opacity .19s ease .03s, transform .22s cubic-bezier(.22, .61, .36, 1); }
+
+/* The same object's row leaves the list with it: collapsed to nothing and slid
+   to the right, towards the dock. The base max-height gives the collapse
+   something to animate from -- with `none` there is nothing to interpolate. */
+.directory-row { max-height: 48px; transition: opacity .17s ease, transform .19s ease, max-height .19s ease, min-height .19s ease; }
+.directory-row.is-pulled { max-height: 0; min-height: 0; overflow: hidden; opacity: 0; transform: translateX(22px); pointer-events: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* The object still has to leave the wheel and the list -- it is the travel
+     that goes, not the change of state. */
+  .sunburst-slice, .sunburst-slice.is-pulled, .directory-row, .directory-row.is-pulled { transition: none; }
+  /* The arc's slide is an inline transform, which a rule here cannot reach --
+     but with the transition gone it is already invisible when it moves. The
+     row's slide is ours to drop. */
+  .directory-row.is-pulled { transform: none; }
+}
 
 @keyframes slice-breathe {
   0%, 100% { opacity: 1; }
