@@ -1945,8 +1945,14 @@ export default function App() {
     }
     // Protected objects are refused with the reason the backend gave, not with a
     // generic "cannot": the point is that the user learns why.
+    //
+    // Only "toggle" says it here, though. "add" is a drop, and the dock has been
+    // showing the prohibition sign and this same sentence for the whole drag --
+    // repeating it in a notice that does not dismiss leaves the explanation on
+    // screen long after the gesture it belongs to. The keyboard and the menu have
+    // no dock message, so they still need it.
     if (entry.protection) {
-      setNotice(protectionMessage(entry));
+      if (mode === "toggle") setNotice(protectionMessage(entry));
       return;
     }
     if (!hasCapability(entry, "collect") || !entryNode(entry)) {
@@ -2228,7 +2234,6 @@ export default function App() {
                   onReveal={(entry) => void revealEntry(entry)}
                   onGoParent={goParent}
                 />
-                {mapBusy && <span className="map-loading">正在更新当前层...</span>}
               </div>
               <div className="map-footer">
                 <span>文件夹按空间贡献着色，聚合项只代表统计结果</span>

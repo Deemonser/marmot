@@ -222,7 +222,6 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Size comes from the geometry, not from here: it is a ratio of the hub radius. */
 .sunburst-center-label { font-weight: 400; }
 .chart-placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: #8e8f96; font-size: 11px; }
-.map-loading { position: absolute; top: 13px; right: 7px; color: #dfb660; font-size: 9px; }
 .map-footer { display: none; }
 
 /* Right inset measured against the reference: its rows end 12pt from the window
