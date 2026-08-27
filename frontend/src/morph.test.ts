@@ -6,6 +6,7 @@ import {
   planMorph,
   survivingKeys,
   arcPath,
+  morphEase,
   morphPrune,
   morphMotion,
   morphReveal,
@@ -177,4 +178,19 @@ test("what the next change matches against excludes aggregates", () => {
   ]);
   assert.ok(keys.has("node:7"));
   assert.ok(!keys.has("folded:1:4"));
+});
+
+// The interpolator has to be gentle at both ends. easeOutCubic was not: a sixth
+// of the way through it had already covered 40% where the reference had moved
+// 11% (R-061 §3.1).
+test("the easing is gentle at both ends and symmetric", () => {
+  assert.equal(morphEase(0), 0);
+  assert.equal(morphEase(1), 1);
+  assert.ok(Math.abs(morphEase(0.5) - 0.5) < 1e-9, "not symmetric about the midpoint");
+  // Symmetry: what it has covered by t equals what it has left at 1 - t.
+  for (const t of [0.1, 0.25, 0.4]) {
+    assert.ok(Math.abs(morphEase(t) - (1 - morphEase(1 - t))) < 1e-9, `asymmetric at ${t}`);
+  }
+  // And it must not be front-loaded the way easeOutCubic was.
+  assert.ok(morphEase(1 / 6) < 0.2, `covers ${morphEase(1 / 6)} in the first sixth`);
 });

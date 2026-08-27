@@ -1371,24 +1371,31 @@ export default function App() {
     void goToPage(pages[index], "travel", index);
   }
 
+  // Up one directory level, which is not the same as going back. They diverge as
+  // soon as you enter a wedge on an outer ring: that crosses several levels at
+  // once, and the breadcrumb only gains the node you clicked, so the crumb above
+  // it is an ancestor several steps up. Following the crumb would jump all the
+  // way there. The node's real parent is on the map itself.
   function goParent() {
-    if (!currentPage || currentPage.crumbs.length <= 1) return;
-    const parentCrumb = currentPage.crumbs[currentPage.crumbs.length - 2];
-    for (let index = pageIndex - 1; index >= 0; index -= 1) {
-      const candidate = pages[index];
-      if (candidate.snapshotId === currentPage.snapshotId && candidate.parentId === parentCrumb.id && candidate.path === parentCrumb.path) {
-        navigateToHistory(index);
-        return;
-      }
-    }
+    if (!currentPage || !map) return;
+    const parentId = map.parent.parentId;
+    if (parentId <= 0) return;
+    const parentCrumb = currentPage.crumbs.length > 1
+      ? currentPage.crumbs[currentPage.crumbs.length - 2]
+      : null;
+    // The crumb is only usable when it really is the parent; otherwise all we
+    // have is the id, and the path and band come back with the map.
+    const viaCrumb = parentCrumb !== null && parentCrumb.id === parentId;
     void goToPage({
       snapshotId: currentPage.snapshotId,
-      parentId: parentCrumb.id,
-      path: parentCrumb.path,
+      parentId,
+      path: viaCrumb ? parentCrumb.path : "",
       offset: 0,
-      crumbs: currentPage.crumbs.slice(0, -1),
-      hue: parentCrumb.hue,
-      endAngle: parentCrumb.endAngle,
+      crumbs: viaCrumb
+        ? currentPage.crumbs.slice(0, -1)
+        : currentPage.crumbs.slice(0, -1).concat({ id: parentId, path: "", hue: currentPage.hue, endAngle: currentPage.endAngle }),
+      hue: viaCrumb ? parentCrumb.hue : currentPage.hue,
+      endAngle: viaCrumb ? parentCrumb.endAngle : currentPage.endAngle,
     }, "push");
   }
 

@@ -92,23 +92,31 @@ export function paintMorph(
   }
 }
 
-// Placeholder easing. The curve was measured as close to linear (k ~ 1.1-1.2),
-// but that reading is derived from frame *timestamps*, and the capture ran on a
-// loaded machine, so it sits with the durations in the unverified bucket
-// (R-061 §5). Left as-is until it can be measured on an idle machine.
+// Cubic ease-in-out (smoothstep), the curve a Mac app gets by default.
+//
+// It replaces easeOutCubic, which was wrong in exactly the direction the
+// reference is gentle: a sixth of the way through, easeOutCubic is already 40%
+// done where the reference had moved 11%. Against the measured samples linear
+// fits best (mean error 0.036), smoothstep next (0.05), easeOutCubic not at all.
+// Smoothstep is chosen over the better-fitting linear because linear reads as
+// mechanical and the difference sits inside the measurement's own noise — the
+// tension is recorded rather than hidden (ADR-0060 §2).
 export function morphEase(t: number): number {
-  const inverse = 1 - t;
-  return 1 - inverse * inverse * inverse;
+  return t * t * (3 - 2 * t);
 }
 
-// Phase durations. Placeholders: the reference's structure was measured
-// reliably, its timing was not — the capture loop was itself among the top CPU
-// consumers on a machine already at load 8 of 8 cores, and the same interaction
-// timed differently run to run. The motion is what these reproduce; the numbers
-// are meant to be re-measured and changed (R-061 §5).
-export const morphPrune = 110;
-export const morphMotion = 380;
-export const morphReveal = 110;
+// Phase durations. The reference's main motion measured 410-625ms across four
+// interactions; 520 sits inside that band, where the first pass used 380 and read
+// as hurried.
+//
+// Still provisional: the capture loop was itself among the top CPU consumers on a
+// machine already at load 8 of 8 cores, and the same interaction timed
+// differently run to run. A time-based animation keeps its duration under load —
+// what load costs is frames, so these readings are more likely floors than
+// inflations — but they still want an idle machine (R-061 §5).
+export const morphPrune = 120;
+export const morphMotion = 520;
+export const morphReveal = 120;
 export const morphDuration = morphPrune + morphMotion + morphReveal;
 // Above this many arcs the morph is skipped rather than allowed to stutter: each
 // frame rewrites every arc's `d`, so the cost is linear in arc count.
