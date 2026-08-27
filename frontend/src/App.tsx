@@ -2357,8 +2357,37 @@ export default function App() {
                       if (event.dataTransfer.dropEffect !== "none") toggleCollector(item);
                     }}
                   >
-                    <span className="collector-dot" style={{ background: levelColors[entryKey(item)] ?? "#7fb96a" }} aria-hidden="true" />
-                    <button className="collector-remove" onClick={() => toggleCollector(item)} aria-label={"移除 " + item.name}>×</button>
+                    {/* The dot and the cross live *inside* the button rather than
+                        beside it. Stacked as siblings in one grid cell they were
+                        ambiguous about which one a press landed on, and the dot won
+                        -- measured: a press dead centre on the cross reported
+                        `collector-dot` as its target, so the cross did nothing. One
+                        element owns the cell now, and whatever is painted in it is
+                        a child of the thing being pressed.
+                        pointerdown rather than click, with preventDefault, because
+                        the row around it is draggable so it can go out to Finder and
+                        a press here would otherwise start that drag and eat the
+                        click. Deliberately not also on click: toggleCollector would
+                        run twice and put the item straight back, so Enter and Space
+                        are handled explicitly. */}
+                    <button
+                      className="collector-remove"
+                      draggable={false}
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        toggleCollector(item);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        event.preventDefault();
+                        toggleCollector(item);
+                      }}
+                      aria-label={"移除 " + item.name}
+                    >
+                      <span className="collector-dot" style={{ background: levelColors[entryKey(item)] ?? "#7fb96a" }} aria-hidden="true" />
+                      <span className="collector-cross" aria-hidden="true">×</span>
+                    </button>
                     <strong>{item.name}</strong>
                     <b>{formatBytes(item.ownedAllocated)}</b>
                   </div>

@@ -138,11 +138,11 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .ghost-button:disabled { opacity: .5; }
 .source-alert { margin-bottom: 8px; padding: 7px 10px; border: 1px solid #7a5f3c; border-radius: 5px; background: #3f3628; color: #e3c491; font-size: 10px; }
 
-.text-button, .icon-button, .quiet-button, .page-actions button, .row-action, .context-button { border: 1px solid #5b5c63; border-radius: 4px; background: transparent; color: #d0d0d5; font-size: 10px; }
+.text-button, .icon-button, .quiet-button, .page-actions button, .context-button { border: 1px solid #5b5c63; border-radius: 4px; background: transparent; color: #d0d0d5; font-size: 10px; }
 .text-button { padding: 5px 8px; }
 .icon-button { min-width: 30px; padding: 5px 8px; }
 .quiet-button { padding: 6px 9px; }
-.text-button:hover, .icon-button:hover, .quiet-button:hover:hover, .page-actions button:hover, .row-action:hover, .context-button:hover { border-color: #a4a5ac; color: #fff; }
+.text-button:hover, .icon-button:hover, .quiet-button:hover:hover, .page-actions button:hover, .context-button:hover { border-color: #a4a5ac; color: #fff; }
 .danger-button { width: 100%; min-height: 31px; padding: 0 14px; border: 1px solid #c47667; border-radius: 4px; background: #813f38; color: #ffe5df; font-size: 10px; font-weight: 600; white-space: nowrap; }
 
 .status-strip { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 28px; padding: 0 2px; border-bottom: 1px solid #46474d; color: #a0a1a8; font-size: 9px; }
@@ -275,9 +275,6 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 
 .collector-dock { position: fixed; z-index: 25; }
 .app-shell-result .collector-dock { right: auto; bottom: 18px; left: 22px; width: auto; max-width: 420px; border: 0; background: transparent; box-shadow: none; }
-.collector-summary { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 74px; width: 100%; margin: 0; }
-.collector-toggle { display: flex; align-items: center; gap: 14px; width: auto; min-height: 56px; padding: 4px 6px; border: 0; border-radius: 8px; background: transparent; color: #b9bac0; text-align: left; }
-.collector-toggle:hover { background: rgba(255, 255, 255, .04); color: #e4e4e8; }
 .collector-target { position: relative; display: grid; place-items: center; width: 52px; height: 52px; flex: 0 0 auto; border: 3px solid #7c7d84; border-radius: 50%; box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #7c7d84; transition: border-color .12s ease, transform .12s ease; }
 /* A drag is in flight: the empty ring lifts to say it is a target, and turns
    blue once the pointer is inside the drop area. The caption comes up with it.
@@ -326,27 +323,13 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .collector-dock.is-refused .collector-panel { box-shadow: 0 10px 26px rgba(0, 0, 0, .35), 0 0 0 2px rgba(208, 69, 58, .5); }
 .collector-target.is-filled { border-color: #4c7cc4; box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #4c7cc4; }
 .collector-caption { min-width: 0; font-size: 12px; }
-.collector-toggle > span:last-child { display: grid; gap: 3px; min-width: 0; }
-.collector-toggle strong { color: #ededf0; font-size: 10px; font-weight: 500; }
-.collector-toggle small { overflow: hidden; color: #94959c; font-size: 8px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .collector-count { color: #dfe0e4; font-size: 12px; font-weight: 500; }
-.collector-actions { position: absolute; right: 5px; bottom: 6px; display: flex; align-items: center; gap: 5px; }
-.collector-actions .quiet-button { display: none; }
-.collector-drawer { position: absolute; bottom: 82px; left: 0; width: min(350px, calc(100vw - 40px)); margin: 0; padding: 12px; border: 1px solid #595a61; border-radius: 6px; background: #393a40; box-shadow: 0 12px 28px rgba(0,0,0,.35); }
-.drawer-heading { display: flex; align-items: end; justify-content: space-between; gap: 10px; padding: 0 0 9px; border-bottom: 1px solid #52535a; }
-.drawer-heading > div { min-width: 0; }
-.drawer-heading h2 { font-size: 13px; }
-.drawer-heading > span { color: #999aa1; font-size: 9px; white-space: nowrap; }
-.collector-empty { padding: 14px 0; color: #999aa1; font-size: 10px; }
-.collector-list { display: grid; gap: 5px; max-height: 150px; overflow: auto; padding: 10px 0 0; }
-.collector-item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 7px; padding: 7px 8px; border: 1px solid #55565d; border-radius: 3px; background: #303137; }
-.collector-item > div { display: grid; gap: 2px; min-width: 0; }
-.collector-item strong, .collector-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.collector-item strong { color: #e5e5e8; font-size: 9px; }
-.collector-item span { color: #96979e; font-size: 8px; }
-.collector-item b { color: #d2d2d6; font-size: 9px; font-weight: 500; white-space: nowrap; }
-.row-action { padding: 4px 6px; font-size: 8px; }
-.row-action.remove { border-color: #82514b; color: #e0a098; }
+/* Plain rows, no gap between them: the reference's list is a run of single lines,
+   not a stack of cards (R-014 SS3.6, measured off its own collector at ~22pt per
+   row against our 34px). What made ours look heavy was not this rule but a
+   leftover one from an earlier drawer design that was still contributing a 1px
+   border and a solid fill to every row. */
+.collector-list { display: grid; max-height: 150px; overflow: auto; padding: 4px 0 0; }
 .plan-review { display: grid; gap: 7px; margin-top: 10px; padding: 10px; border: 1px solid #5c625b; background: #333a35; }
 .plan-review > div:not(.plan-result) { display: flex; justify-content: space-between; gap: 10px; color: #aab0a8; font-size: 9px; }
 .plan-review strong { color: #e2e7df; font-weight: 500; }
@@ -388,7 +371,6 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
   .directory-heading { padding-inline: 6px; }
   .directory-footer { padding-inline: 6px; }
   .collector-dock, .app-shell-result .collector-dock { left: 10px; }
-  .collector-drawer { width: calc(100vw - 20px); }
   .notice { right: 10px; bottom: 10px; max-width: calc(100% - 20px); }
 }
 
@@ -433,20 +415,27 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Collector: a ring badge showing the collected amount, a one-line caption and,
    once something is collected, the destructive action beside them. The drawer
    above is a plain list of rows. */
-.collector-summary { gap: 12px; min-height: 56px; }
 .collector-count { display: block; width: auto; height: auto; border: 0; border-radius: 0; background: transparent; color: #e8e9ed; font-size: 13px; font-weight: 500; }
-.app-shell-result .collector-actions { margin-left: 4px; }
 .danger-button.compact { width: auto; min-height: 26px; padding: 0 12px; }
-.collector-drawer { width: min(430px, calc(100vw - 60px)); padding: 8px; border: 1px solid #43444a; border-radius: 8px; background: rgba(38, 39, 44, .97); box-shadow: 0 10px 26px rgba(0,0,0,.4); }
 /* -webkit-user-drag is what lets these rows start a native drag out to Finder:
    the shell sets `user-select: none`, and WebKit otherwise refuses to begin an
    HTML5 drag anywhere under it. */
-.collector-item { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 34px; padding: 2px 10px; border-radius: 5px; color: #e0e0e4; font-size: 15px; -webkit-user-drag: element; }
-.collector-item:hover { background: rgba(255, 255, 255, .07); }
+.collector-item { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 22px; padding: 0 6px; border-radius: 4px; color: #e6e6ea; font-size: 13px; -webkit-user-drag: element; }
+.collector-item:hover { background: rgba(255, 255, 255, .08); }
 .collector-item strong { overflow: hidden; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
-.collector-item b { font-weight: 400; }
-.collector-remove { width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: #9a9ba1; font-size: 14px; line-height: 1; }
-.collector-remove:hover { background: rgba(255,255,255,.09); color: #fff; }
+/* Same weight and colour as the name, right-aligned, like the reference: the size
+   is the other half of the row, not a footnote to it. */
+.collector-item b { font-weight: 400; font-variant-numeric: tabular-nums; }
+/* The only thing in column 1, so a press there can only be this button. It holds
+   both faces -- the colour dot and the cross -- and swaps them on row hover, which
+   is what the reference does. -webkit-user-drag: none keeps the row's own
+   `element` from claiming a press here as the start of a drag. */
+.collector-remove { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #a8a9b0; font-size: 13px; line-height: 1; -webkit-user-drag: none; }
+.collector-remove:hover { background: rgba(255,255,255,.12); color: #fff; }
+/* Both faces sit in the button's own single cell and never take a hit of their
+   own: the button is the target, whichever face is showing. */
+.collector-remove > span { grid-area: 1 / 1; pointer-events: none; }
+.collector-cross { opacity: 0; }
 
 /* Collector, matching the reference's two states.
    Empty: just the drop ring and one line. Filled: a panel of rows whose last
@@ -468,12 +457,11 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .collector-ring circle { fill: none; stroke: #cf5b4f; stroke-width: 2.5; transition: stroke-dashoffset 1s linear; }
 .destructive-note { margin-left: 4px; color: #e2887c; font-weight: 400; }
 
-/* Row: colour dot by default, remove cross on hover. */
-.collector-item { grid-template-columns: 20px minmax(0, 1fr) auto; }
-.collector-dot { grid-area: 1 / 1; width: 9px; height: 9px; margin-left: 5px; border-radius: 50%; }
-.collector-remove { grid-area: 1 / 1; opacity: 0; }
+/* Colour dot by default, cross on hover. The name never shifts, because the two
+   faces share the button's cell and the button's size never changes. */
+.collector-dot { width: 8px; height: 8px; border-radius: 50%; }
 .collector-item:hover .collector-dot, .collector-item:focus-within .collector-dot { opacity: 0; }
-.collector-item:hover .collector-remove, .collector-item:focus-within .collector-remove { opacity: 1; }
+.collector-item:hover .collector-cross, .collector-item:focus-within .collector-cross { opacity: 1; }
 
 /* Projected descendants are visual only: no pointer affordance. */
 .sunburst-slice.is-projected { cursor: default; }
