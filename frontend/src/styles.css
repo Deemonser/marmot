@@ -201,7 +201,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* transform is in the list for the pull-out: it is what animates the arc back
    into the ring when a drag is abandoned, and the base rule is what is in force
    once .is-pulled comes off. */
-.sunburst-slice { stroke: none; cursor: pointer; transition: opacity .13s, filter .13s, transform .22s cubic-bezier(.22, .61, .36, 1); }
+.sunburst-slice { stroke: none; cursor: pointer; transition: opacity .13s, filter .13s, fill-opacity .19s ease, transform .22s cubic-bezier(.22, .61, .36, 1); }
 /* No outline on the focused or selected wedge. The reference marks the arc under
    the pointer by breathing its opacity instead, which reads on a wedge of any
    size — a 1px stroke round a hairline arc is mostly stroke. */
@@ -358,6 +358,11 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
   .notice { right: 10px; bottom: 10px; max-width: calc(100% - 20px); }
 }
 
+/* Hidden space is the one row that stands for space rather than for objects, and
+   the reference writes it in the same violet as its wedge (R-055 SS3.2). Lifted
+   off the arc's #874A96, which is too dark to read as text on this background. */
+.directory-name.is-hidden-space { color: #b98fc7; }
+
 /* Partial-result marker sits inline on the title line, muted. */
 .directory-partial { margin: 10px 2px 0; color: #8e8f96; font-size: 11px; line-height: 1.4; }
 
@@ -433,12 +438,20 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Projected descendants are visual only: no pointer affordance. */
 .sunburst-slice.is-projected { cursor: default; }
 
-/* Pulled out of the wheel -- being dragged, or already in the dock. The arc
-   slides out along its own midline (the inline transform, which needs the arc's
-   angle) and fades, leaving its slot empty rather than re-flowing the ring: the
-   gap is where the object was, and a drag that is abandoned puts it back.
+/* In the air: being dragged out right now. The arc slides out along its own
+   midline (the inline transform, which needs the arc's angle) and fades, and its
+   slot is not re-flowed away -- an abandoned drag puts it straight back.
    animation: none stops a breath that was running when the drag started. */
 .sunburst-slice.is-pulled { opacity: 0; pointer-events: none; animation: none; transition: opacity .19s ease .03s, transform .22s cubic-bezier(.22, .61, .36, 1); }
+
+/* Staged in the dock: still drawn, in its own slot, at a fraction of its paint,
+   and out of reach for pointer and focus alike. It is not gone -- it is queued,
+   and still on disk until the dock's action runs -- so an empty slot would say
+   more than is true, and in a space map the slot itself carries the meaning.
+   fill-opacity, not opacity, on purpose: paintMorph writes `style.opacity` frame
+   by frame during a level change, and the two multiply instead of fighting, so a
+   collected arc travels with everything else and stays faded while it does. */
+.sunburst-slice.is-collected { fill-opacity: .17; pointer-events: none; animation: none; }
 
 /* The same object's row leaves the list with it: collapsed to nothing and slid
    to the right, towards the dock. The base max-height gives the collapse
@@ -449,7 +462,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 @media (prefers-reduced-motion: reduce) {
   /* The object still has to leave the wheel and the list -- it is the travel
      that goes, not the change of state. */
-  .sunburst-slice, .sunburst-slice.is-pulled, .directory-row, .directory-row.is-pulled { transition: none; }
+  .sunburst-slice, .sunburst-slice.is-pulled, .sunburst-slice.is-collected, .directory-row, .directory-row.is-pulled { transition: none; }
   /* The arc's slide is an inline transform, which a rule here cannot reach --
      but with the transition gone it is already invisible when it moves. The
      row's slide is ours to drop. */

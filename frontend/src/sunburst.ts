@@ -10,8 +10,15 @@ export type HueBand = { center: number; width: number };
 // biggest wedge in pale orange and compressed the rest.
 export const sunburstHueStart = 0;
 export const sunburstHueSpan = 360;
-// Folded small siblings use the reference's grey, #888787.
+// Folded small siblings use the reference's grey, measured at #888787 =
+// HSB(0, 1%, 53%) — a deliberate neutral, not some hue darkened (R-055 SS3.3).
 export const sunburstAggregate = "#888787";
+// Hidden space is the one aggregate the reference does not paint grey: sampled at
+// r=150 between 76 and 86 degrees it reads #874A96, a dimmed violet (R-055
+// SS3.2). It is a different kind of statement from the folded tail — that is
+// "several things too small to draw", this is "space the walk could not account
+// for" (ADR-0052 SS4) — so it does not share the grey.
+export const sunburstHiddenSpace = "#874A96";
 // The reference's used-space sequence ends exactly at 3 o'clock, and the circle
 // spans the volume's capacity — free space is the arc that closes it. d3 measures
 // from 12 o'clock clockwise, so 3 o'clock is +PI/2.

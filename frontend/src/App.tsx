@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import { paintMorph, clearMorphStyles, planMorph, arcPath, morphDuration, morphArcCeiling } from "./morph";
 import type { ArcGeom, MorphPlan } from "./morph";
-import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstEndAngle, previewDwellMs, previewLeaveMs } from "./sunburst";
+import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstHiddenSpace, sunburstEndAngle, previewDwellMs, previewLeaveMs } from "./sunburst";
 import type { HueBand } from "./sunburst";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
@@ -207,7 +207,7 @@ function entryColors(entries: MapEntry[], band: HueBand, baseDepth: number): Rec
   const colors: Record<string, string> = {};
   for (const entry of entries) {
     const own = bands[entryKey(entry)];
-    colors[entryKey(entry)] = entry.kind === "node" && own ? sliceColor(own.center, baseDepth + 1) : sunburstAggregate;
+    colors[entryKey(entry)] = entry.kind === "node" && own ? sliceColor(own.center, baseDepth + 1) : aggregateColor(entry);
   }
   return colors;
 }
@@ -235,6 +235,14 @@ function confidenceLabel(confidence: string): string {
 
 function displayStateLabel(state: string): string {
   return ({ current: "当前结果", stale: "对象已变化", partial: "部分结果" } as Record<string, string>)[state] ?? "待确认";
+}
+
+// Not every grey block is the same thing. The folded tail says "several objects
+// too small to draw"; hidden space says "this much of the volume the walk could
+// not account for" (ADR-0052 SS4). The reference paints the second one a dimmed
+// violet rather than grey, so it is not one colour with two meanings.
+function aggregateColor(entry: MapEntry | null): string {
+  return entry?.virtualType === "hidden_space" ? sunburstHiddenSpace : sunburstAggregate;
 }
 
 function entryNode(entry: MapEntry | null): NodeView | null {
@@ -377,7 +385,8 @@ function Sunburst({
   levelEndAngle,
   onEnterProjected,
   onDragEntry,
-  pulledKeys,
+  collectedKeys,
+  draggingKey,
 }: {
   map: MapResult | null;
   hoveredKey: string | null;
@@ -399,11 +408,13 @@ function Sunburst({
   // breadcrumb needs, and only the wheel knows it.
   onEnterProjected: (trail: Breadcrumb[]) => void;
   onDragEntry: (source: DragSource, event: ReactPointerEvent) => void;
-  // Arcs that have been pulled out of the wheel: the one being dragged right
-  // now, and everything already sitting in the dock. They keep their slot so the
-  // rest of the ring does not re-flow, and they take their projected descendants
-  // with them.
-  pulledKeys: Set<string>;
+  // Staged in the dock. These arcs keep their slot and stay drawn -- faded back
+  // and non-interactive -- because the object is not gone: it is queued for
+  // deletion and still on disk until the dock's own action runs.
+  collectedKeys: Set<string>;
+  // The one arc being dragged right now, which does leave the ring: that is the
+  // gesture. Both states carry their projected descendants with them.
+  draggingKey: string | null;
 }) {
   const entries = foldSmallEntries((map?.entries ?? []).filter(Boolean), map?.parent.ownedAllocated ?? 0);
   // Geometry from ADR-0059 SS2, all as ratios of the main ring width so the chart
@@ -482,14 +493,19 @@ function Sunburst({
     preview: HoverPreview | null;
     aggregate: boolean;
     stale: boolean;
+    // Decided once, here, because two places paint it: the live arc and the
+    // ghost the morph leaves behind. They must not disagree.
+    color: string;
     // The snapshot node id, on every ring. Non-zero means the arc can be looked
     // up, which is what collecting one below the current level needs.
     id: number;
     name: string;
     size: number;
-    // Pulled out of the wheel: this arc, or one of its ancestors, is being
-    // dragged or is already in the dock.
-    pulled: boolean;
+    // This arc, or one of its ancestors, is staged in the dock: drawn, faded,
+    // out of reach.
+    collected: boolean;
+    // This arc, or one of its ancestors, is being dragged out right now.
+    dragging: boolean;
     // The crumbs for every level between the current one and this arc, this arc
     // included. Entering an outer ring crosses all of them at once, and this is
     // where their ids, bands and seams come from -- the wheel drew those levels,
@@ -503,7 +519,8 @@ function Sunburst({
     endAngle: number,
     depth: number,
     band: HueBand,
-    pulled = false,
+    collected = false,
+    dragging = false,
     parentKey = "",
     trail: Breadcrumb[] = [],
   ) => {
@@ -561,7 +578,8 @@ function Sunburst({
       // wide.)
       const inset = Math.min(separatorArc / ((r0 + r1) / 2) / 2, (next - cursor) / 2.5);
       const geom: ArcGeom = { a0: cursor + inset, a1: next - inset, r0, r1 };
-      const itemPulled = pulled || pulledKeys.has(item.key);
+      const itemCollected = collected || collectedKeys.has(item.key);
+      const itemDragging = dragging || draggingKey === item.key;
       // A grey block is a wedge like any other and must animate like one, so it
       // needs an identity that survives a level change. Its own key cannot serve:
       // the projection and the current level spell an aggregate's key
@@ -605,14 +623,16 @@ function Sunburst({
         },
         aggregate: item.aggregate,
         stale: item.stale,
+        color: item.aggregate ? aggregateColor(item.entry) : sliceColor(hue, baseDepth + depth + 1),
         id: itemId,
         name: itemName,
         size: item.size,
-        pulled: itemPulled,
+        collected: itemCollected,
+        dragging: itemDragging,
         trail: ownTrail,
       });
       if (item.isDirectory && item.children.length > 0) {
-        pushLevel(item.children.map(projectedArc), cursor, next, depth + 1, own, itemPulled, item.key, ownTrail);
+        pushLevel(item.children.map(projectedArc), cursor, next, depth + 1, own, itemCollected, itemDragging, item.key, ownTrail);
       }
       cursor = next;
       if (index === items.length - 1) cursor = endAngle;
@@ -646,6 +666,7 @@ function Sunburst({
     0,
     hueRange,
     false,
+    false,
     map ? "node:" + map.parent.id : "",
   );
 
@@ -669,7 +690,7 @@ function Sunburst({
       paintedSlices.current = sliceSnapshot.map((slice) => ({
         morphKey: slice.morphKey,
         geom: slice.geom,
-        color: slice.aggregate ? sunburstAggregate : sliceColor(slice.hue, baseDepth + slice.depth + 1),
+        color: slice.color,
       }));
       setGhosts([]);
     };
@@ -794,7 +815,7 @@ function Sunburst({
               ))}
             </g>
           )}
-          {slices.map(({ entry, key, renderKey, depth, path, hue, aggregate, stale, nodeId, geom, preview, id, name, size, pulled, trail }) => {
+          {slices.map(({ entry, key, renderKey, depth, path, aggregate, stale, nodeId, geom, preview, color, id, name, size, collected, dragging, trail }) => {
             // Only current-level arcs are interactive: a projected descendant
             // carries no path, so it can neither be activated nor collected
             // (ADR-0048, ADR-0017 §2).
@@ -809,14 +830,14 @@ function Sunburst({
             // is a projection, so all we can check here is that it is a real
             // node -- whether it may be collected is decided by the backend when
             // the drop looks it up (ADR-0048).
-            const collectable = !pulled && !aggregate && id > 0
+            const collectable = !collected && !dragging && !aggregate && id > 0
               && (entry ? entry.kind === "node" && hasCapability(entry, "collect") : true);
             const selected = key === selectedKey;
-            const color = aggregate ? sunburstAggregate : sliceColor(hue, baseDepth + depth + 1);
-            // A pulled arc slides out along its own midline before it fades, so
-            // it reads as taken out of the ring rather than switched off. d3
-            // measures angles from twelve o'clock, so the outward direction at
-            // angle a is (sin a, -cos a).
+            // The arc being dragged slides out along its own midline before it
+            // fades, so it reads as taken out of the ring rather than switched
+            // off. d3 measures angles from twelve o'clock, so the outward
+            // direction at angle a is (sin a, -cos a). A collected arc does not
+            // travel: it settles back into its slot at a fraction of its opacity.
             const pullMid = (geom.a0 + geom.a1) / 2;
             const pullBy = ringWidth * 0.5;
             return (
@@ -824,17 +845,21 @@ function Sunburst({
                 key={renderKey}
                 ref={(node) => {
                   pathRefs.current[key] = node;
-                  // A pulled arc is deliberately kept out of the morph: paintMorph
-                  // writes opacity inline, which would override the pulled state
-                  // for the length of a level change.
-                  if (node && !pulled) morphRefs.current.set(renderKey, node);
+                  // The arc in the air is deliberately kept out of the morph:
+                  // paintMorph writes opacity inline, which would override its
+                  // state for the length of a level change. A collected arc is
+                  // still on screen and still tweens -- it fades with
+                  // fill-opacity, which paintMorph never touches, so the two
+                  // multiply instead of fighting.
+                  if (node && !dragging) morphRefs.current.set(renderKey, node);
                   else morphRefs.current.delete(renderKey);
                 }}
                 d={path}
                 role={interactive ? "button" : "presentation"}
-                tabIndex={interactive && !pulled ? 0 : -1}
-                aria-hidden={pulled || undefined}
-                style={pulled
+                tabIndex={interactive && !collected && !dragging ? 0 : -1}
+                aria-hidden={dragging || undefined}
+                aria-disabled={collected || undefined}
+                style={dragging
                   ? { transform: "translate(" + (Math.sin(pullMid) * pullBy).toFixed(2) + "px, " + (-Math.cos(pullMid) * pullBy).toFixed(2) + "px)" }
                   : undefined}
                 onPointerDown={(event) => {
@@ -847,7 +872,8 @@ function Sunburst({
                   (key === breathingKey ? " is-breathing" : "") +
                   (aggregate ? " is-aggregate" : "") +
                   (stale ? " is-stale" : "") +
-                  (pulled ? " is-pulled" : "") +
+                  (dragging ? " is-pulled" : "") +
+                  (collected ? " is-collected" : "") +
                   (interactive ? "" : " is-projected")
                 }
                 fill={color}
@@ -1121,6 +1147,10 @@ function DirectoryList({
           const isHovered = key === hoveredKey;
           const pulled = pulledKeys.has(key);
           const kindClass = entry.kind === "aggregate" || entry.kind === "virtual" ? "virtual" : entry.node.kind === "directory" ? "directory" : "file";
+          // The reference writes this one row's name in the same violet as its
+          // wedge, not in the list's ordinary colour: it is the only entry that
+          // stands for space rather than for objects.
+          const hiddenSpace = entry.virtualType === "hidden_space";
           return (
             <div
               key={key}
@@ -1149,7 +1179,7 @@ function DirectoryList({
               title={entryPath(entry)}
             >
               <span className={"directory-dot " + kindClass} style={entryColors_[entryKey(entry)] ? { background: entryColors_[entryKey(entry)] } : undefined} />
-              <span className="directory-name">{entry.name}</span>
+              <span className={"directory-name" + (hiddenSpace ? " is-hidden-space" : "")}>{entry.name}</span>
               {/* Always emitted, even when empty: a conditional cell moved the
                   size out of the last grid column, which left the rows without a
                   count 22px short of the ones with it. The reference has one
@@ -1345,16 +1375,26 @@ export default function App() {
   }, [hoverPreview]);
   const inspectedInCollector = inspectorEntry ? collector.some((item) => entryKey(item) === entryKey(inspectorEntry)) : false;
   const collectorBytes = collector.reduce((sum, item) => sum + entrySize(item), 0);
-  // Everything that is currently out of the wheel and out of the list: the arc
-  // being dragged, one waiting on its lookup, and everything already collected.
+  // Staged in the dock, or on its way there while its lookup runs. These arcs
+  // stay drawn: the object is still on disk until the dock's own action runs, so
+  // an empty slot would overstate it, and in a space map the slot's position is
+  // itself information. They are faded back and taken out of reach instead.
+  const collectedKeys = useMemo(() => {
+    const keys = new Set(collector.map(entryKey));
+    if (pendingCollect) keys.add(pendingCollect);
+    return keys;
+  }, [collector, pendingCollect]);
+  // In the air right now. This one really does leave the ring, because that is
+  // the gesture: it slides out along its own midline and fades.
+  const draggingKey = drag?.key ?? null;
+  // Out of the current directory listing and out of keyboard reach, either way.
   // R-014 SS3.6 -- what is in the dock is not in the current directory, and
   // taking it back out of the dock puts it back.
   const pulledKeys = useMemo(() => {
-    const keys = new Set(collector.map(entryKey));
-    if (drag) keys.add(drag.key);
-    if (pendingCollect) keys.add(pendingCollect);
+    const keys = new Set(collectedKeys);
+    if (draggingKey) keys.add(draggingKey);
     return keys;
-  }, [collector, drag?.key, pendingCollect]);
+  }, [collectedKeys, draggingKey]);
   // At the root the displayed total is the volume's used bytes, so the number in
   // the hub is the number the entries add up to — the tree total alone excludes
   // the balancing entry and would not add up (ADR-0052 §4).
@@ -2103,7 +2143,8 @@ export default function App() {
               <div className="map-stage">
                 <Sunburst
                   onDragEntry={beginEntryDrag}
-                  pulledKeys={pulledKeys}
+                  collectedKeys={collectedKeys}
+                  draggingKey={draggingKey}
                   hueRange={hueRange}
                   baseDepth={baseDepth}
                   levelEndAngle={currentPage?.endAngle ?? sunburstEndAngle}
