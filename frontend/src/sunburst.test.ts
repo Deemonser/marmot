@@ -8,6 +8,7 @@ import {
   ringBounds,
   projectionMinSweeps,
   childEndAngle,
+  subBand,
 } from "./sunburst.ts";
 
 function channels(hex: string): [number, number, number] {
@@ -136,4 +137,25 @@ test("entering a wedge leaves its midline where it was", () => {
 
 test("a click outside the wheel keeps the current seam", () => {
   assert.equal(childEndAngle(undefined, 1.234), 1.234);
+});
+
+// The preview rows used to share one colour, looked up in the current level's
+// table — which has no entry for a projected node, so every outer-ring row came
+// out the same grey. Each child takes its own sub-band, one level deeper.
+test("preview rows take distinct colours from the hovered arc's band", () => {
+  const band = { center: 120, width: 60 };
+  const depth = 3;
+  const sizes = [50, 30, 20];
+  const total = sizes.reduce((sum, size) => sum + size, 0);
+  let cursor = 0;
+  const colours = sizes.map((size) => {
+    const from = cursor / total;
+    cursor += size;
+    return sliceColor(subBand(from, cursor / total, band).center, depth + 1);
+  });
+  assert.equal(new Set(colours).size, sizes.length, "children shared a colour");
+  // And they must sit inside the parent's band, not restart from the wheel.
+  for (const colour of colours) {
+    assert.notEqual(colour, sliceColor(band.center, depth), "a child took the parent's exact colour");
+  }
 });

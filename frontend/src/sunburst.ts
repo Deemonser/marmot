@@ -1,3 +1,50 @@
+export type HueBand = { center: number; width: number };
+
+// The space map colours by angular position: one continuous sweep around the
+// circle, so a child inherits the hue of the wedge it sits in and neighbouring
+// branches stay visually distinct. Depth only varies lightness.
+// Measured off the reference: hue runs 1:1 with angle from the start of the
+// sequence, with no offset. Its first wedge spans relative angle 0-196 and its
+// centre lands on hue 95, a yellow-green; the children under it fan 30-189, which
+// is that same span (R-055 §5). We used to start at 20 over 290deg, which put the
+// biggest wedge in pale orange and compressed the rest.
+export const sunburstHueStart = 0;
+export const sunburstHueSpan = 360;
+// Folded small siblings use the reference's grey, #888787.
+export const sunburstAggregate = "#888787";
+// The reference's used-space sequence ends exactly at 3 o'clock, and the circle
+// spans the volume's capacity — free space is the arc that closes it. d3 measures
+// from 12 o'clock clockwise, so 3 o'clock is +PI/2.
+export const sunburstEndAngle = Math.PI / 2;
+// How long the pointer has to settle on one wedge before the list follows it,
+// and how long it has to be away before the list goes back. Both exist so that
+// crossing the wheel does not make the panel flicker through every node on the
+// way.
+export const previewDwellMs = 260;
+export const previewLeaveMs = 140;
+
+// The wheel and the directory list must agree on an entry's colour, so both
+// derive it from the same cumulative angular position.
+// The reference's hue runs 1:1 with angle from the start of the sequence, so the
+// root band is the whole wheel starting at the measured green.
+export const rootHueBand: HueBand = { center: sunburstHueStart + sunburstHueSpan / 2, width: sunburstHueSpan };
+
+// hueAt maps a position within a band, given as a fraction of the band, to a hue.
+export function hueAt(fraction: number, band: HueBand): number {
+  return (((band.center - band.width / 2 + fraction * band.width) % 360) + 360) % 360;
+}
+
+// subBand is the slice of the band an entry hands down to its own children: the
+// same fraction of hue that it occupies of angle.
+export function subBand(from: number, to: number, band: HueBand): HueBand {
+  const start = hueAt(from, band);
+  const width = (to - from) * band.width;
+  return { center: start + width / 2, width };
+}
+
+// baseDepth is the tree depth of the level being listed, so its entries sit at
+// baseDepth + 1 (ADR-0059 SS1b).
+
 // An arc thinner than this is a hair, not a slice. Below it siblings fold into
 // one grey aggregate, and if even that would be a hair they are left out and the
 // background shows through.

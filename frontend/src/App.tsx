@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import { paintMorph, clearMorphStyles, planMorph, arcPath, morphDuration, morphArcCeiling } from "./morph";
 import type { ArcGeom, MorphPlan } from "./morph";
-import { childEndAngle } from "./sunburst";
+import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstEndAngle, previewDwellMs, previewLeaveMs } from "./sunburst";
+import type { HueBand } from "./sunburst";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
@@ -27,7 +28,6 @@ type CleanupValidation = Models.CleanupValidation;
 // therefore do come out similar in both, because their arcs are adjacent.
 // A wedge's own hue is constant across its whole arc, and its children inherit
 // its slice of the band, so an entry's colour does not change when you drill in.
-type HueBand = { center: number; width: number };
 type Breadcrumb = { id: number; path: string; hue: HueBand; endAngle: number };
 
 // What the list shows while the pointer is over an arc. The reference switches
@@ -40,6 +40,13 @@ type HoverPreview = {
   size: number;
   children: ProjectedEntry[];
   hasMore: boolean;
+  // The hovered arc's own band and depth in the tree. Both are needed to colour
+  // the preview: its children take sub-bands of this band, one level deeper.
+  // Looking the colour up by key in the current level's table only ever worked
+  // for the innermost ring — a projected node's key is not in that table, so
+  // every outer-ring row fell back to the same grey.
+  band: HueBand;
+  depth: number;
 };
 type Capability = "enter" | "preview" | "reveal" | "collect" | "rescan";
 type NavigationMode = "push" | "replace" | "travel";
@@ -142,50 +149,35 @@ const virtualLabels: Record<string, string> = {
   snapshot: "系统快照",
   restricted: "受限空间",
 };
-// The space map colours by angular position: one continuous sweep around the
-// circle, so a child inherits the hue of the wedge it sits in and neighbouring
-// branches stay visually distinct. Depth only varies lightness.
-// Measured off the reference: hue runs 1:1 with angle from the start of the
-// sequence, with no offset. Its first wedge spans relative angle 0-196 and its
-// centre lands on hue 95, a yellow-green; the children under it fan 30-189, which
-// is that same span (R-055 §5). We used to start at 20 over 290deg, which put the
-// biggest wedge in pale orange and compressed the rest.
-const sunburstHueStart = 0;
-const sunburstHueSpan = 360;
-// Folded small siblings use the reference's grey, #888787.
-const sunburstAggregate = "#888787";
-// The reference's used-space sequence ends exactly at 3 o'clock, and the circle
-// spans the volume's capacity — free space is the arc that closes it. d3 measures
-// from 12 o'clock clockwise, so 3 o'clock is +PI/2.
-const sunburstEndAngle = Math.PI / 2;
-// How long the pointer has to settle on one wedge before the list follows it,
-// and how long it has to be away before the list goes back. Both exist so that
-// crossing the wheel does not make the panel flicker through every node on the
-// way.
-const previewDwellMs = 260;
-const previewLeaveMs = 140;
+
+// previewRows gives each child of the hovered node its own colour, by walking the
+// same cumulative-size subdivision the wheel uses. One colour for the whole list
+// was wrong twice over: it made every row identical, and it came from the current
+// level's colour table, which has no entry for a projected node.
+function previewRows(preview: HoverPreview): Array<{ key: string; name: string; size: number; color: string; grey: boolean }> {
+  const total = preview.children.reduce((sum, child) => sum + Math.max(0, child.size), 0);
+  let cursor = 0;
+  return preview.children.map((child) => {
+    const size = Math.max(0, child.size);
+    const from = total > 0 ? cursor / total : 0;
+    cursor += size;
+    const to = total > 0 ? cursor / total : 0;
+    const band = subBand(from, to, preview.band);
+    return {
+      key: String(child.id) + ":" + child.name,
+      name: child.name,
+      size,
+      grey: child.kind === "aggregate",
+      color: child.kind === "aggregate" ? sunburstAggregate : sliceColor(band.center, preview.depth + 1),
+    };
+  });
+}
 
 // The wheel and the directory list must agree on an entry's colour, so both
 // derive it from the same cumulative angular position.
 // The reference's hue runs 1:1 with angle from the start of the sequence, so the
 // root band is the whole wheel starting at the measured green.
-const rootHueBand: HueBand = { center: sunburstHueStart + sunburstHueSpan / 2, width: sunburstHueSpan };
 
-// hueAt maps a position within a band, given as a fraction of the band, to a hue.
-function hueAt(fraction: number, band: HueBand): number {
-  return (((band.center - band.width / 2 + fraction * band.width) % 360) + 360) % 360;
-}
-
-// subBand is the slice of the band an entry hands down to its own children: the
-// same fraction of hue that it occupies of angle.
-function subBand(from: number, to: number, band: HueBand): HueBand {
-  const start = hueAt(from, band);
-  const width = (to - from) * band.width;
-  return { center: start + width / 2, width };
-}
-
-// baseDepth is the tree depth of the level being listed, so its entries sit at
-// baseDepth + 1 (ADR-0059 SS1b).
 function entryColors(entries: MapEntry[], band: HueBand, baseDepth: number): Record<string, string> {
   const bands = entryBands(entries, band);
   const colors: Record<string, string> = {};
@@ -517,6 +509,8 @@ function Sunburst({
           size: item.size,
           children: item.children,
           hasMore: Boolean((item as { hasMore?: boolean }).hasMore),
+          band: own,
+          depth: baseDepth + depth + 1,
         },
         aggregate: item.aggregate,
         stale: item.stale,
@@ -932,7 +926,7 @@ function DirectoryList({
   entryColors_: Record<string, string>;
   // While the pointer is over an arc the panel shows that node instead of the
   // current level — on every ring, and without the wheel navigating.
-  preview: { name: string; size: number; rows: Array<{ key: string; name: string; size: number; grey: boolean }>; hasMore: boolean; color: string } | null;
+  preview: { name: string; size: number; rows: Array<{ key: string; name: string; size: number; color: string; grey: boolean }>; hasMore: boolean; color: string } | null;
   // null at the scan root, where the reference shows no dot beside the volume
   // name; below it the dot carries the node's own colour (R-060 SS3.7).
   parentDotColor: string | null;
@@ -969,7 +963,7 @@ function DirectoryList({
           // they carry no path and nothing here may act on them.
           preview.rows.map((row) => (
             <div key={row.key} className="directory-row is-preview">
-              <span className={"directory-dot " + (row.grey ? "virtual" : "directory")} style={row.grey ? undefined : { background: preview.color }} />
+              <span className="directory-dot" style={{ background: row.color }} />
               <span className="directory-name">{row.name}</span>
               <span className="directory-tag" />
               <span className="directory-size">{formatBytes(row.size)}</span>
@@ -1164,15 +1158,10 @@ export default function App() {
       name: hoverPreview.name,
       size: hoverPreview.size,
       hasMore: hoverPreview.hasMore,
-      color: levelColors[hoverPreview.key] ?? sunburstAggregate,
-      rows: hoverPreview.children.map((child) => ({
-        key: String(child.id) + ":" + child.name,
-        name: child.name,
-        size: Math.max(0, child.size),
-        grey: child.kind === "aggregate",
-      })),
+      color: sliceColor(hoverPreview.band.center, hoverPreview.depth),
+      rows: previewRows(hoverPreview),
     };
-  }, [hoverPreview, levelColors]);
+  }, [hoverPreview]);
   const inspectedInCollector = inspectorEntry ? collector.some((item) => entryKey(item) === entryKey(inspectorEntry)) : false;
   const collectorBytes = collector.reduce((sum, item) => sum + entrySize(item), 0);
   // At the root the displayed total is the volume's used bytes, so the number in
