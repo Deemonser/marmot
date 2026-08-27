@@ -144,18 +144,21 @@ type MapQuery struct {
 }
 
 type MapEntry struct {
-	Kind            string           `json:"kind"`
-	Node            NodeView         `json:"node"`
-	Name            string           `json:"name"`
-	VirtualType     string           `json:"virtualType"`
-	DisplayState    string           `json:"displayState"`
-	Capabilities    []string         `json:"capabilities"`
-	Count           int64            `json:"count"`
-	LogicalSize     int64            `json:"logicalSize"`
-	AllocatedSize   int64            `json:"allocatedSize"`
-	OwnedAllocated  int64            `json:"ownedAllocated"`
-	Confidence      string           `json:"confidence"`
-	SizeBasis       string           `json:"sizeBasis"`
+	Kind           string   `json:"kind"`
+	Node           NodeView `json:"node"`
+	Name           string   `json:"name"`
+	VirtualType    string   `json:"virtualType"`
+	DisplayState   string   `json:"displayState"`
+	Capabilities   []string `json:"capabilities"`
+	Count          int64    `json:"count"`
+	LogicalSize    int64    `json:"logicalSize"`
+	AllocatedSize  int64    `json:"allocatedSize"`
+	OwnedAllocated int64    `json:"ownedAllocated"`
+	Confidence     string   `json:"confidence"`
+	SizeBasis      string   `json:"sizeBasis"`
+	// Why this object may not be deleted, or empty when it may (ADR-0015: the
+	// reason is the application's to state, not the frontend's to guess).
+	Protection      string           `json:"protection,omitempty"`
 	Children        []ProjectedEntry `json:"children,omitempty"`
 	ChildrenTotal   int              `json:"childrenTotal,omitempty"`
 	ChildrenHasMore bool             `json:"childrenHasMore,omitempty"`
@@ -457,7 +460,7 @@ func cleanupPlan(plan application.CleanupPlan) CleanupPlan {
 
 func mapEntry(entry application.MapEntry) MapEntry {
 	children := projectedEntries(entry.Children)
-	return MapEntry{Kind: entry.Kind, Node: nodeView(entry.Node), Name: entry.Name, VirtualType: entry.VirtualType, DisplayState: entry.DisplayState, Capabilities: append([]string(nil), entry.Capabilities...), Count: entry.Count, LogicalSize: entry.LogicalSize, AllocatedSize: entry.AllocatedSize, OwnedAllocated: entry.OwnedAllocated, Confidence: entry.Confidence, SizeBasis: entry.SizeBasis, Children: children, ChildrenTotal: entry.ChildrenTotal, ChildrenHasMore: entry.ChildrenHasMore}
+	return MapEntry{Kind: entry.Kind, Node: nodeView(entry.Node), Name: entry.Name, VirtualType: entry.VirtualType, DisplayState: entry.DisplayState, Capabilities: append([]string(nil), entry.Capabilities...), Count: entry.Count, LogicalSize: entry.LogicalSize, AllocatedSize: entry.AllocatedSize, OwnedAllocated: entry.OwnedAllocated, Confidence: entry.Confidence, SizeBasis: entry.SizeBasis, Protection: entry.Protection, Children: children, ChildrenTotal: entry.ChildrenTotal, ChildrenHasMore: entry.ChildrenHasMore}
 }
 
 func projectedEntries(entries []application.ProjectedEntry) []ProjectedEntry {

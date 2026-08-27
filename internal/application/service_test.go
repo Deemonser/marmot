@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"example.com/marmot/internal/domain/cleanup"
 	"example.com/marmot/internal/domain/scan"
 	"example.com/marmot/internal/infrastructure/scanner"
 	"example.com/marmot/internal/infrastructure/snapshot/memtree"
@@ -726,5 +727,45 @@ func TestGetNodeEntryResolvesProjectedArcWithTheSameCapabilities(t *testing.T) {
 	}
 	if _, err := service.GetNodeEntry(status.SnapshotID, expected.Node.ID+9999); err == nil {
 		t.Fatal("expected an unknown node id to be rejected")
+	}
+}
+
+// Two answers to "may this be deleted", and they must agree: the space map
+// withholds the collect capability and says why, and plan creation refuses the
+// path outright. The second one is the gate -- it has to hold even if a frontend
+// ignored the first.
+func TestProtectedPathsAreNotCollectableAndCannotBeStaged(t *testing.T) {
+	for _, path := range []string{"/Users", "/System/Library", "/usr"} {
+		entry := mapEntry(scan.MapEntry{
+			Kind: "node",
+			Node: scan.Node{ID: 2, ParentID: 1, Path: path, Name: filepath.Base(path), Kind: "directory"},
+			Name: filepath.Base(path),
+		})
+		if entry.Protection != cleanup.ProtectionSystemDependency {
+			t.Fatalf("%s should carry a protection reason, got %q", path, entry.Protection)
+		}
+		if slices.Contains(entry.Capabilities, "collect") {
+			t.Fatalf("%s must not be collectable: %#v", path, entry.Capabilities)
+		}
+		// Browsing it is still fine: protection is about deleting, nothing else.
+		for _, want := range []string{"enter", "preview", "reveal"} {
+			if !slices.Contains(entry.Capabilities, want) {
+				t.Fatalf("%s lost %q: %#v", path, want, entry.Capabilities)
+			}
+		}
+	}
+
+	ordinary := mapEntry(scan.MapEntry{
+		Kind: "node",
+		Node: scan.Node{ID: 3, ParentID: 2, Path: "/Users/alice/Downloads", Name: "Downloads", Kind: "directory"},
+		Name: "Downloads",
+	})
+	if ordinary.Protection != "" || !slices.Contains(ordinary.Capabilities, "collect") {
+		t.Fatalf("an ordinary folder lost its collect capability: %#v", ordinary)
+	}
+
+	service := testService(t)
+	if _, err := service.CreateCleanupPlan(CleanupPlanRequest{SnapshotID: 1, Paths: []string{"/Users"}}); err == nil {
+		t.Fatal("plan creation must refuse a protected path even when asked directly")
 	}
 }

@@ -60,6 +60,12 @@ export interface MapEntry {
     "ownedAllocated": number;
     "confidence": string;
     "sizeBasis": string;
+
+    /**
+     * Why this object may not be deleted, or empty when it may (ADR-0015: the
+     * reason is the application's to state, not the frontend's to guess).
+     */
+    "protection"?: string;
     "children"?: ProjectedEntry[] | null;
     "childrenTotal"?: number;
     "childrenHasMore"?: boolean;

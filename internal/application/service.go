@@ -197,18 +197,23 @@ type MapQuery struct {
 }
 
 type MapEntry struct {
-	Kind            string           `json:"kind"`
-	Node            scan.Node        `json:"node"`
-	Name            string           `json:"name"`
-	VirtualType     string           `json:"virtualType"`
-	DisplayState    string           `json:"displayState"`
-	Capabilities    []string         `json:"capabilities"`
-	Count           int64            `json:"count"`
-	LogicalSize     int64            `json:"logicalSize"`
-	AllocatedSize   int64            `json:"allocatedSize"`
-	OwnedAllocated  int64            `json:"ownedAllocated"`
-	Confidence      string           `json:"confidence"`
-	SizeBasis       string           `json:"sizeBasis"`
+	Kind           string    `json:"kind"`
+	Node           scan.Node `json:"node"`
+	Name           string    `json:"name"`
+	VirtualType    string    `json:"virtualType"`
+	DisplayState   string    `json:"displayState"`
+	Capabilities   []string  `json:"capabilities"`
+	Count          int64     `json:"count"`
+	LogicalSize    int64     `json:"logicalSize"`
+	AllocatedSize  int64     `json:"allocatedSize"`
+	OwnedAllocated int64     `json:"ownedAllocated"`
+	Confidence     string    `json:"confidence"`
+	SizeBasis      string    `json:"sizeBasis"`
+	// Why this object may not be deleted, or empty when it may. Set together with
+	// withholding the collect capability, so the UI can say why instead of just
+	// refusing (cleanup.DeleteBlock). omitempty: it is empty for almost every
+	// entry, and the space map payload is capped.
+	Protection      string           `json:"protection,omitempty"`
 	Children        []ProjectedEntry `json:"children,omitempty"`
 	ChildrenTotal   int              `json:"childrenTotal,omitempty"`
 	ChildrenHasMore bool             `json:"childrenHasMore,omitempty"`
@@ -1382,6 +1387,12 @@ func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, er
 		if _, exists := seenPaths[path]; exists {
 			return CleanupPlan{}, errors.New("duplicate cleanup items are not allowed")
 		}
+		// Checked here, not only where the collect capability is granted: that
+		// answer is advisory and travels through the frontend, this one is the
+		// gate. Pure policy, no I/O, so it runs before the store is touched.
+		if reason := cleanup.DeleteBlock(path); reason != "" {
+			return CleanupPlan{}, fmt.Errorf("该对象不允许删除 (%s): %s", reason, path)
+		}
 		seenPaths[path] = struct{}{}
 		paths = append(paths, path)
 	}
@@ -1542,16 +1553,27 @@ func mapEntry(entry scan.MapEntry) MapEntry {
 			displayState = "partial"
 		}
 	}
+	// Why this object may not be deleted. Browsing, previewing and revealing are
+	// untouched by it -- only collecting is, because only collecting leads to a
+	// delete. The reason travels with the entry so the UI can explain the refusal
+	// rather than silently dropping the affordance.
+	protection := ""
+	if entry.Kind == "node" && entry.Node.Path != "" {
+		protection = cleanup.DeleteBlock(entry.Node.Path)
+	}
 	if entry.Kind == "node" && len(capabilities) == 0 {
 		if entry.Node.Kind == "directory" {
 			capabilities = append(capabilities, "enter")
 		}
 		if entry.Node.Kind == "file" || entry.Node.Kind == "directory" || entry.Node.Kind == "symlink" {
-			capabilities = append(capabilities, "preview", "reveal", "collect")
+			capabilities = append(capabilities, "preview", "reveal")
+			if protection == "" {
+				capabilities = append(capabilities, "collect")
+			}
 		}
 	}
 	children := projectedEntries(entry.Children)
-	return MapEntry{Kind: entry.Kind, Node: entry.Node, Name: entry.Name, VirtualType: virtualType, DisplayState: displayState, Capabilities: capabilities, Count: entry.Count, LogicalSize: entry.LogicalSize, AllocatedSize: entry.AllocatedSize, OwnedAllocated: entry.OwnedAllocated, Confidence: entry.Confidence, SizeBasis: entry.SizeBasis, Children: children, ChildrenTotal: entry.ChildrenTotal, ChildrenHasMore: entry.ChildrenHasMore}
+	return MapEntry{Kind: entry.Kind, Node: entry.Node, Name: entry.Name, VirtualType: virtualType, DisplayState: displayState, Capabilities: capabilities, Count: entry.Count, LogicalSize: entry.LogicalSize, AllocatedSize: entry.AllocatedSize, OwnedAllocated: entry.OwnedAllocated, Confidence: entry.Confidence, SizeBasis: entry.SizeBasis, Protection: protection, Children: children, ChildrenTotal: entry.ChildrenTotal, ChildrenHasMore: entry.ChildrenHasMore}
 }
 
 // projectedEntries passes the slim arcs through unchanged. They carry no path

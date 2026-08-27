@@ -165,6 +165,20 @@ const phaseLabels: Record<string, string> = {
   finalize: "整理结果",
 };
 const browsableScanStates = new Set(["completed", "completed_with_issues", "cancelled", "interrupted"]);
+// Why a refusal happened, in words. The backend sends a code, not a sentence:
+// the policy is its to decide (cleanup.DeleteBlock) but a sentence per entry
+// would repeat across a space map payload that is already capped, and the wording
+// belongs with the rest of the UI's wording.
+const protectionReasons: Record<string, (name: string) => string> = {
+  system_dependency: (name) => "“" + name + "” 是 macOS 系统的依赖文件，您不应该将其删除。",
+};
+
+function protectionMessage(entry: MapEntry | null): string {
+  if (!entry?.protection) return "";
+  const reason = protectionReasons[entry.protection];
+  return reason ? reason(entry.name) : "“" + entry.name + "” 不允许删除。";
+}
+
 const virtualLabels: Record<string, string> = {
   smaller_objects: "较小对象",
   hidden_space: "隐藏空间",
@@ -831,7 +845,7 @@ function Sunburst({
             // node -- whether it may be collected is decided by the backend when
             // the drop looks it up (ADR-0048).
             const collectable = !collected && !dragging && !aggregate && id > 0
-              && (entry ? entry.kind === "node" && hasCapability(entry, "collect") : true);
+              && (entry ? entry.kind === "node" : true);
             const selected = key === selectedKey;
             // The arc being dragged slides out along its own midline before it
             // fades, so it reads as taken out of the ring rather than switched
@@ -1160,7 +1174,7 @@ function DirectoryList({
               aria-hidden={pulled || undefined}
               tabIndex={pulled ? -1 : isFocused || (index === 0 && !focusedKey) ? 0 : -1}
               onPointerDown={(event) => {
-                if (pulled || entry.kind !== "node" || !hasCapability(entry, "collect")) return;
+                if (pulled || entry.kind !== "node") return;
                 onDragEntry({ key, name: entry.name, size: entrySize(entry), color: entryColors_[key] ?? "#7fb96a", entry, nodeId: entry.node.id }, event);
               }}
               onMouseEnter={() => onHover(entry)}
@@ -1312,7 +1326,15 @@ export default function App() {
     x: number;
     y: number;
     over: boolean;
+    // Why this one cannot be collected, in words, or empty when it can. Known at
+    // once for a current-level entry; for an outer ring's arc it arrives with the
+    // lookup, which is started as soon as the drag does so the dock can refuse
+    // before the drop rather than after it.
+    blocked: string;
   } | null>(null);
+  // The entry behind the drag once it is known. A projected arc starts out as an
+  // id and nothing else.
+  const dragEntry = useRef<MapEntry | null>(null);
   // An outer ring's arc has to be looked up before it can be collected, and the
   // lookup lands a tick after the drop. Holding its key here keeps it pulled out
   // across that gap, so it does not snap back into the wheel for one frame.
@@ -1697,13 +1719,24 @@ export default function App() {
     // The countdown is running against the set the plan was built from, so
     // nothing may join it: the drop would look accepted and not be deleted.
     if (countdown !== null) return;
-    // A current-level entry must already say it can be collected. A projected arc
-    // cannot say anything -- it has no capabilities by design -- so all we
-    // require here is a node to look up, and the answer comes from the backend.
-    if (source.entry ? !hasCapability(source.entry, "collect") || !entryNode(source.entry) : source.nodeId <= 0) return;
+    // Draggable means "there is an object here to talk about", not "it may be
+    // collected". A protected object has to be draggable so the dock can say why
+    // it is refused -- that is the whole point of the refusal (ADR-0015). A
+    // projected arc says nothing until it is looked up, so all we need is an id.
+    if (source.entry ? !entryNode(source.entry) : source.nodeId <= 0) return;
     const startX = event.clientX;
     const startY = event.clientY;
-    const chip = { key: source.key, label: source.name, size: source.size, color: source.color };
+    dragEntry.current = source.entry;
+    const chip = {
+      key: source.key,
+      label: source.name,
+      size: source.size,
+      color: source.color,
+      blocked: protectionMessage(source.entry),
+    };
+    // An outer ring's arc carries no capabilities until it is looked up, and the
+    // dock has to be able to say "no" while the drag is still in the air.
+    if (!source.entry) void resolveDragEntry(source);
     let dragging = false;
     const move = (moveEvent: PointerEvent) => {
       if (!dragging && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < dragThreshold) return;
@@ -1721,12 +1754,34 @@ export default function App() {
       dragSuppressesClick.current = true;
       window.setTimeout(() => { dragSuppressesClick.current = false; }, 0);
       if (upEvent.type !== "pointerup" || !overDock(upEvent.clientX, upEvent.clientY)) return;
-      if (source.entry) toggleCollector(source.entry, "add");
+      // The lookup usually beats the drop -- a snapshot read, no I/O -- but if it
+      // has not landed yet the drop does it, which is also where a failure is
+      // reported.
+      const resolved = dragEntry.current;
+      if (resolved) toggleCollector(resolved, "add");
       else void collectProjected(source);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
     window.addEventListener("pointercancel", finish);
+  }
+
+  // Resolves the arc being dragged while it is still in the air, so a protected
+  // one can be refused with its reason at the dock instead of only at the drop.
+  // Nothing waits on it: the chip already has the name and size from the
+  // projection.
+  async function resolveDragEntry(source: DragSource) {
+    const snapshotId = mapRef.current?.snapshotId ?? 0;
+    if (snapshotId <= 0) return;
+    try {
+      const entry = await MarmotService.GetNodeEntry(snapshotId, source.nodeId);
+      dragEntry.current = entry;
+      setDrag((current) => current && current.key === source.key
+        ? { ...current, blocked: protectionMessage(entry) }
+        : current);
+    } catch {
+      // Left to the drop, which reports it where the user is looking.
+    }
   }
 
   // An arc below the current level was drawn from a projection: no path, no
@@ -1882,6 +1937,12 @@ export default function App() {
     if (!entry) return;
     if (staleEntry && entryKey(staleEntry) === entryKey(entry)) {
       setNotice("对象已变化，不能加入收集区。");
+      return;
+    }
+    // Protected objects are refused with the reason the backend gave, not with a
+    // generic "cannot": the point is that the user learns why.
+    if (entry.protection) {
+      setNotice(protectionMessage(entry));
       return;
     }
     if (!hasCapability(entry, "collect") || !entryNode(entry)) {
@@ -2232,7 +2293,7 @@ export default function App() {
       {drag && (
         /* The chip is the collected row, drawn early: same dot, name and size,
            so what you drag looks like what lands in the dock. */
-        <div className={"drag-chip" + (drag.over ? " is-over" : "")} style={{ left: drag.x, top: drag.y }}>
+        <div className={"drag-chip" + (drag.blocked ? " is-refused" : drag.over ? " is-over" : "")} style={{ left: drag.x, top: drag.y }}>
           <span className="drag-chip-dot" style={{ background: drag.color }} aria-hidden="true" />
           <span className="drag-chip-name">{drag.label}</span>
           <span className="drag-chip-size">{formatBytes(drag.size)}</span>
@@ -2242,7 +2303,9 @@ export default function App() {
 
       {showResult && <section
         ref={collectorRef}
-        className={"collector-dock" + (collectorOpen ? " is-open" : "") + (drag ? " is-target" : "") + (drag?.over ? " is-armed" : "")}
+        className={"collector-dock" + (collectorOpen ? " is-open" : "")
+          + (drag ? " is-target" : "") + (drag?.over ? " is-armed" : "")
+          + (drag?.blocked ? " is-refused" : "")}
         onDragOver={(event) => event.preventDefault()}
         onDrop={handleCollectorDrop}
         data-testid="collector"
@@ -2252,7 +2315,11 @@ export default function App() {
              line of instruction. */
           <button className="collector-empty-state" onClick={() => setCollectorOpen((open) => !open)}>
             <span className="collector-target" aria-hidden="true" />
-            <span className="collector-caption">将文件拖放至此，以收集要删除的文件</span>
+            {/* While a protected object is in the air the dock stops inviting the
+                drop and says why it will not take it -- the reference does the
+                same, and it does it for the whole drag rather than only once the
+                pointer is over the ring. */}
+            <span className="collector-caption">{drag?.blocked || "将文件拖放至此，以收集要删除的文件"}</span>
           </button>
         ) : (
           /* With items the bar lives inside the panel as its last row: badge
@@ -2302,13 +2369,15 @@ export default function App() {
                 </span>
               </span>
               <span className="collector-caption">
-                {countdown !== null
-                  ? <>秒后开始。选中的文件将<strong className="destructive-note">移入废纸篓</strong></>
-                  : plan?.state === "confirmed"
-                    ? "正在移入废纸篓…"
-                    : validation && !validation.valid
-                      ? "校验未通过，不能执行"
-                      : formatBytes(collectorBytes).split(" ")[1] + " 已收集"}
+                {drag?.blocked
+                  ? drag.blocked
+                  : countdown !== null
+                    ? <>秒后开始。选中的文件将<strong className="destructive-note">移入废纸篓</strong></>
+                    : plan?.state === "confirmed"
+                      ? "正在移入废纸篓…"
+                      : validation && !validation.valid
+                        ? "校验未通过，不能执行"
+                        : formatBytes(collectorBytes).split(" ")[1] + " 已收集"}
               </span>
               {countdown === null
                 ? <button className="danger-button compact" onClick={() => void createPlan()}>删除</button>

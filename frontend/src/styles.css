@@ -290,6 +290,35 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .collector-dock.is-armed .collector-empty-state .collector-target { border-color: #4c7cc4; transform: scale(1.14); box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #4c7cc4, 0 0 0 6px rgba(76, 124, 196, .18); }
 .collector-dock.is-armed .collector-bar .collector-target { border-color: #6f9ede; }
 .collector-dock.is-armed .collector-panel { box-shadow: 0 10px 26px rgba(0, 0, 0, .35), 0 0 0 2px rgba(76, 124, 196, .55); }
+
+/* A protected object is in the air: the ring stops inviting the drop and becomes
+   the prohibition sign, for the whole drag rather than only once the pointer is
+   over it. The slash is drawn rather than set as a glyph so it stays centred on
+   the ring at any size.
+   Scoped through .collector-empty-state / .collector-bar to match the is-target
+   and is-armed rules above: those are one selector more specific, so an
+   unscoped rule here would lose to them and the state would be decorative.
+   The ring itself stays neutral and the slash alone carries the refusal, the way
+   the reference does it -- a red ring as well would read as something having
+   gone wrong, and nothing has: this is a rule being stated. */
+.collector-dock.is-refused .collector-empty-state .collector-target,
+.collector-dock.is-refused .collector-bar .collector-target { border-color: #7c7d84; box-shadow: inset 0 0 0 4px #232429; }
+.collector-dock.is-refused .collector-empty-state .collector-target { transform: none; }
+.collector-dock.is-refused .collector-target::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 84%;
+  height: 5px;
+  border-radius: 3px;
+  background: #d0453a;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+/* The amount inside the filled badge would sit under the slash. */
+.collector-dock.is-refused .collector-count { opacity: 0; }
+.collector-dock.is-refused .collector-caption { color: #dfe0e4; }
+.collector-dock.is-refused .collector-panel { box-shadow: 0 10px 26px rgba(0, 0, 0, .35), 0 0 0 2px rgba(208, 69, 58, .5); }
 .collector-target.is-filled { border-color: #4c7cc4; box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #4c7cc4; }
 .collector-caption { min-width: 0; font-size: 12px; }
 .collector-toggle > span:last-child { display: grid; gap: 3px; min-width: 0; }
@@ -375,6 +404,8 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Over the dock the chip commits to the dock's blue, so the drop is readable
    without looking away from the cursor. */
 .drag-chip.is-over { border-color: #4c7cc4; box-shadow: 0 6px 18px rgba(0, 0, 0, .45), 0 0 0 3px rgba(76, 124, 196, .28); }
+/* Refused outright: no blue, whether or not the pointer is over the dock. */
+.drag-chip.is-refused { border-color: #d0453a; box-shadow: 0 6px 18px rgba(0, 0, 0, .45), 0 0 0 3px rgba(208, 69, 58, .22); }
 
 /* Pointer-dragging a slice must not select the page text underneath. */
 .app-shell { user-select: none; }
