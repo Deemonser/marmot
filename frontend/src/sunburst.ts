@@ -168,3 +168,17 @@ export function projectionMinSweeps(depth: number): number[] {
   return sweeps;
 }
 
+
+// childEndAngle gives the seam of the level being entered. The reference holds
+// the clicked wedge's angular midline fixed while the wedge opens to the full
+// circle — measured to within 0.4deg across the whole expansion, and again in
+// reverse on the way out (R-061 §3.6). A full circle laid out as
+// [end - 2PI, end] has its midline at end - PI, so end = mid + PI is exactly the
+// condition "the midline does not move".
+//
+// Without a geometry — a click in the list rather than the wheel — the current
+// level's seam is carried over rather than guessed.
+export function childEndAngle(geom: { a0: number; a1: number } | undefined, fallback: number): number {
+  if (!geom) return fallback;
+  return (geom.a0 + geom.a1) / 2 + Math.PI;
+}

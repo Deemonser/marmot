@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import { paintMorph, clearMorphStyles, arcPath, morphDuration, morphArcCeiling } from "./morph";
 import type { ArcGeom, MorphPlan } from "./morph";
+import { childEndAngle } from "./sunburst";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
@@ -27,7 +28,7 @@ type CleanupValidation = Models.CleanupValidation;
 // A wedge's own hue is constant across its whole arc, and its children inherit
 // its slice of the band, so an entry's colour does not change when you drill in.
 type HueBand = { center: number; width: number };
-type Breadcrumb = { id: number; path: string; hue: HueBand };
+type Breadcrumb = { id: number; path: string; hue: HueBand; endAngle: number };
 type Capability = "enter" | "preview" | "reveal" | "collect" | "rescan";
 type NavigationMode = "push" | "replace" | "travel";
 type ProjectedEntry = Models.ProjectedEntry;
@@ -41,6 +42,12 @@ type Page = {
   // The band this level's children are drawn from, inherited on drill-down so an
   // entry's colour is the same before and after you enter its parent.
   hue: HueBand;
+  // Where this level's sequence ends. Not a constant: the reference keeps the
+  // clicked wedge's angular midline fixed while it opens to the full circle, so
+  // the child level's seam lands at that midline + PI (ADR-0060 §5, measured to
+  // within 0.4deg across the whole expansion). Only the scan root uses the fixed
+  // 3 o'clock seam.
+  endAngle: number;
 };
 
 const defaultRoot = "/";
@@ -218,6 +225,11 @@ function projectedArc(child: ProjectedEntry) {
     aggregate: child.kind === "aggregate",
     stale: false,
     entry: null as MapEntry | null,
+    // A projected descendant carries no path, so it can never authorise a file
+    // operation (ADR-0048, DDD invariant 17). It does carry its node id, and
+    // navigation is by id — which is why every ring is clickable in the
+    // reference and now here too.
+    nodeId: child.kind === "directory" ? child.id : 0,
     children: (child.children ?? []).filter(Boolean),
   };
 }
@@ -252,7 +264,11 @@ function crumbLabel(path: string, index: number): string {
 }
 
 function rootPage(snapshotId: number, path: string): Page {
-  return { snapshotId, parentId: 1, path, offset: 0, crumbs: [{ id: 1, path, hue: rootHueBand }], hue: rootHueBand };
+  return {
+    snapshotId, parentId: 1, path, offset: 0,
+    crumbs: [{ id: 1, path, hue: rootHueBand, endAngle: sunburstEndAngle }],
+    hue: rootHueBand, endAngle: sunburstEndAngle,
+  };
 }
 
 // entryBands gives every entry its slice of the band, by the same weights the
@@ -306,6 +322,8 @@ function Sunburst({
   centerColor,
   hueRange,
   baseDepth,
+  levelEndAngle,
+  onEnterNodeId,
   onDragEntry,
 }: {
   map: MapResult | null;
@@ -314,13 +332,15 @@ function Sunburst({
   selectedKey: string | null;
   onHover: (entry: MapEntry | null) => void;
   onFocus: (entry: MapEntry) => void;
-  onActivate: (entry: MapEntry) => void;
+  onActivate: (entry: MapEntry, geom?: ArcGeom) => void;
   onPreview: (entry: MapEntry) => void;
   onReveal: (entry: MapEntry) => void;
   onGoParent: () => void;
   centerColor: string | null;
   hueRange: HueBand;
   baseDepth: number;
+  levelEndAngle: number;
+  onEnterNodeId: (nodeId: number, geom: ArcGeom) => void;
   onDragEntry: (entry: MapEntry, event: ReactPointerEvent) => void;
 }) {
   const entries = foldSmallEntries((map?.entries ?? []).filter(Boolean), map?.parent.ownedAllocated ?? 0);
@@ -383,6 +403,9 @@ function Sunburst({
     // where each arc was to where it lands, instead of cutting.
     geom: ArcGeom;
     entry: MapEntry | null;
+    // Non-zero on a projected descendant that is a directory: it has no path, so
+    // it cannot authorise anything, but it can be navigated to by id.
+    nodeId: number;
     aggregate: boolean;
     stale: boolean;
   };
@@ -456,6 +479,7 @@ function Sunburst({
         path: arcPath(geom),
         geom,
         entry: item.entry,
+        nodeId: (item as { nodeId?: number }).nodeId ?? 0,
         aggregate: item.aggregate,
         stale: item.stale,
       });
@@ -485,8 +509,8 @@ function Sunburst({
       entry,
       children: (entry.children ?? []).filter(Boolean),
     })),
-    sunburstEndAngle - usedSweep,
-    sunburstEndAngle,
+    levelEndAngle - usedSweep,
+    levelEndAngle,
     0,
     hueRange,
   );
@@ -565,7 +589,7 @@ function Sunburst({
         return;
       }
       morphFrame.current = null;
-      clearMorphStyles(state, morphRefs.current, ghostGroupRef.current);
+      clearMorphStyles(state, morphRefs.current);
       morphState.current = null;
       commit();
     };
@@ -579,7 +603,7 @@ function Sunburst({
       // navigation starts from what the user can see rather than from a level
       // that was never painted. The inline styles have to go with it.
       const interrupted = morphState.current;
-      if (interrupted) clearMorphStyles(interrupted, morphRefs.current, ghostGroupRef.current);
+      if (interrupted) clearMorphStyles(interrupted, morphRefs.current);
       morphState.current = null;
       commit();
     };
@@ -635,12 +659,16 @@ function Sunburst({
               ))}
             </g>
           )}
-          {slices.map(({ entry, key, renderKey, depth, path, hue, aggregate, stale }) => {
+          {slices.map(({ entry, key, renderKey, depth, path, hue, aggregate, stale, nodeId, geom }) => {
             // Only current-level arcs are interactive: a projected descendant
             // carries no path, so it can neither be activated nor collected
             // (ADR-0048, ADR-0017 §2).
             const interactive = entry !== null;
             const canActivate = interactive && (!aggregate || depth === 0);
+            // Every ring is clickable, not only the innermost. A projected arc
+            // navigates by node id (ADR-0060 §6); it stays non-interactive for
+            // hover, focus, collect and reveal, all of which need a path.
+            const canEnterProjected = !interactive && nodeId > 0;
             const draggable = interactive && entry.kind === "node" && hasCapability(entry, "collect");
             const selected = key === selectedKey;
             const focused = key === focusedKey;
@@ -674,13 +702,17 @@ function Sunburst({
                 onPointerLeave={() => { if (entry) onHover(null); }}
                 onFocus={() => { if (entry) onFocus(entry); }}
                 onClick={(event) => {
+                  if (canEnterProjected) {
+                    onEnterNodeId(nodeId, geom);
+                    return;
+                  }
                   if (!canActivate || !entry) return;
                   if (event.metaKey || event.ctrlKey) {
                     event.preventDefault();
                     onReveal(entry);
                     return;
                   }
-                  onActivate(entry);
+                  onActivate(entry, geom);
                 }}
                 onKeyDown={(event) => {
                   if (!entry) return;
@@ -1089,7 +1121,13 @@ export default function App() {
       if (request !== mapRequest.current) return false;
       const nextEntries = next.entries ?? [];
       setMap(next);
-      const resolvedTarget = { ...target, offset: next.offset };
+      // A page entered by node id arrives without a path; the map's own parent
+      // carries it, so it is filled in here rather than guessed at the call site.
+      const resolvedPath = target.path || next.parent?.path || "";
+      const resolvedCrumbs = target.path
+        ? target.crumbs
+        : target.crumbs.map((crumb, index) => index === target.crumbs.length - 1 ? { ...crumb, path: resolvedPath } : crumb);
+      const resolvedTarget = { ...target, offset: next.offset, path: resolvedPath, crumbs: resolvedCrumbs };
       if (mode !== "replace") {
         setHoveredEntry(null);
         setFocusedEntry(firstEntry(next));
@@ -1251,19 +1289,39 @@ export default function App() {
     await loadMap(target, mode, targetIndex);
   }
 
-  function openDirectory(entry: MapEntry) {
+  function openDirectory(entry: MapEntry, geom?: ArcGeom) {
     const node = entryNode(entry);
     if (!node || node.kind !== "directory" || !hasCapability(entry, "enter") || !currentPage) return;
     const childBand = entryBands(entries, currentPage.hue)[entryKey(entry)] ?? currentPage.hue;
+    const endAngle = childEndAngle(geom, currentPage.endAngle);
     const target: Page = {
       snapshotId: currentPage.snapshotId,
       parentId: node.id,
       path: node.path,
       offset: 0,
-      crumbs: currentPage.crumbs.concat({ id: node.id, path: node.path, hue: childBand }),
+      crumbs: currentPage.crumbs.concat({ id: node.id, path: node.path, hue: childBand, endAngle }),
       hue: childBand,
+      endAngle,
     };
     void goToPage(target, "push");
+  }
+
+  // Entering a projected descendant: it carries a node id but no path, so the
+  // path comes back with the map and loadMap fills it in. Its hue band is not
+  // known here either — the wheel derived it while drawing — so the level keeps
+  // its parent's band until the map arrives.
+  function enterNodeId(nodeId: number, geom: ArcGeom) {
+    if (!currentPage || nodeId <= 0) return;
+    const endAngle = childEndAngle(geom, currentPage.endAngle);
+    void goToPage({
+      snapshotId: currentPage.snapshotId,
+      parentId: nodeId,
+      path: "",
+      offset: 0,
+      crumbs: currentPage.crumbs.concat({ id: nodeId, path: "", hue: currentPage.hue, endAngle }),
+      hue: currentPage.hue,
+      endAngle,
+    }, "push");
   }
 
   function expandEntry(entry: MapEntry) {
@@ -1303,12 +1361,12 @@ export default function App() {
     window.addEventListener("pointerup", finish);
   }
 
-  function activateEntry(entry: MapEntry) {
+  function activateEntry(entry: MapEntry, geom?: ArcGeom) {
     setFocusedEntry(entry);
     setSelectedEntry(entry);
     if (entry.kind === "node" && entry.node.kind === "directory") {
       setCenterColor(levelColors[entryKey(entry)] ?? null);
-      openDirectory(entry);
+      openDirectory(entry, geom);
     } else if (entry.kind !== "node") {
       expandEntry(entry);
     }
@@ -1336,6 +1394,7 @@ export default function App() {
       offset: 0,
       crumbs: currentPage.crumbs.slice(0, -1),
       hue: parentCrumb.hue,
+      endAngle: parentCrumb.endAngle,
     }, "push");
   }
 
@@ -1354,6 +1413,7 @@ export default function App() {
       parentId: crumb.id,
       path: crumb.path,
       offset: 0,
+      endAngle: crumb.endAngle,
       crumbs: currentPage.crumbs.slice(0, index + 1),
       hue: crumb.hue,
     }, "push");
@@ -1670,6 +1730,8 @@ export default function App() {
                   onDragEntry={beginSliceDrag}
                   hueRange={hueRange}
                   baseDepth={baseDepth}
+                  levelEndAngle={currentPage?.endAngle ?? sunburstEndAngle}
+                  onEnterNodeId={enterNodeId}
                   centerColor={centerColor}
                   map={map}
                   hoveredKey={hoveredKey}

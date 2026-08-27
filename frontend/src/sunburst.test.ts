@@ -7,6 +7,7 @@ import {
   sunburstGeometry,
   ringBounds,
   projectionMinSweeps,
+  childEndAngle,
 } from "./sunburst.ts";
 
 function channels(hex: string): [number, number, number] {
@@ -113,4 +114,26 @@ test("projection thresholds tighten as the rings get further out", () => {
     );
   }
   assert.ok(sweeps.every((value) => value > 0));
+});
+
+// ADR-0060 §5. The reference's rule, stated as a property: after the wedge has
+// opened to the whole circle, its midline is where it started.
+test("entering a wedge leaves its midline where it was", () => {
+  for (const geom of [
+    { a0: 0.2, a1: 1.4 },
+    { a0: -2.0, a1: -0.5 },
+    { a0: 3.0, a1: 6.1 },
+  ]) {
+    const mid = (geom.a0 + geom.a1) / 2;
+    const end = childEndAngle(geom, 0);
+    // The child level occupies [end - 2PI, end]; its midline must be the same
+    // angle the parent wedge had.
+    const childMid = end - Math.PI;
+    const delta = Math.abs(((childMid - mid + Math.PI) % (2 * Math.PI)) - Math.PI);
+    assert.ok(delta < 1e-9, `midline moved by ${delta} rad`);
+  }
+});
+
+test("a click outside the wheel keeps the current seam", () => {
+  assert.equal(childEndAngle(undefined, 1.234), 1.234);
 });

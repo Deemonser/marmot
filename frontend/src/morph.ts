@@ -42,14 +42,18 @@ export type MorphNode = {
   setAttribute(name: string, value: string): void;
   style: { opacity: string; removeProperty(name: string): void };
 };
-export type MorphGroup = { style: { opacity: string; removeProperty(name: string): void } };
+export type MorphGroup = { style: { opacity: string } };
 
-export function clearMorphStyles(plan: MorphPlan, nodes: Map<string, MorphNode>, ghostGroup: MorphGroup | null): void {
+export function clearMorphStyles(plan: MorphPlan, nodes: Map<string, MorphNode>): void {
   for (const arc of plan.arriving) {
     const node = nodes.get(arc.renderKey);
     if (node) node.style.removeProperty("opacity");
   }
-  if (ghostGroup) ghostGroup.style.removeProperty("opacity");
+  // The departing group is deliberately left as it was painted. Clearing it here
+  // raised it back to full opacity, and React unmounts the ghosts on a later
+  // task — so the level that was just left flashed back over the new one for a
+  // frame. Nothing needs the reset: the ghosts are unmounted, and a new morph
+  // sets the group's opacity on its very first painted frame.
 }
 
 export function paintMorph(

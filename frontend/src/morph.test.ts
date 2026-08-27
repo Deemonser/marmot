@@ -122,7 +122,17 @@ test("interrupting the morph leaves no inline opacity behind", () => {
   const { nodes, plan, group } = scenario();
   paintMorph(plan, morphPrune + 10, nodes as never, group);
   assert.equal(nodes.get("arrive")!.opacity, "0");
-  clearMorphStyles(plan, nodes as never, group);
+  clearMorphStyles(plan, nodes as never);
   assert.equal(nodes.get("arrive")!.opacity, null, "opacity survived the cleanup");
-  assert.equal(group.opacity, null, "ghost group opacity survived the cleanup");
+});
+
+// The cleanup must not touch the departing group. Raising it back to full
+// opacity made the level just left flash over the new one for a frame, because
+// React unmounts the ghosts on a later task than the one that clears the style.
+test("cleanup leaves the departing group hidden", () => {
+  const { nodes, plan, group } = scenario();
+  paintMorph(plan, morphDuration, nodes as never, group);
+  assert.equal(group.opacity, "0", "the ghosts should be fully faded by the end");
+  clearMorphStyles(plan, nodes as never);
+  assert.equal(group.opacity, "0", "the cleanup made the departing arcs visible again");
 });
