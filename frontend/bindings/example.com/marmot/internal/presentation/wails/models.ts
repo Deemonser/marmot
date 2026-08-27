@@ -136,6 +136,14 @@ export interface ProjectedEntry {
     "name": string;
     "kind": string;
     "size": number;
+
+    /**
+     * Why this object may not be deleted, or empty when it may. The one thing an
+     * arc below the current level says about acting on itself, and it only ever
+     * says no -- so the frontend can refuse on the frame a drag starts without
+     * gaining anything it could authorise with (ADR-0048).
+     */
+    "protection"?: string;
     "children"?: ProjectedEntry[] | null;
     "total"?: number;
     "more"?: boolean;

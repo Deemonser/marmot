@@ -119,9 +119,12 @@ type ScanStatus struct {
 // ProjectedEntry is one arc below the current level. It carries only what the
 // space map draws with; it has no path and no capabilities (ADR-0048).
 type ProjectedEntry struct {
-	NodeID          int64            `json:"id"`
-	Name            string           `json:"name"`
-	Kind            string           `json:"kind"`
+	NodeID int64  `json:"id"`
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	// Why it may not be deleted, or empty. Passed through from the store, which
+	// is the only layer with the path to ask about (ADR-0048).
+	Protection      string
 	OwnedAllocated  int64            `json:"size"`
 	Children        []ProjectedEntry `json:"children,omitempty"`
 	ChildrenTotal   int              `json:"total,omitempty"`
@@ -1584,7 +1587,8 @@ func projectedEntries(entries []scan.ProjectedEntry) []ProjectedEntry {
 	for _, entry := range entries {
 		out = append(out, ProjectedEntry{
 			NodeID: entry.NodeID, Name: entry.Name, Kind: entry.Kind,
-			OwnedAllocated: entry.OwnedAllocated, Children: projectedEntries(entry.Children),
+			OwnedAllocated: entry.OwnedAllocated, Protection: entry.Protection,
+			Children:      projectedEntries(entry.Children),
 			ChildrenTotal: entry.ChildrenTotal, ChildrenHasMore: entry.ChildrenHasMore,
 		})
 	}

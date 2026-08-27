@@ -132,8 +132,14 @@ type ProjectedEntry struct {
 	NodeID int64  `json:"id"`
 	Name   string `json:"name"`
 	// Kind is "directory", "file" or "aggregate".
-	Kind            string           `json:"kind"`
-	OwnedAllocated  int64            `json:"size"`
+	Kind           string `json:"kind"`
+	OwnedAllocated int64  `json:"size"`
+	// Why this object may not be deleted, or empty when it may. The one thing a
+	// projection says about acting on itself, and it only ever says no -- so it
+	// cannot be used to authorise anything, which is what ADR-0048 and DDD
+	// invariant 17 are protecting. Carried here so the UI can refuse on the frame
+	// the drag starts instead of a round trip later.
+	Protection      string           `json:"protection,omitempty"`
 	Children        []ProjectedEntry `json:"children"`
 	ChildrenTotal   int              `json:"total,omitempty"`
 	ChildrenHasMore bool             `json:"more,omitempty"`

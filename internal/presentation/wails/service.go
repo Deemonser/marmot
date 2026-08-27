@@ -40,10 +40,15 @@ type ScanStatus struct {
 // ProjectedEntry is one arc below the current level. It carries only what the
 // space map draws with; it has no path and no capabilities (ADR-0048).
 type ProjectedEntry struct {
-	NodeID          int64            `json:"id"`
-	Name            string           `json:"name"`
-	Kind            string           `json:"kind"`
-	OwnedAllocated  int64            `json:"size"`
+	NodeID         int64  `json:"id"`
+	Name           string `json:"name"`
+	Kind           string `json:"kind"`
+	OwnedAllocated int64  `json:"size"`
+	// Why this object may not be deleted, or empty when it may. The one thing an
+	// arc below the current level says about acting on itself, and it only ever
+	// says no -- so the frontend can refuse on the frame a drag starts without
+	// gaining anything it could authorise with (ADR-0048).
+	Protection      string           `json:"protection,omitempty"`
 	Children        []ProjectedEntry `json:"children,omitempty"`
 	ChildrenTotal   int              `json:"total,omitempty"`
 	ChildrenHasMore bool             `json:"more,omitempty"`
@@ -468,7 +473,8 @@ func projectedEntries(entries []application.ProjectedEntry) []ProjectedEntry {
 	for _, entry := range entries {
 		out = append(out, ProjectedEntry{
 			NodeID: entry.NodeID, Name: entry.Name, Kind: entry.Kind,
-			OwnedAllocated: entry.OwnedAllocated, Children: projectedEntries(entry.Children),
+			OwnedAllocated: entry.OwnedAllocated, Protection: entry.Protection,
+			Children:      projectedEntries(entry.Children),
 			ChildrenTotal: entry.ChildrenTotal, ChildrenHasMore: entry.ChildrenHasMore,
 		})
 	}

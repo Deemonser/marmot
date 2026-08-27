@@ -3,6 +3,7 @@ package memtree
 import (
 	"fmt"
 	"math"
+	"path"
 
 	"example.com/marmot/internal/domain/scan"
 )
@@ -27,7 +28,13 @@ type mapSource interface {
 	// mapProjectedChildren returns the slim form used below the current level.
 	// It must not reconstruct paths and is not bound by the paging page limit:
 	// the projection budget bounds it instead (ADR-0048).
-	mapProjectedChildren(parentID int64, limit int, minSize int64) ([]scan.ProjectedEntry, error)
+	//
+	// parentPath is passed in rather than looked up because the projection walk
+	// already descends parent to child: joining one name onto the parent's path is
+	// the same operation tree.path does on the way up, and it is one join per
+	// entry instead of a walk per entry. It exists so the delete guard can be
+	// answered here -- the only layer that has the path at all.
+	mapProjectedChildren(parentID int64, parentPath string, limit int, minSize int64) ([]scan.ProjectedEntry, error)
 }
 
 func buildMap(source mapSource, query scan.MapQuery) (scan.MapResult, error) {
@@ -92,7 +99,7 @@ func buildMap(source mapSource, query scan.MapQuery) (scan.MapResult, error) {
 				continue
 			}
 			children, childTotal, childHasMore, childTruncated, err := projectChildrenFrom(
-				source, entries[index].Node.ID, query.Depth-1, allotments[index],
+				source, entries[index].Node.ID, entries[index].Node.Path, query.Depth-1, allotments[index],
 				entrySweeps[index], entries[index].OwnedAllocated, query.MinSweeps, 0)
 			if err != nil {
 				return scan.MapResult{}, err
@@ -167,7 +174,7 @@ func sweepsFor(entries []scan.MapEntry) []float64 {
 	return sweeps
 }
 
-func projectChildrenFrom(source mapSource, parentID int64, depth, allot int, sweep float64, parentSize int64, minSweeps []float64, level int) ([]scan.ProjectedEntry, int, bool, bool, error) {
+func projectChildrenFrom(source mapSource, parentID int64, parentPath string, depth, allot int, sweep float64, parentSize int64, minSweeps []float64, level int) ([]scan.ProjectedEntry, int, bool, bool, error) {
 	total, err := source.mapChildCount(parentID)
 	if err != nil {
 		return nil, 0, false, false, err
@@ -200,7 +207,7 @@ func projectChildrenFrom(source mapSource, parentID int64, depth, allot int, swe
 	if minSweep, ok := minSweepAt(minSweeps, level); ok && sweep > 0 && parentSize > 0 {
 		minSize = int64(float64(parentSize) * minSweep / sweep)
 	}
-	children, err := source.mapProjectedChildren(parentID, visibleLimit, minSize)
+	children, err := source.mapProjectedChildren(parentID, parentPath, visibleLimit, minSize)
 	if err != nil {
 		return nil, 0, false, false, err
 	}
@@ -218,7 +225,7 @@ func projectChildrenFrom(source mapSource, parentID int64, depth, allot int, swe
 		}
 		if child.Kind == "directory" && depth > 0 && shares[index] > 0 {
 			grandChildren, grandTotal, grandHasMore, grandTruncated, err := projectChildrenFrom(
-				source, child.NodeID, depth-1, shares[index], childSweep, child.OwnedAllocated, minSweeps, level+1)
+				source, child.NodeID, path.Join(parentPath, child.Name), depth-1, shares[index], childSweep, child.OwnedAllocated, minSweeps, level+1)
 			if err != nil {
 				return nil, 0, false, false, err
 			}

@@ -63,6 +63,9 @@ type DragSource = {
   color: string;
   entry: MapEntry | null;
   nodeId: number;
+  // Why it may not be deleted, or empty. Known for both kinds of source now, so
+  // the dock never has to wait to answer.
+  protection: string;
 };
 
 type Capability = "enter" | "preview" | "reveal" | "collect" | "rescan";
@@ -177,10 +180,10 @@ const protectionReasons: Record<string, (name: string) => string> = {
   volume_root: (name) => "“" + name + "” 是一个已挂载的卷，不能当作文件夹删除。",
 };
 
-function protectionMessage(entry: MapEntry | null): string {
-  if (!entry?.protection) return "";
-  const reason = protectionReasons[entry.protection];
-  return reason ? reason(entry.name) : "“" + entry.name + "” 不允许删除。";
+function protectionMessage(protection: string | undefined, name: string): string {
+  if (!protection) return "";
+  const reason = protectionReasons[protection];
+  return reason ? reason(name) : "“" + name + "” 不允许删除。";
 }
 
 const virtualLabels: Record<string, string> = {
@@ -295,6 +298,10 @@ function projectedArc(child: ProjectedEntry) {
     // dragged to the dock but not navigated into, so collecting reads this and
     // navigation reads nodeId. Both go through the backend by id.
     id: child.kind === "aggregate" ? 0 : child.id,
+    // The one thing the projection says about acting on itself, and it only says
+    // no. It is here so an outer ring's arc refuses on the frame the drag starts,
+    // the way a current-level entry does, instead of a round trip later.
+    protection: child.protection ?? "",
     // Empty, and it stays empty: the projection has no path (ADR-0048). The
     // crumb this arc contributes is labelled by name until its level is opened.
     path: "",
@@ -517,6 +524,9 @@ function Sunburst({
     // The snapshot node id, on every ring. Non-zero means the arc can be looked
     // up, which is what collecting one below the current level needs.
     id: number;
+    // Why it may not be deleted, or empty. Answered on every ring, so a drag
+    // refuses at once wherever it started.
+    protection: string;
     name: string;
     size: number;
     // This arc, or one of its ancestors, is staged in the dock: drawn, faded,
@@ -643,6 +653,7 @@ function Sunburst({
         stale: item.stale,
         color: item.aggregate ? aggregateColor(item.entry) : sliceColor(hue, baseDepth + depth + 1),
         id: itemId,
+        protection: (item as { protection?: string }).protection ?? "",
         name: itemName,
         size: item.size,
         collected: itemCollected,
@@ -674,6 +685,7 @@ function Sunburst({
       stale: entry.displayState === "stale",
       id: entry.kind === "node" ? entry.node.id : 0,
       path: entryPath(entry),
+      protection: entry.protection ?? "",
       entry,
       name: entry.name,
       hasMore: Boolean(entry.childrenHasMore),
@@ -833,7 +845,7 @@ function Sunburst({
               ))}
             </g>
           )}
-          {slices.map(({ entry, key, renderKey, depth, path, aggregate, stale, nodeId, geom, preview, color, id, name, size, collected, dragging, trail }) => {
+          {slices.map(({ entry, key, renderKey, depth, path, aggregate, stale, nodeId, geom, preview, color, id, protection, name, size, collected, dragging, trail }) => {
             // Only current-level arcs are interactive: a projected descendant
             // carries no path, so it can neither be activated nor collected
             // (ADR-0048, ADR-0017 §2).
@@ -881,7 +893,7 @@ function Sunburst({
                   ? { transform: "translate(" + (Math.sin(pullMid) * pullBy).toFixed(2) + "px, " + (-Math.cos(pullMid) * pullBy).toFixed(2) + "px)" }
                   : undefined}
                 onPointerDown={(event) => {
-                  if (collectable) onDragEntry({ key, name, size, color, entry, nodeId: id }, event);
+                  if (collectable) onDragEntry({ key, name, size, color, entry, nodeId: id, protection }, event);
                 }}
                 className={
                   "sunburst-slice" +
@@ -1179,7 +1191,7 @@ function DirectoryList({
               tabIndex={pulled ? -1 : isFocused || (index === 0 && !focusedKey) ? 0 : -1}
               onPointerDown={(event) => {
                 if (pulled || entry.kind !== "node") return;
-                onDragEntry({ key, name: entry.name, size: entrySize(entry), color: entryColors_[key] ?? "#7fb96a", entry, nodeId: entry.node.id }, event);
+                onDragEntry({ key, name: entry.name, size: entrySize(entry), color: entryColors_[key] ?? "#7fb96a", entry, nodeId: entry.node.id, protection: entry.protection ?? "" }, event);
               }}
               onMouseEnter={() => onHover(entry)}
               onMouseLeave={() => onHover(null)}
@@ -1330,15 +1342,11 @@ export default function App() {
     x: number;
     y: number;
     over: boolean;
-    // Why this one cannot be collected, in words, or empty when it can. Known at
-    // once for a current-level entry; for an outer ring's arc it arrives with the
-    // lookup, which is started as soon as the drag does so the dock can refuse
-    // before the drop rather than after it.
+    // Why this one cannot be collected, in words, or empty when it can. Known
+    // before the first frame on every ring: the projection carries the reason, so
+    // the dock never has to wait to answer.
     blocked: string;
   } | null>(null);
-  // The entry behind the drag once it is known. A projected arc starts out as an
-  // id and nothing else.
-  const dragEntry = useRef<MapEntry | null>(null);
   // An outer ring's arc has to be looked up before it can be collected, and the
   // lookup lands a tick after the drop. Holding its key here keeps it pulled out
   // across that gap, so it does not snap back into the wheel for one frame.
@@ -1730,17 +1738,13 @@ export default function App() {
     if (source.entry ? !entryNode(source.entry) : source.nodeId <= 0) return;
     const startX = event.clientX;
     const startY = event.clientY;
-    dragEntry.current = source.entry;
     const chip = {
       key: source.key,
       label: source.name,
       size: source.size,
       color: source.color,
-      blocked: protectionMessage(source.entry),
+      blocked: protectionMessage(source.protection, source.name),
     };
-    // An outer ring's arc carries no capabilities until it is looked up, and the
-    // dock has to be able to say "no" while the drag is still in the air.
-    if (!source.entry) void resolveDragEntry(source);
     let dragging = false;
     const move = (moveEvent: PointerEvent) => {
       if (!dragging && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < dragThreshold) return;
@@ -1758,34 +1762,12 @@ export default function App() {
       dragSuppressesClick.current = true;
       window.setTimeout(() => { dragSuppressesClick.current = false; }, 0);
       if (upEvent.type !== "pointerup" || !overDock(upEvent.clientX, upEvent.clientY)) return;
-      // The lookup usually beats the drop -- a snapshot read, no I/O -- but if it
-      // has not landed yet the drop does it, which is also where a failure is
-      // reported.
-      const resolved = dragEntry.current;
-      if (resolved) toggleCollector(resolved, "add");
+      if (source.entry) toggleCollector(source.entry, "add");
       else void collectProjected(source);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
     window.addEventListener("pointercancel", finish);
-  }
-
-  // Resolves the arc being dragged while it is still in the air, so a protected
-  // one can be refused with its reason at the dock instead of only at the drop.
-  // Nothing waits on it: the chip already has the name and size from the
-  // projection.
-  async function resolveDragEntry(source: DragSource) {
-    const snapshotId = mapRef.current?.snapshotId ?? 0;
-    if (snapshotId <= 0) return;
-    try {
-      const entry = await MarmotService.GetNodeEntry(snapshotId, source.nodeId);
-      dragEntry.current = entry;
-      setDrag((current) => current && current.key === source.key
-        ? { ...current, blocked: protectionMessage(entry) }
-        : current);
-    } catch {
-      // Left to the drop, which reports it where the user is looking.
-    }
   }
 
   // An arc below the current level was drawn from a projection: no path, no
@@ -1952,7 +1934,7 @@ export default function App() {
     // screen long after the gesture it belongs to. The keyboard and the menu have
     // no dock message, so they still need it.
     if (entry.protection) {
-      if (mode === "toggle") setNotice(protectionMessage(entry));
+      if (mode === "toggle") setNotice(protectionMessage(entry.protection, entry.name));
       return;
     }
     if (!hasCapability(entry, "collect") || !entryNode(entry)) {
@@ -2313,7 +2295,8 @@ export default function App() {
       {showResult && <section
         ref={collectorRef}
         className={"collector-dock" + (collectorOpen ? " is-open" : "")
-          + (drag ? " is-target" : "") + (drag?.over ? " is-armed" : "")
+          + (drag ? " is-target" : "")
+          + (drag?.over && !drag.blocked ? " is-armed" : "")
           + (drag?.blocked ? " is-refused" : "")}
         onDragOver={(event) => event.preventDefault()}
         onDrop={handleCollectorDrop}

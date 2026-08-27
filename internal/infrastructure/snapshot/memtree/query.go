@@ -2,7 +2,9 @@ package memtree
 
 import (
 	"fmt"
+	"path"
 
+	"example.com/marmot/internal/domain/cleanup"
 	"example.com/marmot/internal/domain/scan"
 )
 
@@ -92,7 +94,7 @@ func (q *treeQuery) mapAggregateChildren(parentID int64, offset int, basis strin
 // after it is too. Filtering after the fact still materialised every child of
 // every node the projection touched, which cost 14x the assembly time for fewer
 // arcs once the depth went from 5 to 12 (ADR-0059 §3).
-func (q *treeQuery) mapProjectedChildren(parentID int64, limit int, minSize int64) ([]scan.ProjectedEntry, error) {
+func (q *treeQuery) mapProjectedChildren(parentID int64, parentPath string, limit int, minSize int64) ([]scan.ProjectedEntry, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -109,6 +111,12 @@ func (q *treeQuery) mapProjectedChildren(parentID int64, limit int, minSize int6
 		if minSize > 0 && slim.OwnedAllocated < minSize {
 			break
 		}
+		// The delete guard is answered here because this is the only layer that has
+		// the path. The projection still carries no path -- only the refusal, which
+		// can authorise nothing (ADR-0048). Joining one name onto the parent's path
+		// is what tree.path does walking up; doing it downward costs a single join
+		// per entry instead of a walk per entry.
+		slim.Protection = cleanup.DeleteBlock(path.Join(parentPath, slim.Name))
 		entries = append(entries, slim)
 	}
 	return entries, nil
