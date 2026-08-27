@@ -114,3 +114,41 @@ export const morphDuration = morphPrune + morphMotion + morphReveal;
 // frame rewrites every arc's `d`, so the cost is linear in arc count.
 export const morphArcCeiling = 2600;
 
+
+// planMorph decides what each arc does across a level change.
+//
+// Identity is matched by key, so anything whose key can repeat across levels
+// must be excluded: a folded block is keyed by its depth and position and an
+// aggregate by its name, and both collide between two different levels. When
+// they did, the grey blocks were the only arcs the morph thought had survived —
+// so every real wedge correctly departed or arrived while the grey ones alone
+// slid across the wheel. They are never the same object; they always depart and
+// arrive.
+export function planMorph(
+  previous: Map<string, ArcGeom>,
+  slices: Array<{ key: string; renderKey: string; geom: ArcGeom; aggregate: boolean }>,
+  departing: Array<{ renderKey: string; geom: ArcGeom }>,
+  started: number,
+): MorphPlan {
+  const moving: MorphPlan["moving"] = [];
+  const arriving: MorphPlan["arriving"] = [];
+  for (const slice of slices) {
+    const from = slice.aggregate ? undefined : previous.get(slice.key);
+    if (from) {
+      moving.push({ renderKey: slice.renderKey, from, to: slice.geom });
+    } else {
+      arriving.push({ renderKey: slice.renderKey, geom: slice.geom });
+    }
+  }
+  return { moving, arriving, departing, started };
+}
+
+// survivingKeys is what the *next* level change will match against. Aggregates
+// are left out for the same reason.
+export function survivingKeys(slices: Array<{ key: string; aggregate: boolean }>): Set<string> {
+  const keys = new Set<string>();
+  for (const slice of slices) {
+    if (!slice.aggregate) keys.add(slice.key);
+  }
+  return keys;
+}

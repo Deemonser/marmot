@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
-import { paintMorph, clearMorphStyles, arcPath, morphDuration, morphArcCeiling } from "./morph";
+import { paintMorph, clearMorphStyles, planMorph, arcPath, morphDuration, morphArcCeiling } from "./morph";
 import type { ArcGeom, MorphPlan } from "./morph";
 import { childEndAngle } from "./sunburst";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
@@ -340,7 +340,7 @@ function Sunburst({
   hueRange: HueBand;
   baseDepth: number;
   levelEndAngle: number;
-  onEnterNodeId: (nodeId: number, geom: ArcGeom) => void;
+  onEnterNodeId: (nodeId: number, geom: ArcGeom, band: HueBand) => void;
   onDragEntry: (entry: MapEntry, event: ReactPointerEvent) => void;
 }) {
   const entries = foldSmallEntries((map?.entries ?? []).filter(Boolean), map?.parent.ownedAllocated ?? 0);
@@ -406,6 +406,9 @@ function Sunburst({
     // Non-zero on a projected descendant that is a directory: it has no path, so
     // it cannot authorise anything, but it can be navigated to by id.
     nodeId: number;
+    // The band this arc hands to its own children. Entering the arc must adopt
+    // it, or the level below is recoloured from its parent's whole band.
+    band: HueBand;
     aggregate: boolean;
     stale: boolean;
   };
@@ -480,6 +483,7 @@ function Sunburst({
         geom,
         entry: item.entry,
         nodeId: (item as { nodeId?: number }).nodeId ?? 0,
+        band: own,
         aggregate: item.aggregate,
         stale: item.stale,
       });
@@ -528,7 +532,8 @@ function Sunburst({
     const commit = () => {
       const next = new Map<string, ArcGeom>();
       for (const slice of sliceSnapshot) {
-        if (!next.has(slice.key)) next.set(slice.key, slice.geom);
+        // Aggregates are deliberately absent: see planMorph.
+        if (!slice.aggregate && !next.has(slice.key)) next.set(slice.key, slice.geom);
       }
       paintedGeom.current = next;
       previousParentKey.current = map ? "node:" + map.parent.id : null;
@@ -549,20 +554,9 @@ function Sunburst({
       commit();
       return;
     }
-    // Split by what each arc does, rather than tweening everything at once.
-    // An arc present in both levels *moves*; one only in the new level *arrives*
-    // and must not be visible until the movement is over; one only in the old
-    // level *departs* and must be gone before it starts.
-    const moving: MorphPlan["moving"] = [];
-    const arriving: MorphPlan["arriving"] = [];
-    for (const slice of sliceSnapshot) {
-      const from = previous.get(slice.key);
-      if (from) {
-        moving.push({ renderKey: slice.renderKey, from, to: slice.geom });
-      } else {
-        arriving.push({ renderKey: slice.renderKey, geom: slice.geom });
-      }
-    }
+    // What each arc does across the change is decided in planMorph, which also
+    // holds the rule that aggregates never match by identity (their keys repeat
+    // across levels).
     const live = new Set(sliceSnapshot.map((slice) => slice.key));
     const departingSlices: Array<{ renderKey: string; color: string; geom: ArcGeom }> = [];
     previousSlices.forEach((slice, index) => {
@@ -572,12 +566,12 @@ function Sunburst({
     });
     setGhosts(departingSlices);
 
-    morphState.current = {
-      moving,
-      arriving,
-      departing: departingSlices.map((ghost) => ({ renderKey: ghost.renderKey, geom: ghost.geom })),
-      started: performance.now(),
-    };
+    morphState.current = planMorph(
+      previous,
+      sliceSnapshot,
+      departingSlices.map((ghost) => ({ renderKey: ghost.renderKey, geom: ghost.geom })),
+      performance.now(),
+    );
     paintMorph(morphState.current, 0, morphRefs.current, ghostGroupRef.current);
     const step = () => {
       const state = morphState.current;
@@ -659,7 +653,7 @@ function Sunburst({
               ))}
             </g>
           )}
-          {slices.map(({ entry, key, renderKey, depth, path, hue, aggregate, stale, nodeId, geom }) => {
+          {slices.map(({ entry, key, renderKey, depth, path, hue, aggregate, stale, nodeId, geom, band }) => {
             // Only current-level arcs are interactive: a projected descendant
             // carries no path, so it can neither be activated nor collected
             // (ADR-0048, ADR-0017 §2).
@@ -703,7 +697,7 @@ function Sunburst({
                 onFocus={() => { if (entry) onFocus(entry); }}
                 onClick={(event) => {
                   if (canEnterProjected) {
-                    onEnterNodeId(nodeId, geom);
+                    onEnterNodeId(nodeId, geom, band);
                     return;
                   }
                   if (!canActivate || !entry) return;
@@ -1310,7 +1304,7 @@ export default function App() {
   // path comes back with the map and loadMap fills it in. Its hue band is not
   // known here either — the wheel derived it while drawing — so the level keeps
   // its parent's band until the map arrives.
-  function enterNodeId(nodeId: number, geom: ArcGeom) {
+  function enterNodeId(nodeId: number, geom: ArcGeom, band: HueBand) {
     if (!currentPage || nodeId <= 0) return;
     const endAngle = childEndAngle(geom, currentPage.endAngle);
     void goToPage({
@@ -1318,8 +1312,8 @@ export default function App() {
       parentId: nodeId,
       path: "",
       offset: 0,
-      crumbs: currentPage.crumbs.concat({ id: nodeId, path: "", hue: currentPage.hue, endAngle }),
-      hue: currentPage.hue,
+      crumbs: currentPage.crumbs.concat({ id: nodeId, path: "", hue: band, endAngle }),
+      hue: band,
       endAngle,
     }, "push");
   }

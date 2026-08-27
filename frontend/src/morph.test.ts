@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   paintMorph,
   clearMorphStyles,
+  planMorph,
+  survivingKeys,
   arcPath,
   morphPrune,
   morphMotion,
@@ -135,4 +137,44 @@ test("cleanup leaves the departing group hidden", () => {
   assert.equal(group.opacity, "0", "the ghosts should be fully faded by the end");
   clearMorphStyles(plan, nodes as never);
   assert.equal(group.opacity, "0", "the cleanup made the departing arcs visible again");
+});
+
+// The grey blocks were the only arcs the morph thought had survived a level
+// change: a folded block is keyed by depth and position, an aggregate by name,
+// and both keys repeat between two different levels. So every real wedge
+// departed and arrived correctly while the grey ones alone slid across.
+test("aggregates never match identity across a level change", () => {
+  const previous = new Map<string, ArcGeom>([
+    ["node:7", oldGeom],
+    // The key a folded block had in the previous level. It is a different set of
+    // children now, and must not be recognised.
+    ["folded:1:4", oldGeom],
+  ]);
+  const plan = planMorph(
+    previous,
+    [
+      { key: "node:7", renderKey: "a", geom: newGeom, aggregate: false },
+      { key: "folded:1:4", renderKey: "b", geom: newGeom, aggregate: true },
+    ],
+    [],
+    0,
+  );
+  assert.deepEqual(plan.moving.map((t) => t.renderKey), ["a"]);
+  assert.deepEqual(plan.arriving.map((t) => t.renderKey), ["b"], "a grey block was tweened across levels");
+});
+
+test("real nodes still match across a level change", () => {
+  const previous = new Map<string, ArcGeom>([["node:7", oldGeom]]);
+  const plan = planMorph(previous, [{ key: "node:7", renderKey: "a", geom: newGeom, aggregate: false }], [], 0);
+  assert.equal(plan.moving.length, 1);
+  assert.equal(plan.arriving.length, 0);
+});
+
+test("what the next change matches against excludes aggregates", () => {
+  const keys = survivingKeys([
+    { key: "node:7", aggregate: false },
+    { key: "folded:1:4", aggregate: true },
+  ]);
+  assert.ok(keys.has("node:7"));
+  assert.ok(!keys.has("folded:1:4"));
 });
