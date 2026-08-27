@@ -29,6 +29,18 @@ type CleanupValidation = Models.CleanupValidation;
 // its slice of the band, so an entry's colour does not change when you drill in.
 type HueBand = { center: number; width: number };
 type Breadcrumb = { id: number; path: string; hue: HueBand; endAngle: number };
+
+// What the list shows while the pointer is over an arc. The reference switches
+// the right-hand panel to the hovered node's own heading and children, on every
+// ring — the wheel itself does not navigate. The projection already carries the
+// subtree, so nothing has to be fetched.
+type HoverPreview = {
+  key: string;
+  name: string;
+  size: number;
+  children: ProjectedEntry[];
+  hasMore: boolean;
+};
 type Capability = "enter" | "preview" | "reveal" | "collect" | "rescan";
 type NavigationMode = "push" | "replace" | "travel";
 type ProjectedEntry = Models.ProjectedEntry;
@@ -146,6 +158,13 @@ const sunburstAggregate = "#888787";
 // spans the volume's capacity — free space is the arc that closes it. d3 measures
 // from 12 o'clock clockwise, so 3 o'clock is +PI/2.
 const sunburstEndAngle = Math.PI / 2;
+// How long the pointer has to settle on one wedge before the list follows it,
+// and how long it has to be away before the list goes back. Both exist so that
+// crossing the wheel does not make the panel flicker through every node on the
+// way.
+const previewDwellMs = 260;
+const previewLeaveMs = 140;
+
 // The wheel and the directory list must agree on an entry's colour, so both
 // derive it from the same cumulative angular position.
 // The reference's hue runs 1:1 with angle from the start of the sequence, so the
@@ -230,6 +249,8 @@ function projectedArc(child: ProjectedEntry) {
     // navigation is by id — which is why every ring is clickable in the
     // reference and now here too.
     nodeId: child.kind === "directory" ? child.id : 0,
+    name: child.name,
+    hasMore: Boolean(child.more),
     children: (child.children ?? []).filter(Boolean),
   };
 }
@@ -314,6 +335,8 @@ function Sunburst({
   focusedKey,
   selectedKey,
   onHover,
+  onHoverArc,
+  breathingKey,
   onFocus,
   onActivate,
   onPreview,
@@ -331,6 +354,8 @@ function Sunburst({
   focusedKey: string | null;
   selectedKey: string | null;
   onHover: (entry: MapEntry | null) => void;
+  onHoverArc: (preview: HoverPreview | null) => void;
+  breathingKey: string | null;
   onFocus: (entry: MapEntry) => void;
   onActivate: (entry: MapEntry, geom?: ArcGeom) => void;
   onPreview: (entry: MapEntry) => void;
@@ -409,6 +434,8 @@ function Sunburst({
     // The band this arc hands to its own children. Entering the arc must adopt
     // it, or the level below is recoloured from its parent's whole band.
     band: HueBand;
+    // What the list shows while the pointer is over this arc.
+    preview: HoverPreview | null;
     aggregate: boolean;
     stale: boolean;
   };
@@ -484,6 +511,13 @@ function Sunburst({
         entry: item.entry,
         nodeId: (item as { nodeId?: number }).nodeId ?? 0,
         band: own,
+        preview: item.aggregate ? null : {
+          key: item.key,
+          name: (item as { name?: string }).name ?? "",
+          size: item.size,
+          children: item.children,
+          hasMore: Boolean((item as { hasMore?: boolean }).hasMore),
+        },
         aggregate: item.aggregate,
         stale: item.stale,
       });
@@ -511,6 +545,8 @@ function Sunburst({
       aggregate: entry.kind !== "node",
       stale: entry.displayState === "stale",
       entry,
+      name: entry.name,
+      hasMore: Boolean(entry.childrenHasMore),
       children: (entry.children ?? []).filter(Boolean),
     })),
     levelEndAngle - usedSweep,
@@ -653,7 +689,7 @@ function Sunburst({
               ))}
             </g>
           )}
-          {slices.map(({ entry, key, renderKey, depth, path, hue, aggregate, stale, nodeId, geom, band }) => {
+          {slices.map(({ entry, key, renderKey, depth, path, hue, aggregate, stale, nodeId, geom, band, preview }) => {
             // Only current-level arcs are interactive: a projected descendant
             // carries no path, so it can neither be activated nor collected
             // (ADR-0048, ADR-0017 §2).
@@ -665,8 +701,6 @@ function Sunburst({
             const canEnterProjected = !interactive && nodeId > 0;
             const draggable = interactive && entry.kind === "node" && hasCapability(entry, "collect");
             const selected = key === selectedKey;
-            const focused = key === focusedKey;
-            const hovered = key === hoveredKey;
             const color = aggregate ? sunburstAggregate : sliceColor(hue, baseDepth + depth + 1);
             return (
               <path
@@ -684,16 +718,24 @@ function Sunburst({
                   "sunburst-slice" +
                   " depth-" + depth +
                   (selected ? " is-selected" : "") +
-                  (focused ? " is-focused" : "") +
-                  (hovered ? " is-hovered" : "") +
+                  (key === breathingKey ? " is-breathing" : "") +
                   (aggregate ? " is-aggregate" : "") +
                   (stale ? " is-stale" : "") +
                   (interactive ? "" : " is-projected")
                 }
                 fill={color}
                 aria-label={entry ? entry.name + "，" + formatBytes(entrySize(entry)) : undefined}
-                onPointerEnter={() => { if (entry) onHover(entry); }}
-                onPointerLeave={() => { if (entry) onHover(null); }}
+                onPointerEnter={() => {
+                  // Every ring reacts, not only the current level: the reference
+                  // breathes whichever arc is under the pointer and swings the
+                  // list to that node.
+                  if (entry) onHover(entry);
+                  onHoverArc(preview);
+                }}
+                onPointerLeave={() => {
+                  if (entry) onHover(null);
+                  onHoverArc(null);
+                }}
                 onFocus={() => { if (entry) onFocus(entry); }}
                 onClick={(event) => {
                   if (canEnterProjected) {
@@ -868,6 +910,7 @@ function VolumeTile({
 
 function DirectoryList({
   entryColors_,
+  preview,
   parentDotColor,
   parent,
   entries,
@@ -887,6 +930,9 @@ function DirectoryList({
   onCollect,
 }: {
   entryColors_: Record<string, string>;
+  // While the pointer is over an arc the panel shows that node instead of the
+  // current level — on every ring, and without the wheel navigating.
+  preview: { name: string; size: number; rows: Array<{ key: string; name: string; size: number; grey: boolean }>; hasMore: boolean; color: string } | null;
   // null at the scan root, where the reference shows no dot beside the volume
   // name; below it the dot carries the node's own colour (R-060 SS3.7).
   parentDotColor: string | null;
@@ -910,13 +956,26 @@ function DirectoryList({
   return (
     <aside className="directory-panel" data-testid="directory-list">
       <div className="directory-heading">
-        {parentDotColor && <span className="directory-parent-dot" style={{ background: parentDotColor }} />}
-        <h2>{parent ? crumbLabel(parent.path, parent.parentId === 0 ? 0 : 1) : "当前目录"}</h2>
-        <strong>{formatBytes(total)}</strong>
+        {preview
+          ? <span className="directory-parent-dot" style={{ background: preview.color }} />
+          : parentDotColor && <span className="directory-parent-dot" style={{ background: parentDotColor }} />}
+        <h2>{preview ? preview.name : parent ? crumbLabel(parent.path, parent.parentId === 0 ? 0 : 1) : "当前目录"}</h2>
+        <strong>{formatBytes(preview ? preview.size : total)}</strong>
       </div>
 
       <div className="directory-list" role="listbox" aria-label="当前目录内容">
-        {entries.length === 0 ? (
+        {preview ? (
+          // Read-only while previewing: these rows come from the projection, so
+          // they carry no path and nothing here may act on them.
+          preview.rows.map((row) => (
+            <div key={row.key} className="directory-row is-preview">
+              <span className={"directory-dot " + (row.grey ? "virtual" : "directory")} style={row.grey ? undefined : { background: preview.color }} />
+              <span className="directory-name">{row.name}</span>
+              <span className="directory-tag" />
+              <span className="directory-size">{formatBytes(row.size)}</span>
+            </div>
+          ))
+        ) : entries.length === 0 ? (
           <div className="directory-empty">当前目录没有可显示的项目。</div>
         ) : entries.map((entry, index) => {
           const key = entryKey(entry);
@@ -1006,6 +1065,42 @@ export default function App() {
   const [pages, setPages] = useState<Page[]>([]);
   const [pageIndex, setPageIndex] = useState(-1);
   const [hoveredEntry, setHoveredEntry] = useState<MapEntry | null>(null);
+  // What the pointer is over, on any ring. Kept apart from hoveredEntry, which
+  // only ever holds a current-level entry.
+  //
+  // Two states, not one, because the two responses want different timing. The
+  // wedge breathes at once — that is the direct answer to "am I on it". The list
+  // waits until the pointer has settled, or it snaps between nodes on the way
+  // across the wheel.
+  const [hoveredArcKey, setHoveredArcKey] = useState<string | null>(null);
+  const [hoverPreview, setHoverPreview] = useState<HoverPreview | null>(null);
+  const previewTimer = useRef<number | undefined>(undefined);
+  // What the panel is currently showing, mirrored in a ref so the decision to
+  // schedule can be made without reading state inside a setState updater — React
+  // may run an updater twice, and a timer started in there would be started
+  // twice with it.
+  const shownPreviewKey = useRef<string | null>(null);
+  useEffect(() => () => window.clearTimeout(previewTimer.current), []);
+
+  // Leaving is delayed too, and cancellable. Clearing on the way out would flash
+  // the level back between two adjacent wedges, which is the flicker this exists
+  // to remove.
+  function hoverArc(preview: HoverPreview | null) {
+    setHoveredArcKey(preview?.key ?? null);
+    window.clearTimeout(previewTimer.current);
+    if (!preview) {
+      previewTimer.current = window.setTimeout(() => {
+        shownPreviewKey.current = null;
+        setHoverPreview(null);
+      }, previewLeaveMs);
+      return;
+    }
+    if (shownPreviewKey.current === preview.key) return;
+    previewTimer.current = window.setTimeout(() => {
+      shownPreviewKey.current = preview.key;
+      setHoverPreview(preview);
+    }, previewDwellMs);
+  }
   const [focusedEntry, setFocusedEntry] = useState<MapEntry | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<MapEntry | null>(null);
   const [staleEntry, setStaleEntry] = useState<MapEntry | null>(null);
@@ -1052,11 +1147,32 @@ export default function App() {
   const selectedKey = selectedEntry ? entryKey(selectedEntry) : null;
   const focusedKey = focusedEntry ? entryKey(focusedEntry) : null;
   const hoveredKey = hoveredEntry ? entryKey(hoveredEntry) : null;
+  // The arc that breathes, from either direction: the wheel sets hoverPreview on
+  // any ring, the list sets hoveredEntry on the current level. The preview wins
+  // while the pointer is on the wheel, because only it can name an outer ring.
+  const breathingKey = hoveredArcKey ?? hoveredKey;
   const hueRange: HueBand = currentPage?.hue ?? rootHueBand;
   // Depth of the level on screen within the scanned tree: 0 is the volume root.
   // Colour is a function of this, not of the ring index (ADR-0059 SS1b).
   const baseDepth = Math.max(pageIndex, 0);
   const levelColors = useMemo(() => entryColors(entries, hueRange, baseDepth), [entries, hueRange, baseDepth]);
+  // The hovered node rendered for the panel. Grey rows are the folded and virtual
+  // children, matching how they are drawn on the wheel.
+  const previewForList = useMemo(() => {
+    if (!hoverPreview) return null;
+    return {
+      name: hoverPreview.name,
+      size: hoverPreview.size,
+      hasMore: hoverPreview.hasMore,
+      color: levelColors[hoverPreview.key] ?? sunburstAggregate,
+      rows: hoverPreview.children.map((child) => ({
+        key: String(child.id) + ":" + child.name,
+        name: child.name,
+        size: Math.max(0, child.size),
+        grey: child.kind === "aggregate",
+      })),
+    };
+  }, [hoverPreview, levelColors]);
   const inspectedInCollector = inspectorEntry ? collector.some((item) => entryKey(item) === entryKey(inspectorEntry)) : false;
   const collectorBytes = collector.reduce((sum, item) => sum + entrySize(item), 0);
   // At the root the displayed total is the volume's used bytes, so the number in
@@ -1736,6 +1852,8 @@ export default function App() {
                   centerColor={centerColor}
                   map={map}
                   hoveredKey={hoveredKey}
+                  onHoverArc={hoverArc}
+                  breathingKey={breathingKey}
                   focusedKey={focusedKey}
                   selectedKey={selectedKey}
                   onHover={setHoveredEntry}
@@ -1758,6 +1876,7 @@ export default function App() {
             </div>
             <DirectoryList
               entryColors_={levelColors}
+              preview={previewForList}
               parentDotColor={baseDepth > 0 ? sliceColor(hueRange.center, baseDepth) : null}
               parent={currentParent}
               entries={entries}

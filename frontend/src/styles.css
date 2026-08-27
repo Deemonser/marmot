@@ -199,9 +199,15 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    (ADR-0059 SS2), so a stroke on top would double it. The stroke is kept only for
    the focus and selection states. */
 .sunburst-slice { stroke: none; cursor: pointer; transition: opacity .13s, filter .13s; }
-.sunburst-slice.is-focused { stroke: #d8d9dd; stroke-width: 1.25; opacity: 1; }
-.sunburst-slice.is-selected { stroke: #ffffff; stroke-width: 1.25; opacity: 1; }
-.sunburst-slice.is-hovered { filter: brightness(1.25); opacity: 1; }
+/* No outline on the focused or selected wedge. The reference marks the arc under
+   the pointer by breathing its opacity instead, which reads on a wedge of any
+   size — a 1px stroke round a hairline arc is mostly stroke. */
+.sunburst-slice.is-breathing { animation: slice-breathe .9s ease-in-out infinite; }
+.sunburst-slice.is-selected { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  /* The pointer still has to be locatable without the animation. */
+  .sunburst-slice.is-breathing { animation: none; opacity: .55; }
+}
 .sunburst-slice.is-aggregate, .sunburst-slice.is-virtual { stroke-dasharray: 5 4; }
 .sunburst-slice.is-stale { filter: saturate(.35); opacity: .45; }
 /* The hub is a hole: the reference's interior is the page background to the byte
@@ -233,6 +239,9 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    column is exactly the dot (R-060 SS3.7). Name left, size right. */
 .directory-row { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto auto; align-items: center; gap: 11px; min-height: 22px; padding: 0 2px; border: 0; border-radius: 3px; outline: none; background: transparent; color: #e2e2e6; cursor: pointer; font-size: 17px; }
 .directory-row:hover, .directory-row.is-hovered { background: #393a41; }
+/* Preview rows come from the projection: no path, so nothing may act on them. */
+.directory-row.is-preview { cursor: default; }
+.directory-row.is-preview:hover { background: transparent; }
 .directory-row.is-focused { background: rgba(255, 255, 255, .04); }
 .directory-row.is-selected { background: rgba(255, 255, 255, .09); color: #fff; }
 .directory-row:focus-visible { outline: 1px solid #e6bd5f; outline-offset: -1px; }
@@ -394,6 +403,11 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 
 /* Projected descendants are visual only: no pointer affordance. */
 .sunburst-slice.is-projected { cursor: default; }
+
+@keyframes slice-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
 
 @keyframes meter-march {
   from { background-position-x: 0; }
