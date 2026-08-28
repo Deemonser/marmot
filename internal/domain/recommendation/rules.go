@@ -68,6 +68,55 @@ var Catalog = []Rule{
 	// and a person confirms belongs here: the catalog is the part that never
 	// varies between runs, and it grows from evidence rather than from guessing
 	// what software people have installed.
+	// --- Application updaters and IDE caches, promoted after the two largest
+	// remaining "用户缓存 / review" items turned out to be one downloaded
+	// installer nobody cleaned up and one IDE index. Both were only vague
+	// because no rule named them.
+	{
+		Name: "应用更新包残留", Category: "更新器残留",
+		Pattern: "Library/Caches/*.ShipIt", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		WhatBreaks:   "没有影响。这是已下载并安装完的应用更新包，Squirrel 装完之后没有清理。",
+		HowToRestore: "无需恢复；下次更新会重新下载。",
+	},
+	{
+		Name: "IDE 索引缓存", Category: "IDE 缓存",
+		Pattern: "Library/Caches/Google/AndroidStudio*/index", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "下次打开该 IDE 会重建索引，期间代码跳转与搜索暂时不可用，大项目可能要数分钟。",
+		HowToRestore: "无需操作，打开项目时自动重建。",
+	},
+	{
+		Name: "IDE 编译缓存", Category: "IDE 缓存",
+		Pattern: "Library/Caches/Google/AndroidStudio*/caches", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "下次打开该 IDE 会重新分析工程，第一次打开变慢。",
+		HowToRestore: "无需操作，自动重建。",
+	},
+	{
+		Name: "JetBrains 索引缓存", Category: "IDE 缓存",
+		Pattern: "Library/Caches/JetBrains/*/index", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "下次打开该 IDE 会重建索引，大项目可能要数分钟。",
+		HowToRestore: "无需操作，自动重建。",
+	},
+	{
+		Name: "JetBrains 编译缓存", Category: "IDE 缓存",
+		Pattern: "Library/Caches/JetBrains/*/caches", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "下次打开该 IDE 会重新分析工程，第一次打开变慢。",
+		HowToRestore: "无需操作，自动重建。",
+	},
+	{
+		Name: "旧版本 IDE 配置", Category: "旧版本残留",
+		Pattern: "Library/Application Support/Google/AndroidStudio*", MinAgeDays: 180,
+		Recovery: RecoveryIrreplaceable, Risk: RiskReview,
+		WhatBreaks:   "该版本 IDE 的设置、快捷键和插件配置会丢失。若之后回退到这个版本，需要重新配置。",
+		HowToRestore: "无法恢复配置本身；重新安装该版本后需要重新设置。",
+	},
+	{
+		Name: "浏览器扩展", Category: "浏览器扩展",
+		Pattern:  "Library/Application Support/Google/Chrome/*/Extensions",
+		Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		WhatBreaks:   "已安装的扩展会消失，需要从商店重新安装。扩展的设置数据保存在别处，重装后多数能恢复。",
+		HowToRestore: "在 Chrome 网上应用店重新安装各扩展。",
+	},
+
 	// --- Browsers. The whole point is precision: the generic user-cache rule
 	// already matches these paths and answers "个别应用会丢失登录态或离线内容",
 	// which is the vague warning that stops anyone acting on 1.7 GB. On macOS a
@@ -529,12 +578,17 @@ func matchPattern(pattern, relative string) bool {
 	return true
 }
 
-// segmentMatches handles the two wildcards a segment may carry: "*" alone is any
-// whole segment, and a trailing "*" is a prefix -- which is what names an
-// artifact like `tmp_pack_Z8vjYY`, where the suffix is random.
+// segmentMatches handles the wildcards a segment may carry: "*" alone is any
+// whole segment, a trailing "*" is a prefix -- which names an artifact like
+// `tmp_pack_Z8vjYY` or a versioned directory like `AndroidStudio2026.1.3` -- and
+// a leading "*" is a suffix, which is how a convention-named directory like
+// `com.microsoft.VSCode.ShipIt` is identified across every app that uses it.
 func segmentMatches(pattern, segment string) bool {
 	if pattern == "*" {
 		return true
+	}
+	if suffix, found := strings.CutPrefix(pattern, "*"); found {
+		return strings.HasSuffix(segment, suffix)
 	}
 	if prefix, found := strings.CutSuffix(pattern, "*"); found {
 		return strings.HasPrefix(segment, prefix)

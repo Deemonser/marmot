@@ -260,3 +260,46 @@ func TestLoginStateIsGuardedAsRiskyRatherThanIrreplaceable(t *testing.T) {
 		t.Errorf("%s is pure cache and was guarded", cache)
 	}
 }
+
+// The two largest remaining vague items, named. One was a downloaded installer
+// Squirrel never cleaned up; the other an IDE index. Neither needed judgement --
+// they needed a rule.
+func TestUpdaterAndIDECachesAreNamedNotGeneric(t *testing.T) {
+	cases := map[string]string{
+		"/Users/a/Library/Caches/com.microsoft.VSCode.ShipIt":                   "应用更新包残留",
+		"/Users/a/Library/Caches/com.some.other.App.ShipIt/update.xyz":          "应用更新包残留",
+		"/Users/a/Library/Caches/Google/AndroidStudio2026.1.3/index":            "IDE 索引缓存",
+		"/Users/a/Library/Caches/Google/AndroidStudio2026.1.3/caches":           "IDE 编译缓存",
+		"/Users/a/Library/Caches/JetBrains/IntelliJIdea2025.2/index":            "JetBrains 索引缓存",
+		"/Users/a/Library/Application Support/Google/Chrome/Default/Extensions": "浏览器扩展",
+	}
+	for path, want := range cases {
+		got := Match(MatchContext{Path: path})
+		if got == nil || got.Name != want {
+			t.Errorf("%s matched %v, expected %q", path, got, want)
+		}
+	}
+	// An abandoned IDE generation is only offered once it is actually abandoned.
+	old := "/Users/a/Library/Application Support/Google/AndroidStudio2024.2"
+	if got := Match(MatchContext{Path: old, AgeDays: 340}); got == nil || got.Name != "旧版本 IDE 配置" {
+		t.Errorf("a 340-day-idle IDE generation matched %v", got)
+	}
+	if got := Match(MatchContext{Path: old, AgeDays: 18}); got != nil && got.Name == "旧版本 IDE 配置" {
+		t.Error("an IDE generation used 18 days ago was offered as abandoned")
+	}
+}
+
+// LocalHistory lives inside a directory called Caches and is not a cache: it is
+// how uncommitted work is recovered. It sits one segment from the index that
+// genuinely is disposable, which is exactly the kind of neighbour a generic
+// "it's under Caches" rule gets wrong.
+func TestIDELocalHistoryIsProtected(t *testing.T) {
+	history := "/Users/a/Library/Caches/Google/AndroidStudio2026.1.3/LocalHistory"
+	if IrreplaceableReason(history) != IrreplaceableUserData {
+		t.Fatalf("%s holds recoverable uncommitted work and was not protected", history)
+	}
+	index := "/Users/a/Library/Caches/Google/AndroidStudio2026.1.3/index"
+	if IrreplaceableReason(index) != "" {
+		t.Fatalf("%s is a rebuildable index and must not be protected", index)
+	}
+}

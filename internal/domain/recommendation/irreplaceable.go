@@ -106,6 +106,10 @@ var homeRelativeIrreplaceable = []struct{ pattern, reason string }{
 	{"**/IndexedDB", IrreplaceableUserData},
 	{"**/File System", IrreplaceableUserData},
 	{"**/Local Extension Settings", IrreplaceableUserData},
+	// IntelliJ's local file history sits inside a directory called Caches and is
+	// not a cache: it is how uncommitted work is recovered. One segment from the
+	// index that genuinely is disposable.
+	{"**/LocalHistory", IrreplaceableUserData},
 	{"**/.ssh", IrreplaceableCredentials},
 	{"**/.gnupg", IrreplaceableCredentials},
 }
