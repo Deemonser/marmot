@@ -208,6 +208,21 @@ func Validate(verdicts []Verdict, shown map[int64]EvidenceNode, snapshotID int64
 		// A wrong recoverability claim is corrected, not believed and not thrown
 		// away. Being told the rule in the prompt is not the same as complying
 		// with it, and this is the one class of mistake that is permanent.
+		// A partial deletion inside a stamp-guarded install does come back, but
+		// only by reinstalling the whole toolchain -- so the claim is not wrong
+		// about recoverability, it is wrong about the cost. Corrected in place
+		// with the real route attached, and the risk raised out of `safe`.
+		if reason := PartialInstallReason(item.node.Path); reason != "" {
+			result.Corrections = append(result.Corrections, Correction{
+				NodeID: item.node.ID, Path: item.node.Path,
+				ClaimedRecovery: item.verdict.Recovery, Reason: reason,
+			})
+			recovery = RecoveryRedownloadable
+			if risk == RiskSafe {
+				risk = RiskReview
+			}
+			whatBreaks = strings.TrimSpace(PartialInstallMessage() + " " + whatBreaks)
+		}
 		if reason := IrreplaceableReason(item.node.Path); reason != "" && recovery != RecoveryIrreplaceable {
 			result.Corrections = append(result.Corrections, Correction{
 				NodeID: item.node.ID, Path: item.node.Path,

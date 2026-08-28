@@ -268,7 +268,26 @@ func correctionSummary(corrections []recommendation.Correction) string {
 	if len(corrections) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d 条被判为可恢复，但实际删除后无法找回，已改标为不可恢复", len(corrections))
+	// The two kinds are not the same statement and must not share a sentence:
+	// one says the object never comes back, the other says it comes back only by
+	// reinstalling the whole toolchain. Reporting a partial-install correction as
+	// "无法找回" would be the tool telling its own lie about its own correction.
+	permanent, partial := 0, 0
+	for _, item := range corrections {
+		if item.Reason == recommendation.PartialInstall {
+			partial++
+			continue
+		}
+		permanent++
+	}
+	parts := make([]string, 0, 2)
+	if permanent > 0 {
+		parts = append(parts, fmt.Sprintf("%d 条被判为可恢复，实际删除后无法找回，已改标为不可恢复", permanent))
+	}
+	if partial > 0 {
+		parts = append(parts, fmt.Sprintf("%d 条位于已安装工具链内部，删除后不会自动重装，恢复代价已改标", partial))
+	}
+	return strings.Join(parts, "；")
 }
 
 func indexLabelledNodes(pack EvidencePack) map[int64]recommendation.EvidenceNode {

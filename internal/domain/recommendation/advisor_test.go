@@ -310,3 +310,34 @@ func TestIrreplaceableSkipsGitTransientArtifacts(t *testing.T) {
 		}
 	}
 }
+
+// The one real failure the labelling found, and the rule it generalises to.
+// Verified from flutter_tools source: only the artifact root's existence and its
+// stamp are checked, so a subdirectory deleted inside one never self-heals and
+// `flutter doctor` restores nothing.
+func TestValidateCorrectsPartialToolchainDeletion(t *testing.T) {
+	inside := node(1, "/Users/a/dev/flutter/bin/cache/dart-sdk/bin/snapshots", "snapshots", 350_000_000)
+	claim := goodSuggestion(1, "snapshots")
+	claim.Recovery = string(RecoveryRedownloadable)
+	claim.Risk = string(RiskSafe)
+
+	result := Validate([]Verdict{claim}, shownNodes(inside), 7)
+	if len(result.Accepted) != 1 {
+		t.Fatalf("the object should survive with the real cost attached: %#v", result.Rejected)
+	}
+	if len(result.Corrections) != 1 || result.Corrections[0].Reason != PartialInstall {
+		t.Fatalf("corrections are %#v, expected a partial_install correction", result.Corrections)
+	}
+	if result.Accepted[0].Risk == RiskSafe {
+		t.Fatal("a deletion that leaves a broken toolchain until a manual reinstall is not `safe`")
+	}
+	if !strings.Contains(result.Accepted[0].WhatBreaks, "不会自动重新下载") {
+		t.Fatalf("the real cost did not reach what_breaks: %q", result.Accepted[0].WhatBreaks)
+	}
+
+	// Deleting the artifact root itself does self-heal, and must not be flagged.
+	root := node(2, "/Users/a/dev/flutter/bin/cache/artifacts/engine", "engine", 2_400_000_000)
+	if result := Validate([]Verdict{goodSuggestion(2, "engine")}, shownNodes(root), 7); len(result.Corrections) != 0 {
+		t.Fatalf("deleting a whole artifact root does re-download and must not be corrected: %#v", result.Corrections)
+	}
+}

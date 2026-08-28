@@ -1,0 +1,26 @@
+# R-063 标注依据（由 Claude 标注，2026-08-28）
+#
+# 标注者不是使用方：可恢复性是事实问题，可以查证文档与源码，
+# 而使用方没有义务知道每个工具链的内部机制。
+#
+序号	判定	依据
+1	ok	应用缓存，重开应用即重建
+2	ok	删整个 artifacts/engine 会让 location.existsSync() 为 false，precache 会重新下载
+3	ok	重新索引即可，代价是一次扫描时间
+4	ok	Gradle 自行重建
+5	ok	Gradle 自行重建
+6	ok	rustup component add rust-docs 可恢复
+7	ok	Apple CDN 按需重新下载
+8	ok	Google Update 需要时重新下载
+9	ok	同上，但命令需带 --toolchain 1.91.0，模型给的命令不完整
+10	ok	同上，命令需带 --toolchain 1.89.0
+11	ok	cargo build 重新编译
+12	unsure	klib/platform 是解压出的发行版子目录，Kotlin 是否按目录存在性判断未查实
+13	ok	Gradle 自行重建
+14	ok	repack 中断遗留的垃圾，删掉无影响（模型给的理由是错的，但结论对）
+15	ok	实测 store 内文件 nlink=1，未被硬链接占用；pnpm install 可恢复
+16	ok	Gradle 自行重建
+17	ok	assembleDevDebug 重新生成
+18	ok	JetBrains 归档可重新下载
+19	bad	已从 flutter_tools/cache.dart 查实：isUpToDate 只校验根目录存在性与 stamp，删除 dart-sdk 内部子目录不会触发重新下载。真实恢复代价是删掉整个 bin/cache 重下约 GB 级，而非“运行 flutter doctor”
+20	ok	检出 tag 重新构建；字节不一致但功能等价

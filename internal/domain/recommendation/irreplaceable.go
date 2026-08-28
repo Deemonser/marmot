@@ -129,6 +129,47 @@ func IrreplaceableReason(absolutePath string) string {
 	return ""
 }
 
+// PartialInstallReason reports that a path sits *inside* an installed toolchain
+// whose installer will not notice it is missing, so nothing self-heals and the
+// real recovery is reinstalling the whole thing.
+//
+// Verified against flutter_tools/lib/src/cache.dart on disk:
+//
+//	Future<bool> isUpToDate(FileSystem fileSystem) async {
+//	  if (!location.existsSync()) return false;
+//	  if (version != cache.getStampFor(stampName)) return false;
+//	  return isUpToDateInner(fileSystem);   // also only directory existence
+//	}
+//
+// Only the artifact's root directory and its stamp are checked; file contents
+// never are. Deleting the whole root therefore does re-download, and deleting a
+// subdirectory inside one leaves a broken toolchain that no command repairs.
+// Measured: an advisor called `dart-sdk/bin/snapshots` redownloadable via
+// `flutter doctor`, which restores nothing -- the only route back is deleting
+// bin/cache and pulling a gigabyte again.
+//
+// Deliberately narrow. Whether a given installer tracks components individually
+// (rustup does, per component) or only presence (Flutter) is tool-specific
+// knowledge, and a guard that guessed would be worse than the prompt rule that
+// covers the general case.
+func PartialInstallReason(absolutePath string) string {
+	clean := filepath.Clean(absolutePath)
+	const marker = "/flutter/bin/cache/dart-sdk/"
+	if strings.Contains(clean, marker) {
+		return PartialInstall
+	}
+	return ""
+}
+
+// PartialInstall is the reason code for the above.
+const PartialInstall = "partial_install"
+
+// PartialInstallMessage explains the real cost.
+func PartialInstallMessage() string {
+	return "这是已安装工具链的内部目录。安装器只检查根目录和 stamp，不校验里面的文件，" +
+		"所以删掉之后不会自动重新下载——工具链会一直是坏的。真实恢复方式是删除整个缓存目录重新拉取。"
+}
+
 // IrreplaceableMessage is the sentence shown to a person. The codes are for
 // logic; this is for reading.
 func IrreplaceableMessage(reason string) string {
