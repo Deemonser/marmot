@@ -366,3 +366,72 @@ func TestCandidatesAreDeterministicAndRuleFree(t *testing.T) {
 		}
 	}
 }
+
+// The scenario that started this: a project whose source moved yesterday but
+// whose build cache was last written long ago. Conditioning on the artifact's
+// own age calls that cache cold and offers to delete it; conditioning on the
+// project's source activity does not.
+func TestProjectActivityProtectsAnActiveProjectsBuildCache(t *testing.T) {
+	const gb = 1_000_000_000
+	yesterday := time.Now().Add(-24 * time.Hour)
+	longAgo := time.Now().Add(-600 * 24 * time.Hour)
+
+	build := evidenceNode(3, 2, "/Users/alice/work/app/build/intermediates", "intermediates", "directory", 3*gb, 3*gb)
+	build.NewestModified = longAgo
+	build.SourceNewestModified = longAgo
+	project := evidenceNode(2, 1, "/Users/alice/work/app", "app", "directory", 4*gb, 100)
+	project.IsProjectRoot = true
+	project.SourceNewestModified = yesterday
+	project.NewestModified = yesterday
+
+	service, _ := serviceWithEvidence(recommendation.EvidenceResult{
+		Root: "/Users/alice", FloorBytes: 1 << 20,
+		Nodes: []recommendation.EvidenceNode{
+			evidenceNode(1, 0, "/Users/alice", "alice", "directory", 10*gb, 1*gb),
+			project, build,
+		},
+	})
+	pack, err := service.BuildEvidencePack(7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if days := pack.ProjectIdleDays[build.ID]; days < 0 || days > 2 {
+		t.Fatalf("the build cache inherited %d idle days, expected the project's ~1", days)
+	}
+
+	var found bool
+	for _, item := range pack.RuleFindings() {
+		if item.NodeID != build.ID {
+			continue
+		}
+		found = true
+		if item.Risk == recommendation.RiskSafe {
+			t.Fatal("an active project's build cache must not be offered as safe")
+		}
+		if !strings.Contains(item.WhatBreaks, "正在使用") {
+			t.Fatalf("the suggestion does not say why it matters: %q", item.WhatBreaks)
+		}
+	}
+	if !found {
+		t.Fatal("the build cache produced no rule finding at all")
+	}
+
+	// Same bytes, dormant project: now it is free.
+	project.SourceNewestModified = longAgo
+	dormant, _ := serviceWithEvidence(recommendation.EvidenceResult{
+		Root: "/Users/alice", FloorBytes: 1 << 20,
+		Nodes: []recommendation.EvidenceNode{
+			evidenceNode(1, 0, "/Users/alice", "alice", "directory", 10*gb, 1*gb),
+			project, build,
+		},
+	})
+	pack2, err := dormant.BuildEvidencePack(7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range pack2.RuleFindings() {
+		if item.NodeID == build.ID && item.Risk != recommendation.RiskSafe {
+			t.Fatalf("a build cache in a project idle 600 days is still %q", item.Risk)
+		}
+	}
+}

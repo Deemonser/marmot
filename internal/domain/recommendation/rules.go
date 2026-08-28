@@ -1,6 +1,9 @@
 package recommendation
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Rule is one known-cleanable location. The catalog is deliberately not the
 // product's ceiling -- R-062 §3.4 measured a catalog of this shape reaching only
@@ -30,14 +33,28 @@ type Rule struct {
 	//
 	// R-062 §3.4 claimed rules structurally cannot express staleness, and that
 	// was wrong: what it actually measured was that the hand-written catalog had
-	// no age condition, not that a catalog cannot have one. The same build output
-	// is worth keeping at 13 days and worth deleting at 617, and that is a
-	// parameter, not a judgement only a model can make.
-	MinAgeDays   int64
-	Recovery     Recovery
-	Risk         Risk
-	WhatBreaks   string
-	HowToRestore string
+	// no age condition, not that a catalog cannot have one.
+	MinAgeDays int64
+	// MinProjectIdleDays and MaxProjectIdleDays condition on how long the
+	// surrounding project's *source* has been untouched, which is a different
+	// question from how old the artifact is.
+	//
+	// Recoverability is not the standard a person actually applies; disruption
+	// is. Every file in an active project's build cache is recoverable, and
+	// deleting it still costs the rebuild they were in the middle of. The same
+	// bytes in a project dormant for two years cost nothing. Zero means no
+	// condition; a candidate outside any recognised project satisfies neither.
+	MinProjectIdleDays int64
+	MaxProjectIdleDays int64
+	// ProjectSensitive marks an artifact whose disruption depends on whether the
+	// surrounding project is being worked on, rather than on the artifact itself.
+	// The risk is then adjusted from the project's source activity instead of the
+	// catalog carrying a cold and a warm copy of every such rule.
+	ProjectSensitive bool
+	Recovery         Recovery
+	Risk             Risk
+	WhatBreaks       string
+	HowToRestore     string
 }
 
 // Catalog is ordered: the first match wins, so the specific entries come before
@@ -77,19 +94,19 @@ var Catalog = []Rule{
 	},
 	{
 		Name: "Gradle 执行历史", Category: "构建缓存",
-		Pattern: "**/executionHistory", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/executionHistory", ProjectSensitive: true, Recovery: RecoveryRegenerable, Risk: RiskSafe,
 		WhatBreaks:   "该项目失去增量构建信息，下次构建会重跑部分任务，一次性变慢。",
 		HowToRestore: "无需手动操作，Gradle 下次构建自行重建。",
 	},
 	{
 		Name: "Android 构建输出", Category: "构建产物",
-		Pattern: "**/build/outputs/apk", Recovery: RecoveryRegenerable, Risk: RiskReview,
+		Pattern: "**/build/outputs/apk", ProjectSensitive: true, Recovery: RecoveryRegenerable, Risk: RiskReview,
 		WhatBreaks:   "已构建的 APK/AAB 消失。若某个是已分发的版本，重新构建不会得到逐字节相同的产物。",
 		HowToRestore: "重新执行对应的 assemble/bundle 任务。",
 	},
 	{
 		Name: "Rust 交叉编译产物", Category: "编译产物",
-		Pattern: "**/target/*/debug", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/target/*/debug", ProjectSensitive: true, Recovery: RecoveryRegenerable, Risk: RiskSafe,
 		WhatBreaks:   "该目标平台下次 cargo 构建全量重编。",
 		HowToRestore: "无需手动操作，cargo 自行重建。",
 	},
@@ -276,66 +293,67 @@ var Catalog = []Rule{
 	},
 	{
 		Name: "Rust 构建产物", Category: "编译产物",
-		Pattern: "**/target/debug", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/target/debug", ProjectSensitive: true, Recovery: RecoveryRegenerable, Risk: RiskSafe,
 		WhatBreaks:   "下次 cargo build 全量重编，第一次会很慢。",
 		HowToRestore: "自动重建。",
 	},
 	{
 		Name: "Rust 发布产物", Category: "编译产物",
-		Pattern: "**/target/release", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/target/release", ProjectSensitive: true, Recovery: RecoveryRegenerable, Risk: RiskSafe,
 		WhatBreaks:   "下次 cargo build --release 全量重编。已分发的二进制不受影响。",
 		HowToRestore: "自动重建。",
 	},
-	// Age-conditioned, and placed before the unconditioned rule so first-match
-	// picks it. The distinction R-062 §3.4 said rules could not make: the same
-	// build output is worth keeping at 13 days and worth deleting at 617.
+	// One rule per artifact, with ProjectSensitive doing the work a cold copy and
+	// a warm copy of each would otherwise duplicate. The distinction it draws is
+	// the one that matters: identical bytes, and deleting them costs a rebuild
+	// the user is in the middle of, or nothing at all.
 	{
-		Name: "冷构建中间产物", Category: "冷构建产物",
-		Pattern: "**/build/intermediates", MinAgeDays: 180,
-		Recovery: RecoveryRegenerable, Risk: RiskSafe,
-		WhatBreaks:   "该模块半年以上没有构建过。删除后若再次构建，会全量重建一次。",
-		HowToRestore: "自动重建。",
-	},
-	{
-		Name: "冷 Android 转换产物", Category: "冷构建产物",
-		Pattern: "**/build/.transforms", MinAgeDays: 180,
-		Recovery: RecoveryRegenerable, Risk: RiskSafe,
-		WhatBreaks:   "该模块半年以上没有构建过。删除后若再次构建，会重新生成转换产物。",
-		HowToRestore: "自动重建。",
-	},
-	{
-		Name: "Android 构建中间产物", Category: "编译产物",
-		Pattern: "**/build/intermediates", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Name: "Android 构建中间产物", Category: "编译产物", ProjectSensitive: true,
+		Pattern: "**/build/intermediates", Recovery: RecoveryRegenerable, Risk: RiskReview,
 		WhatBreaks:   "下次 Gradle 构建全量重建该模块。",
 		HowToRestore: "自动重建。",
 	},
 	{
-		Name: "Android 转换产物", Category: "编译产物",
-		Pattern: "**/build/.transforms", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Name: "Android 转换产物", Category: "编译产物", ProjectSensitive: true,
+		Pattern: "**/build/.transforms", Recovery: RecoveryRegenerable, Risk: RiskReview,
 		WhatBreaks:   "下次 Gradle 构建重新生成该模块的转换产物。",
 		HowToRestore: "自动重建。",
 	},
 }
 
-// Match returns the first rule matching an absolute path and age, or nil.
-//
-// ageDays is the age of the newest content in the object's subtree, already
-// clamped; pass 0 when unknown, which then only matches rules with no age
-// condition. The path is
+// MatchContext is what a rule is evaluated against. A struct rather than a
+// growing parameter list, because the interesting conditions are no longer only
+// about the path.
+type MatchContext struct {
+	Path string
+	// AgeDays is the age of the newest content in the object's own subtree.
+	AgeDays int64
+	// ProjectIdleDays is how long the surrounding project's source has been
+	// untouched. Negative means the object is not inside a recognised project,
+	// which satisfies no project condition either way.
+	ProjectIdleDays int64
+}
+
+// NoProject is the ProjectIdleDays value for an object outside any recognised
+// project.
+const NoProject = int64(-1)
+
+// Match returns the first rule whose pattern and conditions the context
+// satisfies, or nil. The path is
 // reduced to home-relative first: the catalog is written against `~`, and both
 // spellings of a home folder have to reach the same answer -- the firmlinked
 // /System/Volumes/Data/Users/alice is the same directory as /Users/alice, and a
 // rule that fires on one but not the other would depend on which spelling the
 // scan happened to walk. cleanup.DeleteBlock handles the same pair for the same
 // reason.
-func Match(absolutePath string, ageDays int64) *Rule {
-	relative, ok := homeRelative(absolutePath)
+func Match(context MatchContext) *Rule {
+	relative, ok := homeRelative(context.Path)
 	if !ok {
 		return nil
 	}
 	for index := range Catalog {
 		rule := &Catalog[index]
-		if rule.MinAgeDays > 0 && ageDays < rule.MinAgeDays {
+		if !rule.conditionsMet(context) {
 			continue
 		}
 		if matchPattern(rule.Pattern, relative) {
@@ -343,6 +361,27 @@ func Match(absolutePath string, ageDays int64) *Rule {
 		}
 	}
 	return nil
+}
+
+func (r Rule) conditionsMet(context MatchContext) bool {
+	if r.MinAgeDays > 0 && context.AgeDays < r.MinAgeDays {
+		return false
+	}
+	if r.MinProjectIdleDays > 0 || r.MaxProjectIdleDays > 0 {
+		// An object outside any recognised project has no activity signal, so a
+		// project condition cannot be satisfied — in either direction. Guessing
+		// would be how an active project's cache gets called cold.
+		if context.ProjectIdleDays < 0 {
+			return false
+		}
+		if r.MinProjectIdleDays > 0 && context.ProjectIdleDays < r.MinProjectIdleDays {
+			return false
+		}
+		if r.MaxProjectIdleDays > 0 && context.ProjectIdleDays > r.MaxProjectIdleDays {
+			return false
+		}
+	}
+	return true
 }
 
 const dataVolumePrefix = "/System/Volumes/Data"
@@ -421,4 +460,40 @@ func containsSequence(haystack, needle []string) bool {
 		}
 	}
 	return false
+}
+
+// Project activity thresholds. Not tuned against anything -- they are the
+// obvious round numbers, and R-063 records them as unvalidated.
+const (
+	// ProjectActiveDays: source touched this recently means the work is live and
+	// its build cache is about to be needed again.
+	ProjectActiveDays = 30
+	// ProjectDormantDays: nothing touched for this long means deleting the build
+	// cache costs nothing anyone will feel.
+	ProjectDormantDays = 180
+)
+
+// AdjustForProjectActivity rewrites the risk of a project-sensitive suggestion
+// from how live the surrounding work is. Recoverability is unchanged: the bytes
+// come back either way. What changes is whether their absence is felt.
+//
+// Returns the risk to use, plus a sentence to put in front of what_breaks, or ""
+// when nothing needed saying.
+func AdjustForProjectActivity(declared Risk, idleDays int64) (Risk, string) {
+	if idleDays < 0 {
+		return declared, ""
+	}
+	switch {
+	case idleDays <= ProjectActiveDays:
+		if declared == RiskSafe {
+			declared = RiskReview
+		}
+		return declared, fmt.Sprintf("这个项目 %d 天前还改过源码，正在使用中：删掉之后下一次构建要重新下载或重新编译。", idleDays)
+	case idleDays >= ProjectDormantDays:
+		if declared == RiskReview {
+			declared = RiskSafe
+		}
+		return declared, fmt.Sprintf("这个项目的源码已经 %d 天没有改动。", idleDays)
+	}
+	return declared, ""
 }

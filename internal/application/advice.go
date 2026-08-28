@@ -52,6 +52,10 @@ type EvidencePack struct {
 	// RuleHits maps node ID to the catalog entry that matched, so the advisor is
 	// told what is already known and can spend its attention elsewhere.
 	RuleHits map[int64]*recommendation.Rule
+	// ProjectIdleDays is how long each node's surrounding project has gone
+	// without a source change, or recommendation.NoProject. Computed here, never
+	// asked of a model: it is arithmetic over mtimes.
+	ProjectIdleDays map[int64]int64
 }
 
 // BuildEvidencePack assembles the skeleton for one finished snapshot.
@@ -100,9 +104,13 @@ func (s *Service) buildEvidencePackFor(snapshotID, rootID, floor int64, share fl
 	// age columns must agree, or a row could be matched by a rule whose condition
 	// the row itself appears not to meet.
 	now := time.Now()
+	idle := projectIdleDays(result.Nodes, now)
 	hits := make(map[int64]*recommendation.Rule, 32)
 	for _, node := range result.Nodes {
-		if rule := recommendation.Match(node.Path, node.AgeDays(now)); rule != nil {
+		rule := recommendation.Match(recommendation.MatchContext{
+			Path: node.Path, AgeDays: node.AgeDays(now), ProjectIdleDays: idle[node.ID],
+		})
+		if rule != nil {
 			hits[node.ID] = rule
 		}
 	}
@@ -117,6 +125,7 @@ func (s *Service) buildEvidencePackFor(snapshotID, rootID, floor int64, share fl
 		GeneratedAt:      now,
 		Nodes:            nodes,
 		RuleHits:         hits,
+		ProjectIdleDays:  idle,
 	}, nil
 }
 
@@ -329,6 +338,15 @@ func (p EvidencePack) RuleFindings() []AdviceItem {
 		}
 		kept = append(kept, node.Path)
 		rule := p.RuleHits[node.ID]
+		risk := rule.Risk
+		whatBreaks := rule.WhatBreaks
+		if rule.ProjectSensitive {
+			adjusted, note := recommendation.AdjustForProjectActivity(risk, p.idleFor(node.ID))
+			risk = adjusted
+			if note != "" {
+				whatBreaks = note + " " + whatBreaks
+			}
+		}
 		findings = append(findings, AdviceItem{
 			Recommendation: recommendation.Recommendation{
 				SnapshotID:       p.SnapshotID,
@@ -338,10 +356,10 @@ func (p EvidencePack) RuleFindings() []AdviceItem {
 				Category:         rule.Category,
 				ReclaimableBytes: node.OwnedAllocated,
 				Recovery:         rule.Recovery,
-				Risk:             rule.Risk,
+				Risk:             risk,
 				Confidence:       1,
 				Evidence:         nodeEvidence(node, p.GeneratedAt),
-				WhatBreaks:       rule.WhatBreaks,
+				WhatBreaks:       whatBreaks,
 				HowToRestore:     rule.HowToRestore,
 			},
 			Name: node.Name,
@@ -352,6 +370,17 @@ func (p EvidencePack) RuleFindings() []AdviceItem {
 		return findings[left].ReclaimableBytes > findings[right].ReclaimableBytes
 	})
 	return findings
+}
+
+// idleFor is the surrounding project's idle days, or NoProject.
+func (p EvidencePack) idleFor(nodeID int64) int64 {
+	if p.ProjectIdleDays == nil {
+		return recommendation.NoProject
+	}
+	if days, ok := p.ProjectIdleDays[nodeID]; ok {
+		return days
+	}
+	return recommendation.NoProject
 }
 
 // nodeEvidence phrases the facts a person can check against the space map. The
@@ -447,6 +476,41 @@ func (p EvidencePack) Candidates(limit int) []recommendation.EvidenceNode {
 	return candidates
 }
 
+// projectIdleDays answers, for every node, how long the surrounding project's
+// source has been untouched -- or NoProject when it is not inside one.
+//
+// The nearest project root above a node is what counts, so a module inside a
+// monorepo takes the module's activity when the module itself carries a marker
+// and the repository's otherwise. The kept set is closed under ancestors, so any
+// project root large enough to hold the candidate is in it.
+func projectIdleDays(nodes []recommendation.EvidenceNode, now time.Time) map[int64]int64 {
+	byID := make(map[int64]recommendation.EvidenceNode, len(nodes))
+	for _, node := range nodes {
+		byID[node.ID] = node
+	}
+	idle := make(map[int64]int64, len(nodes))
+	for _, node := range nodes {
+		days := recommendation.NoProject
+		for cursor := node; ; {
+			if cursor.IsProjectRoot && !cursor.SourceNewestModified.IsZero() {
+				elapsed := int64(now.Sub(cursor.SourceNewestModified).Hours() / 24)
+				if elapsed < 0 {
+					elapsed = 0
+				}
+				days = elapsed
+				break
+			}
+			parent, ok := byID[cursor.ParentID]
+			if !ok {
+				break
+			}
+			cursor = parent
+		}
+		idle[node.ID] = days
+	}
+	return idle
+}
+
 func coveredByRule(paths []string, candidate string) bool {
 	for _, existing := range paths {
 		if existing == candidate || cleanup.IsPathWithin(existing, candidate) {
@@ -460,7 +524,12 @@ func coveredByRule(paths []string, candidate string) bool {
 // tree, so a row means the same thing in both places.
 func (p EvidencePack) RenderCandidates(candidates []recommendation.EvidenceNode) string {
 	var out strings.Builder
-	out.WriteString("# 列: id | 名称 | 类型 | 占用 | residue | 文件数 | 目录数 | 最近改动天数 | 最早改动天数 | 最大单文件 | 扩展名画像\n\n")
+	out.WriteString("# 列: id | 名称 | 类型 | 占用 | residue | 文件数 | 目录数 | 最近改动天数 | 最早改动天数 | 最大单文件 | 扩展名画像 | 所属项目源码空闲天数\n")
+	out.WriteString("# 「所属项目源码空闲天数」= 该对象所在项目的源码有多久没改过（排除构建产物目录）。\n")
+	out.WriteString("#   - 数字小 = 项目正在用，删掉它的缓存会让下一次构建重新下载/编译，干扰大；\n")
+	out.WriteString("#   - 数字大 = 项目已停摆，删掉不会有人察觉；\n")
+	out.WriteString("#   - 「-」= 不在任何可识别的项目里。\n")
+	out.WriteString("# 判断可清理性时，恢复代价要和这个数一起看：能恢复不等于删了没影响。\n\n")
 	for _, node := range candidates {
 		kind := "d"
 		if node.Kind != "directory" {
@@ -474,11 +543,15 @@ func (p EvidencePack) RenderCandidates(candidates []recommendation.EvidenceNode)
 		if label == "" {
 			label = node.Name
 		}
-		fmt.Fprintf(&out, "%d\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%d\t%s\t%s\n",
+		idle := "-"
+		if days := p.idleFor(node.ID); days >= 0 {
+			idle = fmt.Sprintf("%d", days)
+		}
+		fmt.Fprintf(&out, "%d\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%d\t%s\t%s\t%s\n",
 			node.ID, label, kind,
 			formatBytes(node.OwnedAllocated), formatBytes(node.Residue),
 			node.SubtreeFiles, node.SubtreeDirs, age, node.OldestDays(p.GeneratedAt),
-			formatBytes(node.BiggestFile), formatExtensions(node.TopExtensions))
+			formatBytes(node.BiggestFile), formatExtensions(node.TopExtensions), idle)
 	}
 	return out.String()
 }

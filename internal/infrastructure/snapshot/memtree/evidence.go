@@ -40,6 +40,35 @@ const (
 	maxTrackedExtensions = 96
 )
 
+// generatedNames are directories whose mtime says a tool ran, not that a person
+// worked. Their contents never contribute to a project's source activity.
+var generatedNames = map[string]struct{}{
+	"build": {}, "target": {}, ".gradle": {}, "node_modules": {}, ".venv": {},
+	"venv": {}, "dist": {}, "out": {}, ".dart_tool": {}, "Pods": {},
+	"__pycache__": {}, ".next": {}, ".idea": {}, ".codegraph": {}, ".cxx": {},
+	"DerivedData": {}, ".pytest_cache": {}, "vendor": {},
+	// A git operation -- fetch, gc, an index refresh -- is not someone editing
+	// source. .git stays a project marker; that role is independent of this one.
+	".git": {},
+}
+
+// nonSourceFiles are written by something other than the person. Measured:
+// browsing a folder in Finder 148 days ago made a project whose last real edit
+// was 641 days ago look like it had been worked on, purely through .DS_Store.
+var nonSourceFiles = map[string]struct{}{
+	".DS_Store": {}, ".localized": {}, "Thumbs.db": {}, "desktop.ini": {},
+	".directory": {},
+}
+
+// projectMarkers identify a directory as the root of a piece of work. Its source
+// activity is the signal for everything beneath it.
+var projectMarkers = map[string]struct{}{
+	".git": {}, "package.json": {}, "Cargo.toml": {}, "build.gradle": {},
+	"build.gradle.kts": {}, "settings.gradle": {}, "settings.gradle.kts": {},
+	"pubspec.yaml": {}, "go.mod": {}, "pom.xml": {}, "Package.swift": {},
+	"pyproject.toml": {}, "requirements.txt": {}, "Gemfile": {}, "composer.json": {},
+}
+
 type evidenceFrame struct {
 	id         int64
 	childIndex int
@@ -54,6 +83,14 @@ type evidenceFrame struct {
 	biggestFile int64
 	newestUnix  int64
 	oldestUnix  int64
+	// sourceNewestUnix is newestUnix with build and dependency subtrees left
+	// out: when the work itself was last touched, not when a tool last wrote
+	// output. A build directory 200 days old inside a project whose source
+	// changed yesterday is not cold, and conditioning staleness on the
+	// artifact's own mtime gets exactly that case backwards.
+	sourceNewestUnix int64
+	// projectRoot is set when a direct child is a project marker.
+	projectRoot bool
 	// residue extension profile: bytes and counts of files NOT already
 	// attributed to a kept descendant.
 	extensions map[string]*recommendation.ExtensionShare
@@ -132,7 +169,10 @@ func (q *treeQuery) evidenceNodes(query recommendation.EvidenceQuery) (recommend
 		if len(stack) == 0 {
 			break
 		}
-		mergeIntoParent(&stack[len(stack)-1], finished)
+		finishedEntry := *tree.records.at(finished.id)
+		mergeIntoParent(&stack[len(stack)-1], finished,
+			tree.names.get(finishedEntry.nameOffset, finishedEntry.nameLength),
+			tree.kinds.value(finishedEntry.kind) == "directory")
 	}
 
 	// Emitted in post-order; the caller wants the skeleton biggest-first.
@@ -158,9 +198,19 @@ func newEvidenceFrame(tree *tree, id int64, floor int64) evidenceFrame {
 	}
 	if tree.kinds.value(entry.kind) == "directory" {
 		frame.dirs = 1
+		// A directory's own mtime is deliberately NOT source activity. It changes
+		// whenever an entry is added or removed, which Finder does by writing a
+		// .DS_Store, a build does by emitting output, and a temp file does by
+		// existing. Measured: a project last edited 641 days ago reported 148
+		// days of idleness through directory mtimes alone, even after the
+		// .DS_Store file itself was excluded. Source activity comes only from
+		// source files, and a directory inherits it from its children.
 	} else {
 		frame.files = 1
 		frame.biggestFile = entry.ownedAllocated
+		if _, systemFile := nonSourceFiles[tree.names.get(entry.nameOffset, entry.nameLength)]; !systemFile {
+			frame.sourceNewestUnix = entry.modifiedUnix
+		}
 		frame.extensions = map[string]*recommendation.ExtensionShare{
 			extensionOf(tree.names.get(entry.nameOffset, entry.nameLength)): {
 				Extension: extensionOf(tree.names.get(entry.nameOffset, entry.nameLength)),
@@ -172,9 +222,20 @@ func newEvidenceFrame(tree *tree, id int64, floor int64) evidenceFrame {
 	return frame
 }
 
-func mergeIntoParent(parent *evidenceFrame, child evidenceFrame) {
+func mergeIntoParent(parent *evidenceFrame, child evidenceFrame, childName string, childIsDir bool) {
 	parent.files += child.files
 	parent.dirs += child.dirs
+	if _, marker := projectMarkers[childName]; marker {
+		parent.projectRoot = true
+	}
+	// A generated directory's contents say a tool ran, not that a person worked.
+	// They stop here. Files are already filtered when their frame is created, so
+	// a child arriving with sourceNewestUnix == 0 contributes nothing.
+	if _, generatedDir := generatedNames[childName]; !(generatedDir && childIsDir) {
+		if child.sourceNewestUnix > parent.sourceNewestUnix {
+			parent.sourceNewestUnix = child.sourceNewestUnix
+		}
+	}
 	if child.biggestFile > parent.biggestFile {
 		parent.biggestFile = child.biggestFile
 	}
@@ -243,20 +304,22 @@ func evidenceNodeFrom(tree *tree, frame evidenceFrame, nowUnix int64, perNode in
 		residue = 0
 	}
 	node := recommendation.EvidenceNode{
-		ID:             frame.id,
-		ParentID:       entry.parentID,
-		Path:           tree.path(frame.id),
-		Name:           name,
-		Kind:           tree.kinds.value(entry.kind),
-		OwnedAllocated: entry.ownedAllocated,
-		Residue:        residue,
-		SubtreeFiles:   frame.files,
-		SubtreeDirs:    frame.dirs,
-		BiggestFile:    frame.biggestFile,
-		NewestModified: modifiedTime(frame.newestUnix),
-		OldestModified: modifiedTime(frame.oldestUnix),
-		FutureModified: frame.newestUnix > nowUnix,
-		TopExtensions:  topExtensions(frame.extensions, perNode),
+		ID:                   frame.id,
+		ParentID:             entry.parentID,
+		Path:                 tree.path(frame.id),
+		Name:                 name,
+		Kind:                 tree.kinds.value(entry.kind),
+		OwnedAllocated:       entry.ownedAllocated,
+		Residue:              residue,
+		SubtreeFiles:         frame.files,
+		SubtreeDirs:          frame.dirs,
+		BiggestFile:          frame.biggestFile,
+		NewestModified:       modifiedTime(frame.newestUnix),
+		OldestModified:       modifiedTime(frame.oldestUnix),
+		SourceNewestModified: modifiedTime(frame.sourceNewestUnix),
+		IsProjectRoot:        frame.projectRoot,
+		FutureModified:       frame.newestUnix > nowUnix,
+		TopExtensions:        topExtensions(frame.extensions, perNode),
 	}
 	return node
 }

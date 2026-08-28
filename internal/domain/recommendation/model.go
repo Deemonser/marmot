@@ -171,6 +171,20 @@ type EvidenceNode struct {
 	BiggestFile    int64
 	NewestModified time.Time
 	OldestModified time.Time
+	// SourceNewestModified is the newest mtime in the subtree with build and
+	// dependency directories excluded — when the person last touched the work
+	// itself rather than when a tool last wrote output.
+	//
+	// The distinction is the whole point. A build directory last written 200 days
+	// ago inside a project whose source changed yesterday is not cold: it is
+	// about to be rebuilt, and deleting it costs exactly the download the user
+	// was trying to avoid. Conditioning staleness on an artifact's own mtime gets
+	// that case backwards.
+	SourceNewestModified time.Time
+	// IsProjectRoot marks a directory holding a project marker (.git,
+	// package.json, Cargo.toml, build.gradle, go.mod, ...). Its
+	// SourceNewestModified is the activity signal for everything beneath it.
+	IsProjectRoot bool
 	// FutureModified marks an mtime ahead of the wall clock. Not clamped away
 	// silently: it is itself the signal that something is off with the object
 	// (R-062 §3.6 measured one 534 days in the future on the reference machine).

@@ -1,7 +1,9 @@
 package probe
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,6 +106,29 @@ func TestEvidencePackOnARealTree(t *testing.T) {
 			continue
 		}
 		t.Logf("  %-8s  %6d 节点  ~%5.1f KB", humanBytes(floor), len(swept.Nodes), float64(len(swept.Nodes))*71/1024)
+	}
+
+	// The disruption axis, shown per finding: identical bytes of build output are
+	// worth keeping or free depending on whether the surrounding work is live,
+	// and this is where that grading becomes visible.
+	t.Log("构建产物按所属项目的源码活跃度分级：")
+	graded := 0
+	for _, item := range findings {
+		switch item.Category {
+		case "编译产物", "构建产物", "构建缓存":
+		default:
+			continue
+		}
+		if graded >= 14 {
+			break
+		}
+		graded++
+		idle := "-"
+		if days := pack.ProjectIdleDays[item.NodeID]; days >= 0 {
+			idle = fmt.Sprintf("%d 天", days)
+		}
+		t.Logf("  %-7s %-9s 项目空闲 %-8s %s", item.Risk, humanBytes(item.ReclaimableBytes), idle,
+			strings.TrimPrefix(item.Path, os.Getenv("HOME")))
 	}
 
 	if out := os.Getenv("PROBE_EVIDENCE_OUT"); out != "" {
