@@ -319,21 +319,27 @@ func (p EvidencePack) RuleFindings() []AdviceItem {
 		}
 		matched = append(matched, node)
 	}
-	sort.Slice(matched, func(left, right int) bool {
+	// Specific rules claim their bytes before generic ones get the chance, and
+	// only then does the shorter path win. Sorting by path length alone let a
+	// generic ancestor swallow a precise descendant -- which maximises the number
+	// on screen and destroys the only thing that makes it actionable.
+	sort.SliceStable(matched, func(left, right int) bool {
+		leftRule, rightRule := p.RuleHits[matched[left].ID], p.RuleHits[matched[right].ID]
+		leftSpec, rightSpec := leftRule.Specificity(), rightRule.Specificity()
+		if leftSpec != rightSpec {
+			return leftSpec > rightSpec
+		}
 		return len(matched[left].Path) < len(matched[right].Path)
 	})
 
 	findings := make([]AdviceItem, 0, len(matched))
 	kept := make([]string, 0, len(matched))
 	for _, node := range matched {
-		covered := false
-		for _, existing := range kept {
-			if existing == node.Path || cleanup.IsPathWithin(existing, node.Path) {
-				covered = true
-				break
-			}
-		}
-		if covered {
+		// Bidirectional: an ancestor whose descendant a more specific rule
+		// already claimed has to go too. Checking only descendants let the
+		// generic Library/Caches item back in behind the precise Chrome one and
+		// double-counted 1.6 GB in the total.
+		if overlapsAny(kept, node.Path) {
 			continue
 		}
 		kept = append(kept, node.Path)

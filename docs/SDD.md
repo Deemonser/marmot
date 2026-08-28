@@ -929,6 +929,20 @@ ports.Advisor:
 `Cookies` / `Login Data` / `Local Storage` / `IndexedDB` 必须保留——因此"清缓存但保住登录态"
 是可达成的；长期未使用的整个 `Profile N` 可作为一个对象提出，含其登录信息。
 
+规则按三档区分同一 profile：**可清理**（HTTP 缓存、Code Cache、`Service Worker/CacheStorage`、
+`GPUCache`、`Shared Dictionary`）、**登录态**（`Cookies`、`Login Data`、`Device Bound Sessions`——
+可重新登录，但风险抬为 `risky` 并说明"所有网站需要重新登录"）、
+**站点本地数据**（`Local Storage`、`IndexedDB`、`File System`——草稿与离线文档只存在于本地，
+判为不可恢复）。
+
+macOS 上 Chromium 系把 HTTP 缓存放在 `~/Library/Caches`、profile 放在 `Application Support`，
+所以"登录态不在这里"是可以确定断言的——这句话才是让一条 `1.6 GB` 的建议敢被执行的原因。
+
+**具体规则优先于通用规则**，且重叠检查双向：通用的 `Library/Caches/*` 曾匹配整个 `8.1 GB` 目录
+并在"外层优先"折叠中吞掉里面 `1.6 GB` 的精确项，用户只剩一句"个别应用会丢失登录态"。
+现在按 `Rule.Specificity()`（模式中固定段的数量）排序，精确项先占位；祖先若与已占位的后代重叠
+一并丢弃，否则同一批字节会被计两次。
+
 **按站点删除登录信息不在本产品范围内。** Cookie 与登录态是 SQLite 数据库里的行，
 不是独立文件；按站点清理意味着写入应用的数据库，这远超"把文件移入废纸篓"的边界
 （§10 默认移入废纸篓、不做永久删除），且浏览器持有该文件时写入有损坏风险。

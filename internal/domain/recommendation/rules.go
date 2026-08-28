@@ -68,6 +68,87 @@ var Catalog = []Rule{
 	// and a person confirms belongs here: the catalog is the part that never
 	// varies between runs, and it grows from evidence rather than from guessing
 	// what software people have installed.
+	// --- Browsers. The whole point is precision: the generic user-cache rule
+	// already matches these paths and answers "个别应用会丢失登录态或离线内容",
+	// which is the vague warning that stops anyone acting on 1.7 GB. On macOS a
+	// Chromium browser keeps its HTTP cache under ~/Library/Caches and its
+	// profile -- cookies, saved logins, site storage -- under Application
+	// Support, so "登录态不在这里" is a statement that can be made confidently.
+	// Verified on this machine: Caches/Google/Chrome/Default/Cache is 1058 MB and
+	// Code Cache 632 MB, while Cookies and Login Data live elsewhere entirely.
+	{
+		Name: "Chrome 网页缓存", Category: "浏览器缓存",
+		Pattern: "Library/Caches/Google/Chrome/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "网页首次重新访问时要重新下载资源，短时间内浏览稍慢。登录状态、书签、历史、扩展都不在这里，不受影响。",
+		HowToRestore: "无需操作，浏览时自动重建。",
+	},
+	{
+		Name: "Chromium 系网页缓存", Category: "浏览器缓存",
+		Pattern: "Library/Caches/Chromium/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "网页首次重新访问时要重新下载资源。登录状态与书签不在这里。",
+		HowToRestore: "无需操作，浏览时自动重建。",
+	},
+	{
+		Name: "Brave 网页缓存", Category: "浏览器缓存",
+		Pattern: "Library/Caches/BraveSoftware/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "网页首次重新访问时要重新下载资源。登录状态与书签不在这里。",
+		HowToRestore: "无需操作，浏览时自动重建。",
+	},
+	{
+		Name: "Edge 网页缓存", Category: "浏览器缓存",
+		Pattern: "Library/Caches/Microsoft Edge/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "网页首次重新访问时要重新下载资源。登录状态与书签不在这里。",
+		HowToRestore: "无需操作，浏览时自动重建。",
+	},
+	{
+		Name: "Safari 网页缓存", Category: "浏览器缓存",
+		Pattern: "Library/Caches/com.apple.Safari/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "网页首次重新访问时要重新下载资源。Safari 的 Cookie 与登录信息保存在别处，不受影响。",
+		HowToRestore: "无需操作，浏览时自动重建。",
+	},
+	{
+		Name: "Firefox 网页缓存", Category: "浏览器缓存",
+		Pattern: "Library/Caches/Firefox/Profiles/*/cache2", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "网页首次重新访问时要重新下载资源。登录信息在 profile 目录中，不受影响。",
+		HowToRestore: "无需操作，浏览时自动重建。",
+	},
+	{
+		Name: "浏览器离线资源缓存", Category: "浏览器缓存",
+		Pattern: "**/Service Worker/CacheStorage", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "支持离线使用的网页需要联网重新加载一次；Service Worker 的注册信息不在这里，不会被注销。",
+		HowToRestore: "下次访问该站点时自动重建。",
+	},
+	{
+		Name: "浏览器脚本缓存", Category: "浏览器缓存",
+		Pattern: "**/Service Worker/ScriptCache", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "对应站点的 Service Worker 脚本要重新下载一次。",
+		HowToRestore: "自动重建。",
+	},
+	{
+		Name: "浏览器压缩字典", Category: "浏览器缓存",
+		Pattern: "**/Shared Dictionary", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "使用共享字典压缩的站点，首次访问传输量略增。",
+		HowToRestore: "自动重建。",
+	},
+	{
+		Name: "浏览器图形缓存", Category: "浏览器缓存",
+		Pattern: "**/GPUCache", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "着色器需要重新编译一次，个别页面首次渲染略慢。",
+		HowToRestore: "自动重建。",
+	},
+	{
+		Name: "浏览器 WebGPU 缓存", Category: "浏览器缓存",
+		Pattern: "**/DawnWebGPUCache", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "使用 WebGPU 的页面首次渲染略慢。",
+		HowToRestore: "自动重建。",
+	},
+	{
+		Name: "浏览器优化提示缓存", Category: "浏览器缓存",
+		Pattern: "**/optimization_guide_hint_cache_store", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "没有可感知的影响。",
+		HowToRestore: "自动重建。",
+	},
+
 	{
 		Name: "Flutter 引擎产物", Category: "SDK 缓存",
 		Pattern: "**/flutter/bin/cache/artifacts/engine", Recovery: RecoveryRedownloadable, Risk: RiskReview,
@@ -361,6 +442,24 @@ func Match(context MatchContext) *Rule {
 		}
 	}
 	return nil
+}
+
+// Specificity is how many literal segments a pattern pins down. It decides which
+// suggestion survives when a specific rule and a generic one both cover the same
+// bytes: "Chrome 网页缓存，登录态不在这里" is worth more than "用户缓存，个别应用会
+// 丢失登录态" over a larger number, because only one of them can be acted on.
+//
+// Measured: the generic Library/Caches rule matched the whole 8.1 GB folder, the
+// outermost-wins overlap pass then discarded the 1.7 GB Chrome finding inside
+// it, and the user was left with the vague warning that stops anyone acting.
+func (r Rule) Specificity() int {
+	count := 0
+	for _, segment := range strings.Split(strings.TrimPrefix(r.Pattern, "**/"), "/") {
+		if segment != "" && segment != "*" && !strings.HasSuffix(segment, "*") {
+			count++
+		}
+	}
+	return count
 }
 
 func (r Rule) conditionsMet(context MatchContext) bool {

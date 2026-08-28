@@ -38,6 +38,44 @@ const (
 	IrreplaceableCredentials = "credentials"
 )
 
+// LoginState is a third guard kind, alongside irreplaceable and partial_install.
+//
+// Browser cookies and saved logins are not irreplaceable -- you can sign in
+// again -- so calling them that would be a lie in the cautious direction. But
+// signing in to every site again, and re-doing two-factor enrolment, is exactly
+// the disruption a cleanup tool must not inflict silently. So the correction is
+// on the risk and the wording, not on the recoverability.
+const LoginState = "login_state"
+
+// loginStatePaths hold the session. Matched at any depth because every Chromium
+// profile repeats them, and Safari keeps its own copy elsewhere again.
+var loginStatePaths = []string{
+	"Cookies", "Cookies-journal", "Login Data", "Login Data For Account",
+	"Extension Cookies", "Device Bound Sessions", "Safari",
+}
+
+// LoginStateReason reports that a path holds signed-in sessions.
+func LoginStateReason(absolutePath string) string {
+	relative, ok := homeRelative(filepath.Clean(absolutePath))
+	if !ok {
+		return ""
+	}
+	for _, segment := range strings.Split(relative, "/") {
+		for _, name := range loginStatePaths {
+			if segment == name {
+				return LoginState
+			}
+		}
+	}
+	return ""
+}
+
+// LoginStateMessage explains what deleting it actually costs.
+func LoginStateMessage() string {
+	return "这里保存的是浏览器的登录状态。删除后所有网站都需要重新登录，" +
+		"部分站点的两步验证需要重新设置。"
+}
+
 // homeRelativeIrreplaceable are matched against the path below a home folder.
 // `*` matches one segment; a leading `**/` matches the segment at any depth.
 var homeRelativeIrreplaceable = []struct{ pattern, reason string }{
@@ -62,6 +100,12 @@ var homeRelativeIrreplaceable = []struct{ pattern, reason string }{
 	{"Library/Containers/com.docker.docker/Data/vms", IrreplaceableVirtualDisk},
 
 	{"**/.git", IrreplaceableRepository},
+	// Site-local data, not cache: drafts, offline documents and application state
+	// that exists nowhere else. One path segment away from the caches beside it.
+	{"**/Local Storage", IrreplaceableUserData},
+	{"**/IndexedDB", IrreplaceableUserData},
+	{"**/File System", IrreplaceableUserData},
+	{"**/Local Extension Settings", IrreplaceableUserData},
 	{"**/.ssh", IrreplaceableCredentials},
 	{"**/.gnupg", IrreplaceableCredentials},
 }

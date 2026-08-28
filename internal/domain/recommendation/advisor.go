@@ -223,6 +223,17 @@ func Validate(verdicts []Verdict, shown map[int64]EvidenceNode, snapshotID int64
 			}
 			whatBreaks = strings.TrimSpace(PartialInstallMessage() + " " + whatBreaks)
 		}
+		// Login state is recoverable -- you can sign in again -- so the correction
+		// is on the risk and the wording, not on the recoverability. Calling it
+		// irreplaceable would be a lie in the cautious direction.
+		if reason := LoginStateReason(item.node.Path); reason != "" {
+			result.Corrections = append(result.Corrections, Correction{
+				NodeID: item.node.ID, Path: item.node.Path,
+				ClaimedRecovery: item.verdict.Recovery, Reason: reason,
+			})
+			risk = RiskRisky
+			whatBreaks = strings.TrimSpace(LoginStateMessage() + " " + whatBreaks)
+		}
 		if reason := IrreplaceableReason(item.node.Path); reason != "" && recovery != RecoveryIrreplaceable {
 			result.Corrections = append(result.Corrections, Correction{
 				NodeID: item.node.ID, Path: item.node.Path,

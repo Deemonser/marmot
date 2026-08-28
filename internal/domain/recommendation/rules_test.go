@@ -199,3 +199,64 @@ func TestPromotedRulesMatchWhatTheyWerePromotedFor(t *testing.T) {
 		}
 	}
 }
+
+// The browser split is the whole point: the cache is worth reclaiming and the
+// session is not worth losing, and they sit a directory apart. Verified layout on
+// macOS: a Chromium browser keeps its HTTP cache under ~/Library/Caches and its
+// cookies and saved logins under Application Support.
+func TestBrowserCacheIsOfferedAndLoginStateIsNot(t *testing.T) {
+	cleanable := map[string]string{
+		"/Users/a/Library/Caches/Google/Chrome/Default/Cache":                                    "Chrome 网页缓存",
+		"/Users/a/Library/Caches/Google/Chrome/Default/Code Cache":                               "Chrome 网页缓存",
+		"/Users/a/Library/Caches/com.apple.Safari/WebKitCache":                                   "Safari 网页缓存",
+		"/Users/a/Library/Caches/BraveSoftware/Brave-Browser/Default/Cache":                      "Brave 网页缓存",
+		"/Users/a/Library/Application Support/Google/Chrome/Default/Service Worker/CacheStorage": "浏览器离线资源缓存",
+		"/Users/a/Library/Application Support/Google/Chrome/Default/GPUCache":                    "浏览器图形缓存",
+		"/Users/a/Library/Application Support/Google/Chrome/Default/Shared Dictionary":           "浏览器压缩字典",
+	}
+	for path, want := range cleanable {
+		got := Match(MatchContext{Path: path})
+		if got == nil || got.Name != want {
+			t.Errorf("%s matched %v, expected %q", path, got, want)
+			continue
+		}
+		if got.Risk != RiskSafe {
+			t.Errorf("%s is browser cache and came back %q", path, got.Risk)
+		}
+	}
+}
+
+// Session state is recoverable -- you can sign in again -- so the guard corrects
+// the risk and the wording rather than the recoverability. Calling it
+// irreplaceable would be a lie in the cautious direction.
+func TestLoginStateIsGuardedAsRiskyRatherThanIrreplaceable(t *testing.T) {
+	for _, path := range []string{
+		"/Users/a/Library/Application Support/Google/Chrome/Default/Cookies",
+		"/Users/a/Library/Application Support/Google/Chrome/Default/Login Data",
+		"/Users/a/Library/Application Support/Google/Chrome/Default/Device Bound Sessions",
+		"/Users/a/Library/Safari",
+	} {
+		if LoginStateReason(path) != LoginState {
+			t.Errorf("%s holds signed-in sessions and was not flagged", path)
+		}
+		// And it must not be swept into the irreplaceable bucket instead.
+		if IrreplaceableReason(path) != "" && path != "/Users/a/Library/Safari" {
+			t.Errorf("%s was called irreplaceable; signing in again restores it", path)
+		}
+	}
+	// Site-local storage genuinely is irreplaceable: drafts and offline
+	// documents that exist nowhere else, one segment away from the caches.
+	for _, path := range []string{
+		"/Users/a/Library/Application Support/Google/Chrome/Default/Local Storage",
+		"/Users/a/Library/Application Support/Google/Chrome/Default/IndexedDB",
+	} {
+		if IrreplaceableReason(path) != IrreplaceableUserData {
+			t.Errorf("%s is site-local data and must be irreplaceable", path)
+		}
+	}
+	// The cache next door must not be caught by either guard.
+	cache := "/Users/a/Library/Caches/Google/Chrome/Default/Cache"
+	if LoginStateReason(cache) != "" || IrreplaceableReason(cache) != "" {
+		t.Errorf("%s is pure cache and was guarded", cache)
+	}
+}
