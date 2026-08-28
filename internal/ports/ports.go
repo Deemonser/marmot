@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"example.com/marmot/internal/domain/cleanup"
+	"example.com/marmot/internal/domain/recommendation"
 	"example.com/marmot/internal/domain/scan"
 )
 
@@ -32,6 +33,11 @@ type SnapshotStore interface {
 	NodeByID(int64, int64) (scan.Node, error)
 	SnapshotVersion(int64) (int64, error)
 	SnapshotByTaskID(string) (scan.Snapshot, error)
+	// EvidenceNodes is the bounded skeleton the advice feature is built on: the
+	// nodes at or above a size floor, each carrying the subtree facts a
+	// suggestion has to be judged against. It is read-only and shares the same
+	// in-memory source as Map (ADR-0061 §2).
+	EvidenceNodes(recommendation.EvidenceQuery) (recommendation.EvidenceResult, error)
 }
 
 type Volume struct {

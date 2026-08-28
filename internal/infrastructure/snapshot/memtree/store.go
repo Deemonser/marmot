@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	"example.com/marmot/internal/domain/recommendation"
 	"example.com/marmot/internal/domain/scan"
 )
 
@@ -187,6 +188,22 @@ func (s *Store) Map(query scan.MapQuery) (scan.MapResult, error) {
 		return scan.MapResult{}, ErrResultUnavailable
 	}
 	return buildMap(&treeQuery{snapshotID: query.SnapshotID, tree: result}, query)
+}
+
+// EvidenceNodes walks the whole result once. It takes the write lock for the
+// same reason Map does: the walk calls ensureGrouped, which rebuilds the child
+// index in place when a node has been inserted since the last query.
+func (s *Store) EvidenceNodes(query recommendation.EvidenceQuery) (recommendation.EvidenceResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, err := s.treeFor(query.SnapshotID)
+	if err != nil {
+		return recommendation.EvidenceResult{}, err
+	}
+	if !result.finished {
+		return recommendation.EvidenceResult{}, ErrResultUnavailable
+	}
+	return (&treeQuery{snapshotID: query.SnapshotID, tree: result}).evidenceNodes(query)
 }
 
 func (s *Store) SnapshotVersion(snapshotID int64) (int64, error) {
