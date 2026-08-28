@@ -96,9 +96,13 @@ func (s *Service) buildEvidencePackFor(snapshotID, rootID, floor int64, share fl
 	if err != nil {
 		return EvidencePack{}, err
 	}
+	// One clock for the whole pack: rules with an age condition and the rendered
+	// age columns must agree, or a row could be matched by a rule whose condition
+	// the row itself appears not to meet.
+	now := time.Now()
 	hits := make(map[int64]*recommendation.Rule, 32)
 	for _, node := range result.Nodes {
-		if rule := recommendation.Match(node.Path); rule != nil {
+		if rule := recommendation.Match(node.Path, node.AgeDays(now)); rule != nil {
 			hits[node.ID] = rule
 		}
 	}
@@ -110,7 +114,7 @@ func (s *Service) buildEvidencePackFor(snapshotID, rootID, floor int64, share fl
 		VolumeUsedBytes:  result.VolumeUsedBytes,
 		VolumeFreeBytes:  result.VolumeFreeBytes,
 		FloorBytes:       result.FloorBytes,
-		GeneratedAt:      time.Now(),
+		GeneratedAt:      now,
 		Nodes:            nodes,
 		RuleHits:         hits,
 	}, nil

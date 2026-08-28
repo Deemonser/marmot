@@ -21,9 +21,19 @@ import "strings"
 type Rule struct {
 	Name     string
 	Category string
-	// Pattern is matched against the home-relative path. "*" matches one
-	// segment; a leading "**/" matches the segment anywhere in the path.
-	Pattern      string
+	// Pattern is matched against the home-relative path. A leading "**/" matches
+	// the following segment sequence at any depth; "*" matches one whole
+	// segment; a trailing "*" on a segment matches a prefix.
+	Pattern string
+	// MinAgeDays makes a rule fire only on objects whose newest content is at
+	// least this old. Zero means no age condition.
+	//
+	// R-062 §3.4 claimed rules structurally cannot express staleness, and that
+	// was wrong: what it actually measured was that the hand-written catalog had
+	// no age condition, not that a catalog cannot have one. The same build output
+	// is worth keeping at 13 days and worth deleting at 617, and that is a
+	// parameter, not a judgement only a model can make.
+	MinAgeDays   int64
 	Recovery     Recovery
 	Risk         Risk
 	WhatBreaks   string
@@ -35,6 +45,85 @@ type Rule struct {
 // download cache and not as the generic user cache, because the two have
 // different answers to "how do I get it back".
 var Catalog = []Rule{
+	// --- Promoted from advisor findings (R-063 §5). Each recovery claim below is
+	// written from a mechanism that was read out of the tool's own source or
+	// verified on disk, not from the model's wording. Anything an advisor finds
+	// and a person confirms belongs here: the catalog is the part that never
+	// varies between runs, and it grows from evidence rather than from guessing
+	// what software people have installed.
+	{
+		Name: "Flutter 引擎产物", Category: "SDK 缓存",
+		Pattern: "**/flutter/bin/cache/artifacts/engine", Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		WhatBreaks:   "下次 Flutter 构建要重新下载引擎（GB 级），离线环境会直接失败。",
+		HowToRestore: "删除整个 engine 目录后，flutter precache 或任意构建会重新下载；只删内部子目录不会触发，因为 Flutter 只检查根目录与 stamp。",
+	},
+	{
+		Name: "Kotlin/Native 平台库", Category: "编译器发行版",
+		Pattern: ".konan/*/klib/platform", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "下次 Kotlin/Native 构建会先花时间重新生成平台库，该次构建明显变慢。",
+		HowToRestore: "无需手动操作：构建时逐个检测缺失的 platform lib 并从 .def 文件本地重新生成。",
+	},
+	{
+		Name: "Rust 离线文档", Category: "离线文档",
+		Pattern: ".rustup/toolchains/*/share/doc", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		WhatBreaks:   "本地 rustup doc 打不开，查文档需要联网。编译不受影响。",
+		HowToRestore: "rustup component add rust-docs --toolchain <该工具链名>。",
+	},
+	{
+		Name: "Gradle JDK 缓存", Category: "工具链缓存",
+		Pattern: ".gradle/jdks/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		WhatBreaks:   "需要该 JDK 的 Gradle 构建会先重新下载它。",
+		HowToRestore: "Gradle 在需要时按 toolchain 配置自动重新下载。",
+	},
+	{
+		Name: "Gradle 执行历史", Category: "构建缓存",
+		Pattern: "**/executionHistory", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "该项目失去增量构建信息，下次构建会重跑部分任务，一次性变慢。",
+		HowToRestore: "无需手动操作，Gradle 下次构建自行重建。",
+	},
+	{
+		Name: "Android 构建输出", Category: "构建产物",
+		Pattern: "**/build/outputs/apk", Recovery: RecoveryRegenerable, Risk: RiskReview,
+		WhatBreaks:   "已构建的 APK/AAB 消失。若某个是已分发的版本，重新构建不会得到逐字节相同的产物。",
+		HowToRestore: "重新执行对应的 assemble/bundle 任务。",
+	},
+	{
+		Name: "Rust 交叉编译产物", Category: "编译产物",
+		Pattern: "**/target/*/debug", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "该目标平台下次 cargo 构建全量重编。",
+		HowToRestore: "无需手动操作，cargo 自行重建。",
+	},
+	{
+		Name: "git 残留临时包", Category: "残留文件",
+		Pattern: "**/.git/objects/pack/tmp_pack_*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "没有影响。这是 repack 中断后遗留的临时文件，git 不会使用它。",
+		HowToRestore: "无需恢复：它不是版本库内容，删除不丢任何提交。",
+	},
+	{
+		Name: "代码索引数据库", Category: "工具索引",
+		Pattern: "**/.codegraph", Recovery: RecoveryRegenerable, Risk: RiskReview,
+		WhatBreaks:   "该项目的代码图谱与符号搜索不可用，重建索引需要时间。源码不受影响。",
+		HowToRestore: "重新运行索引命令。",
+	},
+	{
+		Name: "pnpm 内容存储", Category: "包管理器缓存",
+		Pattern: "Library/pnpm/store/*", Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		WhatBreaks:   "新的安装要重新下载。若某些项目的 node_modules 依赖存储中的链接，那些项目需要重新 install。",
+		HowToRestore: "在相关项目执行 pnpm install。",
+	},
+	{
+		Name: "Google 更新缓存", Category: "更新器缓存",
+		Pattern: "Library/Application Support/Google/GoogleUpdater/crx_cache/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		WhatBreaks:   "不影响已安装的 Google 软件，只是待安装的更新包副本。",
+		HowToRestore: "更新时自动重新下载。",
+	},
+	{
+		Name: "macOS 动态壁纸", Category: "系统媒体缓存",
+		Pattern: "Library/Application Support/com.apple.wallpaper/aerials/videos/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		WhatBreaks:   "该航拍壁纸暂时不可用。",
+		HowToRestore: "在壁纸设置中重新选择该素材，系统会重新下载。",
+	},
+
 	{
 		Name: "Homebrew 下载缓存", Category: "包管理器缓存",
 		Pattern: "Library/Caches/Homebrew/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
@@ -197,29 +286,60 @@ var Catalog = []Rule{
 		WhatBreaks:   "下次 cargo build --release 全量重编。已分发的二进制不受影响。",
 		HowToRestore: "自动重建。",
 	},
+	// Age-conditioned, and placed before the unconditioned rule so first-match
+	// picks it. The distinction R-062 §3.4 said rules could not make: the same
+	// build output is worth keeping at 13 days and worth deleting at 617.
+	{
+		Name: "冷构建中间产物", Category: "冷构建产物",
+		Pattern: "**/build/intermediates", MinAgeDays: 180,
+		Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "该模块半年以上没有构建过。删除后若再次构建，会全量重建一次。",
+		HowToRestore: "自动重建。",
+	},
+	{
+		Name: "冷 Android 转换产物", Category: "冷构建产物",
+		Pattern: "**/build/.transforms", MinAgeDays: 180,
+		Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "该模块半年以上没有构建过。删除后若再次构建，会重新生成转换产物。",
+		HowToRestore: "自动重建。",
+	},
 	{
 		Name: "Android 构建中间产物", Category: "编译产物",
 		Pattern: "**/build/intermediates", Recovery: RecoveryRegenerable, Risk: RiskSafe,
 		WhatBreaks:   "下次 Gradle 构建全量重建该模块。",
 		HowToRestore: "自动重建。",
 	},
+	{
+		Name: "Android 转换产物", Category: "编译产物",
+		Pattern: "**/build/.transforms", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "下次 Gradle 构建重新生成该模块的转换产物。",
+		HowToRestore: "自动重建。",
+	},
 }
 
-// Match returns the first rule matching an absolute path, or nil. The path is
+// Match returns the first rule matching an absolute path and age, or nil.
+//
+// ageDays is the age of the newest content in the object's subtree, already
+// clamped; pass 0 when unknown, which then only matches rules with no age
+// condition. The path is
 // reduced to home-relative first: the catalog is written against `~`, and both
 // spellings of a home folder have to reach the same answer -- the firmlinked
 // /System/Volumes/Data/Users/alice is the same directory as /Users/alice, and a
 // rule that fires on one but not the other would depend on which spelling the
 // scan happened to walk. cleanup.DeleteBlock handles the same pair for the same
 // reason.
-func Match(absolutePath string) *Rule {
+func Match(absolutePath string, ageDays int64) *Rule {
 	relative, ok := homeRelative(absolutePath)
 	if !ok {
 		return nil
 	}
 	for index := range Catalog {
-		if matchPattern(Catalog[index].Pattern, relative) {
-			return &Catalog[index]
+		rule := &Catalog[index]
+		if rule.MinAgeDays > 0 && ageDays < rule.MinAgeDays {
+			continue
+		}
+		if matchPattern(rule.Pattern, relative) {
+			return rule
 		}
 	}
 	return nil
@@ -255,29 +375,33 @@ func homeRelative(absolutePath string) (string, bool) {
 // the whole cache directory is as legitimate a suggestion as one app's slice of
 // it, and which one is offered depends on where the size floor cut.
 func matchPattern(pattern, relative string) bool {
+	pathSegments := strings.Split(relative, "/")
 	if trimmed, found := strings.CutPrefix(pattern, "**/"); found {
-		for _, segment := range strings.Split(relative, "/") {
-			if segment == trimmed {
-				return true
-			}
-		}
-		// `**/target/debug` has to match the pair, not one segment.
-		return containsSequence(strings.Split(relative, "/"), strings.Split(trimmed, "/"))
+		return containsSequence(pathSegments, strings.Split(trimmed, "/"))
 	}
 	patternSegments := strings.Split(strings.TrimSuffix(pattern, "/*"), "/")
-	pathSegments := strings.Split(relative, "/")
 	if len(pathSegments) < len(patternSegments) {
 		return false
 	}
 	for index, segment := range patternSegments {
-		if segment == "*" {
-			continue
-		}
-		if segment != pathSegments[index] {
+		if !segmentMatches(segment, pathSegments[index]) {
 			return false
 		}
 	}
 	return true
+}
+
+// segmentMatches handles the two wildcards a segment may carry: "*" alone is any
+// whole segment, and a trailing "*" is a prefix -- which is what names an
+// artifact like `tmp_pack_Z8vjYY`, where the suffix is random.
+func segmentMatches(pattern, segment string) bool {
+	if pattern == "*" {
+		return true
+	}
+	if prefix, found := strings.CutSuffix(pattern, "*"); found {
+		return strings.HasPrefix(segment, prefix)
+	}
+	return pattern == segment
 }
 
 func containsSequence(haystack, needle []string) bool {
@@ -287,7 +411,7 @@ func containsSequence(haystack, needle []string) bool {
 	for start := 0; start+len(needle) <= len(haystack); start++ {
 		matched := true
 		for offset := range needle {
-			if haystack[start+offset] != needle[offset] {
+			if !segmentMatches(needle[offset], haystack[start+offset]) {
 				matched = false
 				break
 			}

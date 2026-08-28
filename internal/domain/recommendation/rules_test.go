@@ -13,7 +13,7 @@ func TestMatchResolvesBothHomeSpellings(t *testing.T) {
 		"/Users/alice/Library/Caches/com.example.app",
 		"/System/Volumes/Data/Users/alice/Library/Caches/com.example.app",
 	} {
-		rule := Match(path)
+		rule := Match(path, 0)
 		if rule == nil {
 			t.Fatalf("%s matched no rule", path)
 		}
@@ -26,7 +26,7 @@ func TestMatchResolvesBothHomeSpellings(t *testing.T) {
 func TestMatchPrefersTheSpecificRule(t *testing.T) {
 	// Homebrew's cache is under Library/Caches, so ordering is what makes the
 	// answer to "how do I get it back" correct.
-	rule := Match("/Users/alice/Library/Caches/Homebrew/downloads/x.bottle.tar.gz")
+	rule := Match("/Users/alice/Library/Caches/Homebrew/downloads/x.bottle.tar.gz", 0)
 	if rule == nil || rule.Name != "Homebrew 下载缓存" {
 		t.Fatalf("expected the Homebrew rule, got %v", rule)
 	}
@@ -36,13 +36,13 @@ func TestMatchPrefersTheSpecificRule(t *testing.T) {
 }
 
 func TestMatchFindsMultiSegmentPatternAtAnyDepth(t *testing.T) {
-	rule := Match("/Users/alice/work/thing/target/debug")
+	rule := Match("/Users/alice/work/thing/target/debug", 0)
 	if rule == nil || rule.Name != "Rust 构建产物" {
 		t.Fatalf("expected the Rust debug rule, got %v", rule)
 	}
 	// `target` alone is not the rule: a directory called target that is not a
 	// cargo output must not be swept up by it.
-	if got := Match("/Users/alice/work/thing/target"); got != nil {
+	if got := Match("/Users/alice/work/thing/target", 0); got != nil {
 		t.Fatalf("bare target matched %q", got.Name)
 	}
 }
@@ -55,7 +55,7 @@ func TestMatchIgnoresPathsOutsideAHomeFolder(t *testing.T) {
 		"/Users/Shared/Library/Caches",
 		"/var/folders/xx/T",
 	} {
-		if rule := Match(path); rule != nil {
+		if rule := Match(path, 0); rule != nil {
 			t.Fatalf("%s matched %q but the catalog is home-relative", path, rule.Name)
 		}
 	}
@@ -103,8 +103,77 @@ func TestCatalogDoesNotTargetProtectedPaths(t *testing.T) {
 		"/Library",
 		"/private/var/db",
 	} {
-		if rule := Match(path); rule != nil && cleanup.DeleteBlock(path) != "" {
+		if rule := Match(path, 0); rule != nil && cleanup.DeleteBlock(path) != "" {
 			t.Fatalf("%s is protected (%s) but matched rule %q", path, cleanup.DeleteBlock(path), rule.Name)
+		}
+	}
+}
+
+// Age is a rule condition, not something only a model can weigh. R-062 §3.4
+// claimed rules structurally cannot express staleness; what it actually measured
+// was a catalog that had no age condition. The same build output is worth
+// keeping at 13 days and worth deleting at 617.
+func TestAgeConditionedRulesWinOnlyWhenTheObjectIsCold(t *testing.T) {
+	const path = "/Users/alice/work/app/build/intermediates"
+	warm := Match(path, 13)
+	if warm == nil || warm.Name != "Android 构建中间产物" {
+		t.Fatalf("a 13-day-old build got %v, expected the unconditioned rule", warm)
+	}
+	cold := Match(path, 617)
+	if cold == nil || cold.Name != "冷构建中间产物" {
+		t.Fatalf("a 617-day-old build got %v, expected the cold rule", cold)
+	}
+	// An unknown age must not satisfy an age condition by accident.
+	if unknown := Match(path, 0); unknown == nil || unknown.MinAgeDays != 0 {
+		t.Fatalf("age 0 matched an age-conditioned rule: %v", unknown)
+	}
+}
+
+// A trailing "*" is a prefix, which is how a random-suffixed artifact is named.
+func TestPrefixSegmentMatching(t *testing.T) {
+	rule := Match("/Users/alice/work/thing/.git/objects/pack/tmp_pack_Z8vjYY", 0)
+	if rule == nil || rule.Name != "git 残留临时包" {
+		t.Fatalf("expected the stale temp pack rule, got %v", rule)
+	}
+	// A real pack must not be swept up by it.
+	if got := Match("/Users/alice/work/thing/.git/objects/pack/pack-abc.pack", 0); got != nil {
+		t.Fatalf("a real pack matched %q", got.Name)
+	}
+}
+
+// A "*" inside a sequence matches one whole segment, which is what a
+// cross-compilation target directory is.
+func TestSingleSegmentWildcardInsideASequence(t *testing.T) {
+	rule := Match("/Users/alice/CodeProjects/x/target/aarch64-linux-android/debug/deps", 0)
+	if rule == nil || rule.Name != "Rust 交叉编译产物" {
+		t.Fatalf("expected the cross-compile rule, got %v", rule)
+	}
+}
+
+// Every promoted rule has to reach the paths it was promoted for. These are the
+// objects an advisor found on a real machine; a rule that does not match them is
+// a rule that changed nothing.
+func TestPromotedRulesMatchWhatTheyWerePromotedFor(t *testing.T) {
+	cases := map[string]string{
+		"/Users/a/dev/flutter/bin/cache/artifacts/engine":                               "Flutter 引擎产物",
+		"/Users/a/.konan/kotlin-native-prebuilt-macos-aarch64-2.2.21/klib/platform":     "Kotlin/Native 平台库",
+		"/Users/a/.rustup/toolchains/stable-aarch64-apple-darwin/share/doc/rust/html":   "Rust 离线文档",
+		"/Users/a/.gradle/jdks/jbrsdk_jcef-21-JetBrains-21.0.11-osx-aarch64.tar.gz":     "Gradle JDK 缓存",
+		"/Users/a/work/app/.gradle/8.7/executionHistory/executionHistory.bin":           "Gradle 执行历史",
+		"/Users/a/work/app/build/outputs/apk/dev/debug/app-dev-debug.apk":               "Android 构建输出",
+		"/Users/a/work/x/.codegraph/codegraph.db":                                       "代码索引数据库",
+		"/Users/a/Library/pnpm/store/v11/files":                                         "pnpm 内容存储",
+		"/Users/a/Library/Application Support/Google/GoogleUpdater/crx_cache/abc":       "Google 更新缓存",
+		"/Users/a/Library/Application Support/com.apple.wallpaper/aerials/videos/x.mov": "macOS 动态壁纸",
+	}
+	for path, want := range cases {
+		got := Match(path, 0)
+		if got == nil {
+			t.Errorf("%s matched no rule", path)
+			continue
+		}
+		if got.Name != want {
+			t.Errorf("%s matched %q, expected %q", path, got.Name, want)
 		}
 	}
 }
