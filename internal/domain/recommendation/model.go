@@ -108,6 +108,11 @@ type ExtensionShare struct {
 // EvidenceQuery asks the snapshot for the skeleton.
 type EvidenceQuery struct {
 	SnapshotID int64
+	// RootID scopes the skeleton to one subtree. Zero means the scan root. This
+	// is what round two of the two-pass flow asks with: the advisor named a
+	// region it could not classify, and this returns the inside of that region
+	// alone rather than a finer skeleton of the whole disk (ADR-0061 §6).
+	RootID int64
 	// MinBytes is the absolute floor. Nodes whose subtree is smaller are not
 	// worth a recommendation and are folded into their nearest kept ancestor's
 	// residue. R-062 §3.2 rejects a depth cap as the alternative: it is cheaper
@@ -172,6 +177,12 @@ type EvidenceNode struct {
 	FutureModified bool
 	// TopExtensions profiles the residue, descending by bytes.
 	TopExtensions []ExtensionShare
+	// Label is the text this node was actually rendered with. A collapsed row
+	// reads `a/b/c` while the node's own path ends at `a`, so validating an
+	// advisor's echo against the path alone rejects a faithful quotation of what
+	// it was shown. Measured against a real advisor: 19 correct suggestions lost
+	// that way. Empty means the label is just Name.
+	Label string
 }
 
 // AgeDays is the clamped age of the newest thing in the subtree. Clamped rather

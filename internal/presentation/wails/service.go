@@ -1,6 +1,7 @@
 package wails
 
 import (
+	"context"
 	"encoding/json"
 
 	"example.com/marmot/internal/application"
@@ -251,6 +252,16 @@ type Advice struct {
 	TotalBytes   int64        `json:"totalBytes"`
 	RuleItems    int          `json:"ruleItems"`
 	AdvisorItems int          `json:"advisorItems"`
+	// RejectedSummary says in words what was refused and why. Shown rather than
+	// hidden: a tool that reports its own model's bad suggestions is easier to
+	// trust than one that quietly shows fewer rows.
+	RejectedSummary string `json:"rejectedSummary"`
+	// AdvisorError is a failed round trip. The rule findings still stand.
+	AdvisorError string `json:"advisorError"`
+	Rounds       int    `json:"rounds"`
+	Expanded     int    `json:"expanded"`
+	InputTokens  int64  `json:"inputTokens"`
+	OutputTokens int64  `json:"outputTokens"`
 	// Rejected suggestions are reported, not hidden: a tool that says what it
 	// refused is easier to trust than one that quietly shows fewer rows.
 	Rejected []AdviceRejection `json:"rejected"`
@@ -277,14 +288,81 @@ type EvidencePreview struct {
 	Text       string `json:"text"`
 }
 
-// GetCleanupAdvice returns the suggestions for a finished snapshot. No advisor
-// is configured yet, so this is the rule layer alone and nothing leaves the
-// machine.
+// AdvisorSettings is the non-secret half of the advisor configuration.
+type AdvisorSettings struct {
+	Provider        string `json:"provider"`
+	BaseURL         string `json:"baseUrl"`
+	Model           string `json:"model"`
+	JSONMode        string `json:"jsonMode"`
+	ReasoningEffort string `json:"reasoningEffort"`
+}
+
+// AdvisorStatus never carries the key -- only whether one is stored.
+type AdvisorStatus struct {
+	Configured  bool            `json:"configured"`
+	HasKey      bool            `json:"hasKey"`
+	Description string          `json:"description"`
+	Settings    AdvisorSettings `json:"settings"`
+	// Fault is why a saved configuration did not come back at startup. Falling
+	// back to the rule layer is a working state; leaving the user to guess why
+	// the AI they configured is off is not.
+	Fault string `json:"fault"`
+}
+
+func (s *Service) GetAdvisorStatus() AdvisorStatus {
+	return advisorStatus(s.application.GetAdvisorStatus())
+}
+
+// ConfigureAdvisor stores the endpoint, model and key, encrypted in the app's
+// support directory. An empty apiKey keeps whatever is already stored, so
+// editing the endpoint does not require pasting the credential again.
+func (s *Service) ConfigureAdvisor(settings AdvisorSettings, apiKey string) (AdvisorStatus, error) {
+	status, err := s.application.ConfigureAdvisor(application.AdvisorSettings{
+		Provider: settings.Provider, BaseURL: settings.BaseURL, Model: settings.Model,
+		JSONMode: settings.JSONMode, ReasoningEffort: settings.ReasoningEffort,
+	}, apiKey)
+	if err != nil {
+		return AdvisorStatus{}, err
+	}
+	return advisorStatus(status), nil
+}
+
+func (s *Service) ClearAdvisor() error {
+	return s.application.ClearAdvisor()
+}
+
+// RunAdvisorAnalysis is the full flow: rule layer, then the advisor if one is
+// configured. The context is the frontend's -- cancelling the promise cancels
+// the request in flight rather than merely discarding its result.
+func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Advice, error) {
+	advice, err := s.application.RunAdvisorAnalysis(ctx, snapshotID)
+	if err != nil {
+		return Advice{}, err
+	}
+	return adviceView(advice), nil
+}
+
+func advisorStatus(status application.AdvisorStatus) AdvisorStatus {
+	return AdvisorStatus{
+		Configured: status.Configured, HasKey: status.HasKey, Description: status.Description, Fault: status.Fault,
+		Settings: AdvisorSettings{
+			Provider: status.Settings.Provider, BaseURL: status.Settings.BaseURL,
+			Model: status.Settings.Model, JSONMode: status.Settings.JSONMode,
+			ReasoningEffort: status.Settings.ReasoningEffort,
+		},
+	}
+}
+
+// GetCleanupAdvice is the rule layer alone, with no network request of any kind.
 func (s *Service) GetCleanupAdvice(snapshotID int64) (Advice, error) {
 	advice, err := s.application.GetCleanupAdvice(snapshotID)
 	if err != nil {
 		return Advice{}, err
 	}
+	return adviceView(advice), nil
+}
+
+func adviceView(advice application.Advice) Advice {
 	items := make([]AdviceItem, 0, len(advice.Items))
 	for _, item := range advice.Items {
 		items = append(items, AdviceItem{
@@ -303,8 +381,11 @@ func (s *Service) GetCleanupAdvice(snapshotID int64) (Advice, error) {
 	return Advice{
 		SnapshotID: advice.SnapshotID, Items: items, TotalBytes: advice.TotalBytes,
 		RuleItems: advice.RuleItems, AdvisorItems: advice.AdvisorItems, Rejected: rejected,
+		RejectedSummary: advice.RejectedSummary, AdvisorError: advice.AdvisorError,
+		Rounds: advice.Rounds, Expanded: advice.Expanded,
+		InputTokens: advice.InputTokens, OutputTokens: advice.OutputTokens,
 		EvidenceNodes: advice.EvidenceNodes, EvidenceBytes: advice.EvidenceBytes, FloorBytes: advice.FloorBytes,
-	}, nil
+	}
 }
 
 // PreviewEvidence renders exactly what an advisor would receive.

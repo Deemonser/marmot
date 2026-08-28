@@ -2,14 +2,17 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 
 	marmotapp "example.com/marmot/internal/application"
+	"example.com/marmot/internal/infrastructure/advisor/openaicompat"
 	"example.com/marmot/internal/infrastructure/scanner"
 	"example.com/marmot/internal/infrastructure/snapshot/memtree"
 	"example.com/marmot/internal/platform"
+	"example.com/marmot/internal/ports"
 	"example.com/marmot/internal/presentation/wails"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -44,12 +47,21 @@ func main() {
 		Trash:          adapter,
 		Volumes:        adapter,
 		Preview:        adapter,
+		Credentials:    adapter,
+		// The composition root is where a transport is chosen; the application
+		// layer only ever sees the port.
+		AdvisorFactory: buildAdvisor,
 		Emit: func(name string, data any) {
 			if emit != nil {
 				emit(name, data)
 			}
 		},
 	})
+	// Whatever the user configured last time. A missing configuration is the
+	// shipping state, not an error: the advice feature is then the local rule
+	// layer and the app makes no network request at all (ADR-0061 §4).
+	core.RestoreAdvisor()
+
 	service := wails.NewService(core)
 	app := application.New(application.Options{
 		Name:        "Marmot",
@@ -110,4 +122,22 @@ func appCacheDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(cacheDir, "marmot"), nil
+}
+
+// buildAdvisor turns stored settings into a transport. One OpenAI-compatible
+// client covers every provider the product targets, so "支持多家" is a
+// configuration field rather than a second adapter (ADR-0061 §5).
+func buildAdvisor(settings marmotapp.AdvisorSettings, apiKey string) (ports.Advisor, error) {
+	switch settings.Provider {
+	case marmotapp.ProviderOpenAICompatible:
+		return openaicompat.New(openaicompat.Config{
+			BaseURL:         settings.BaseURL,
+			Model:           settings.Model,
+			APIKey:          apiKey,
+			JSONMode:        settings.JSONMode,
+			ReasoningEffort: settings.ReasoningEffort,
+		})
+	default:
+		return nil, fmt.Errorf("不支持的 provider: %q", settings.Provider)
+	}
 }

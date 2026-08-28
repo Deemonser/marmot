@@ -10,6 +10,8 @@ export type {
     Advice,
     AdviceItem,
     AdviceRejection,
+    AdvisorSettings,
+    AdvisorStatus,
     ChildrenQuery,
     ChildrenResult,
     CleanupItemResult,

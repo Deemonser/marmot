@@ -9,6 +9,22 @@ export interface Advice {
     "advisorItems": number;
 
     /**
+     * RejectedSummary says in words what was refused and why. Shown rather than
+     * hidden: a tool that reports its own model's bad suggestions is easier to
+     * trust than one that quietly shows fewer rows.
+     */
+    "rejectedSummary": string;
+
+    /**
+     * AdvisorError is a failed round trip. The rule findings still stand.
+     */
+    "advisorError": string;
+    "rounds": number;
+    "expanded": number;
+    "inputTokens": number;
+    "outputTokens": number;
+
+    /**
      * Rejected suggestions are reported, not hidden: a tool that says what it
      * refused is easier to trust than one that quietly shows fewer rows.
      */
@@ -47,6 +63,34 @@ export interface AdviceRejection {
     "nodeId": number;
     "claimedName": string;
     "reason": string;
+}
+
+/**
+ * AdvisorSettings is the non-secret half of the advisor configuration.
+ */
+export interface AdvisorSettings {
+    "provider": string;
+    "baseUrl": string;
+    "model": string;
+    "jsonMode": string;
+    "reasoningEffort": string;
+}
+
+/**
+ * AdvisorStatus never carries the key -- only whether one is stored.
+ */
+export interface AdvisorStatus {
+    "configured": boolean;
+    "hasKey": boolean;
+    "description": string;
+    "settings": AdvisorSettings;
+
+    /**
+     * Fault is why a saved configuration did not come back at startup. Falling
+     * back to the rule layer is a working state; leaving the user to guess why
+     * the AI they configured is off is not.
+     */
+    "fault": string;
 }
 
 export interface ChildrenQuery {

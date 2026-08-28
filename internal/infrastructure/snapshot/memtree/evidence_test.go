@@ -198,3 +198,38 @@ func TestEvidenceRefusesANonPositiveFloor(t *testing.T) {
 		t.Fatalf("expected ErrInvalidRequest for a zero floor, got %v", err)
 	}
 }
+
+// Round two asks for the inside of one region, not a finer skeleton of the whole
+// disk. The subtree it returns has to balance to that node's own total, or the
+// advisor is being shown a partition that does not add up.
+func TestEvidenceScopesToASubtree(t *testing.T) {
+	store, id := evidenceTree(t, time.Now().Add(-48*time.Hour))
+	result, err := store.EvidenceNodes(recommendation.EvidenceQuery{SnapshotID: id, RootID: 2, MinBytes: 1500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Root != "/root/keep" {
+		t.Fatalf("root is %q, expected the subtree's own path", result.Root)
+	}
+	var residue int64
+	for _, node := range result.Nodes {
+		residue += node.Residue
+		if node.ID == 3 || node.ID == 7 || node.ID == 8 {
+			t.Fatalf("a node outside the subtree leaked in: %#v", node)
+		}
+	}
+	if residue != 6000 {
+		t.Fatalf("subtree residues sum to %d, expected the subtree total 6000", residue)
+	}
+	// The jars are above this lower floor, so the region is now legible.
+	if len(result.Nodes) != 4 {
+		t.Fatalf("expected the directory and its three jars, got %d", len(result.Nodes))
+	}
+}
+
+func TestEvidenceRefusesAnUnknownSubtreeRoot(t *testing.T) {
+	store, id := evidenceTree(t, time.Now())
+	if _, err := store.EvidenceNodes(recommendation.EvidenceQuery{SnapshotID: id, RootID: 999, MinBytes: 1}); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("expected ErrNodeNotFound, got %v", err)
+	}
+}

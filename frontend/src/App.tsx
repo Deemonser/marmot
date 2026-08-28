@@ -21,6 +21,7 @@ type CleanupValidation = Models.CleanupValidation;
 type Advice = Models.Advice;
 type AdviceItem = Models.AdviceItem;
 type EvidencePreview = Models.EvidencePreview;
+type AdvisorStatus = Models.AdvisorStatus;
 // hue is the level's slice of the colour wheel, carried on the crumb so
 // navigating up restores exactly the colours that level had on the way down.
 // HueBand is the stretch of the colour wheel a level's children are spread over.
@@ -1351,6 +1352,14 @@ export default function App() {
   // to scan, and the explanation is what you open when a row is worth deciding.
   const [adviceDetail, setAdviceDetail] = useState<number | null>(null);
   const [evidence, setEvidence] = useState<EvidencePreview | null>(null);
+  const [advisor, setAdvisor] = useState<AdvisorStatus | null>(null);
+  const [advisorOpen, setAdvisorOpen] = useState(false);
+  const [advisorForm, setAdvisorForm] = useState({ baseUrl: "https://api.deepseek.com", model: "", jsonMode: "json_object", reasoningEffort: "low", apiKey: "" });
+  const [advisorSaving, setAdvisorSaving] = useState(false);
+  // The in-flight analysis, kept so it can be cancelled. Wails returns a
+  // cancellable promise, so stopping is a real cancellation of the request
+  // rather than discarding a result that still gets paid for.
+  const adviceCall = useRef<{ cancel: () => void } | null>(null);
   const [collectorOpen, setCollectorOpen] = useState(false);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
@@ -1604,6 +1613,23 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    MarmotService.GetAdvisorStatus()
+      .then((status) => {
+        setAdvisor(status);
+        if (status.settings?.baseUrl) {
+          setAdvisorForm((form) => ({
+            ...form,
+            baseUrl: status.settings.baseUrl || form.baseUrl,
+            model: status.settings.model || form.model,
+            jsonMode: status.settings.jsonMode || form.jsonMode,
+            reasoningEffort: status.settings.reasoningEffort ?? form.reasoningEffort,
+          }));
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
   const sourceRows = Math.max(1, storageSources.length);
   const sourceAlert = Boolean(permission && permission.state !== "available");
   useEffect(() => {
@@ -1843,9 +1869,9 @@ export default function App() {
     }
   }
 
-  // Advice is produced from the finished snapshot on demand. Today the whole
-  // result comes from the local rule catalog and nothing leaves the machine;
-  // when an advisor is wired in it joins these same rows, tagged by source.
+  // Advice always includes the local rule layer. When an advisor is configured
+  // the same call adds its suggestions, tagged by source; when one is not, the
+  // rule layer is the whole answer and nothing leaves the machine.
   async function runAdvice() {
     const snapshotId = mapRef.current?.snapshotId ?? status?.snapshotId ?? 0;
     if (snapshotId <= 0) {
@@ -1854,13 +1880,56 @@ export default function App() {
     }
     setAdviceBusy(true);
     setAdviceOpen(true);
+    const call = advisor?.configured
+      ? MarmotService.RunAdvisorAnalysis(snapshotId)
+      : MarmotService.GetCleanupAdvice(snapshotId);
+    adviceCall.current = call;
     try {
-      setAdvice(await MarmotService.GetCleanupAdvice(snapshotId));
+      setAdvice(await call);
     } catch (error) {
-      setNotice("分析失败：" + String(error));
-      setAdviceOpen(false);
+      // A cancelled analysis is not a failure and does not need a notice.
+      if (!String(error).includes("cancel")) setNotice("分析失败：" + String(error));
     } finally {
+      adviceCall.current = null;
       setAdviceBusy(false);
+    }
+  }
+
+  function stopAdvice() {
+    adviceCall.current?.cancel();
+    adviceCall.current = null;
+    setAdviceBusy(false);
+  }
+
+  async function saveAdvisor() {
+    setAdvisorSaving(true);
+    try {
+      const next = await MarmotService.ConfigureAdvisor(
+        {
+          provider: "openai_compatible", baseUrl: advisorForm.baseUrl, model: advisorForm.model,
+          jsonMode: advisorForm.jsonMode, reasoningEffort: advisorForm.reasoningEffort,
+        },
+        advisorForm.apiKey,
+      );
+      setAdvisor(next);
+      // The key is never read back, so it must not linger in the form either.
+      setAdvisorForm((form) => ({ ...form, apiKey: "" }));
+      setAdvisorOpen(false);
+      setNotice("已连接 " + next.description);
+    } catch (error) {
+      setNotice("保存失败：" + String(error));
+    } finally {
+      setAdvisorSaving(false);
+    }
+  }
+
+  async function clearAdvisor() {
+    try {
+      await MarmotService.ClearAdvisor();
+      setAdvisor(await MarmotService.GetAdvisorStatus());
+      setNotice("已断开 AI，仅使用本机规则。");
+    } catch (error) {
+      setNotice("清除失败：" + String(error));
     }
   }
 
@@ -2537,11 +2606,15 @@ export default function App() {
                         : "没有结果"}
                   </h3>
                 </div>
-                <button className="quiet-button" onClick={() => setAdviceOpen(false)} aria-label="收起">收起</button>
+                <div className="advice-head-actions">
+                  {adviceBusy
+                    ? <button className="quiet-button" onClick={stopAdvice}>停止</button>
+                    : <button className="quiet-button" onClick={() => setAdviceOpen(false)} aria-label="收起">收起</button>}
+                </div>
               </header>
 
               <div className="advice-list">
-                {adviceBusy && <p className="advice-empty">正在读取扫描结果…</p>}
+                {adviceBusy && <p className="advice-empty">{advisor?.configured ? "正在询问 " + advisor.description + "…" : "正在读取扫描结果…"}</p>}
                 {!adviceBusy && advice && (advice.items ?? []).length === 0 && (
                   <p className="advice-empty">没有找到可清理的对象。</p>
                 )}
@@ -2564,6 +2637,7 @@ export default function App() {
                       </button>
                       <div className="advice-tags">
                         <span className="advice-tag">{item.ruleName || item.category}</span>
+                        {item.source === "advisor" && <span className="advice-tag is-ai">AI · {Math.round(item.confidence * 100)}%</span>}
                         <span className="advice-tag">{riskLabels[item.risk] ?? item.risk}</span>
                         <span className="advice-tag">{recoveryLabels[item.recovery] ?? item.recovery}</span>
                         <button
@@ -2592,8 +2666,15 @@ export default function App() {
               {advice && !adviceBusy && (
                 <footer className="advice-foot">
                   <span>
-                    本轮全部来自本机规则，未联网。证据 {advice.evidenceNodes} 个节点 /{" "}
-                    {formatBytes(advice.evidenceBytes)} · 下限 {formatBytes(advice.floorBytes)}
+                    {advice.rounds > 0
+                      ? <>规则 {advice.ruleItems} 条 · AI {advice.advisorItems} 条（{advice.rounds} 轮
+                        {advice.expanded > 0 ? "，深挖 " + advice.expanded + " 处" : ""}，
+                        {(advice.inputTokens + advice.outputTokens).toLocaleString()} token）</>
+                      : <>本轮全部来自本机规则，未联网。</>}
+                    {" "}证据 {advice.evidenceNodes} 个节点 / {formatBytes(advice.evidenceBytes)} · 下限{" "}
+                    {formatBytes(advice.floorBytes)}
+                    {advice.rejectedSummary && <><br />已丢弃：{advice.rejectedSummary}</>}
+                    {advice.advisorError && <><br /><span className="advice-fault">{advice.advisorError}</span></>}
                   </span>
                   <button className="quiet-button" onClick={() => void showEvidence()}>查看发送内容</button>
                 </footer>
@@ -2601,13 +2682,117 @@ export default function App() {
             </section>
           )}
 
-          <button
-            className="advice-button"
-            onClick={() => (adviceOpen ? setAdviceOpen(false) : void runAdvice())}
-            disabled={adviceBusy}
-          >
-            {adviceBusy ? "分析中…" : "分析可清理项"}
-          </button>
+          {/* Beside the corner button rather than inside the results panel:
+              opening settings must not require running an analysis first. It is
+              only on the result page because the source window is 151pt tall and
+              a sheet bounded by that window would be an unusable sliver. */}
+          <div className="advice-corner-actions">
+            <button
+              className="advice-button is-icon"
+              onClick={() => setAdvisorOpen(true)}
+              title={advisor?.configured ? "AI 设置 · " + advisor.description : "AI 设置（未连接）"}
+              aria-label="AI 设置"
+            >
+              <span className={"advice-gear" + (advisor?.configured ? " is-on" : "")} aria-hidden="true">AI</span>
+            </button>
+            <button
+              className="advice-button"
+              onClick={() => (adviceOpen ? setAdviceOpen(false) : void runAdvice())}
+              disabled={adviceBusy}
+            >
+              {adviceBusy ? "分析中…" : advisor?.configured ? "AI 分析" : "分析可清理项"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {advisorOpen && (
+        <div className="evidence-scrim" role="dialog" aria-modal="true" onClick={() => setAdvisorOpen(false)}>
+          <div className="advisor-sheet" onClick={(event) => event.stopPropagation()}>
+            <header>
+              <div>
+                <p className="eyebrow">AI 设置</p>
+                <h3>{advisor?.configured ? advisor.description : "未连接"}</h3>
+              </div>
+              <button className="quiet-button" onClick={() => setAdvisorOpen(false)}>关闭</button>
+            </header>
+            <div className="advisor-body">
+              {/* Any endpoint speaking the OpenAI chat-completions protocol works
+                  here: DeepSeek, Kimi, Qwen, OpenRouter, or a local vLLM/Ollama.
+                  That is why there is no provider dropdown. */}
+              <label>
+                <span>Endpoint</span>
+                <input
+                  value={advisorForm.baseUrl}
+                  spellCheck={false}
+                  onChange={(event) => setAdvisorForm((form) => ({ ...form, baseUrl: event.target.value }))}
+                  placeholder="https://api.deepseek.com"
+                />
+              </label>
+              <label>
+                <span>模型</span>
+                <input
+                  value={advisorForm.model}
+                  spellCheck={false}
+                  onChange={(event) => setAdvisorForm((form) => ({ ...form, model: event.target.value }))}
+                  placeholder="模型 id"
+                />
+              </label>
+              <label>
+                <span>API Key</span>
+                <input
+                  type="password"
+                  value={advisorForm.apiKey}
+                  spellCheck={false}
+                  onChange={(event) => setAdvisorForm((form) => ({ ...form, apiKey: event.target.value }))}
+                  placeholder={advisor?.hasKey ? "已保存，留空则保持不变" : "sk-…"}
+                />
+              </label>
+              <label>
+                <span>JSON 约束</span>
+                <select
+                  value={advisorForm.jsonMode}
+                  onChange={(event) => setAdvisorForm((form) => ({ ...form, jsonMode: event.target.value }))}
+                >
+                  <option value="json_object">json_object（DeepSeek 等多数服务）</option>
+                  <option value="json_schema">json_schema（部分服务，DeepSeek 不支持）</option>
+                  <option value="">不约束（仅靠提示词）</option>
+                </select>
+              </label>
+              <label>
+                <span>推理强度</span>
+                <select
+                  value={advisorForm.reasoningEffort}
+                  onChange={(event) => setAdvisorForm((form) => ({ ...form, reasoningEffort: event.target.value }))}
+                >
+                  {/* Reasoning models default to a high effort. This task is
+                      classification against a fixed output contract, and the
+                      measured cost of the default was 239s spent thinking and an
+                      answer cut off at the output cap. */}
+                  <option value="low">low（推荐：本任务是分类，不需要深度推理）</option>
+                  <option value="high">high（服务端默认，更慢更贵）</option>
+                  <option value="max">max</option>
+                  <option value="disabled">关闭思考</option>
+                  <option value="">不发送该字段（非 DeepSeek 服务）</option>
+                </select>
+              </label>
+              {advisor?.fault && <p className="advisor-fault">{advisor.fault}</p>}
+              <p className="advisor-note">
+                Key 加密保存在应用自己的目录里（AES-256-GCM，密钥绑定本机，
+                文件 0600），不写进日志或快照。同机上以你的身份运行的程序仍可解开它。
+                只有你点击「AI 分析」时才会发起网络请求，应用不做任何其他出网。
+                发送内容可在面板底部的「查看发送内容」中逐字节查看。
+              </p>
+            </div>
+            <footer className="advisor-foot">
+              {advisor?.configured && (
+                <button className="quiet-button" onClick={() => void clearAdvisor()}>断开</button>
+              )}
+              <button className="advice-button" disabled={advisorSaving || !advisorForm.model.trim()} onClick={() => void saveAdvisor()}>
+                {advisorSaving ? "保存中…" : "保存并连接"}
+              </button>
+            </footer>
+          </div>
         </div>
       )}
 

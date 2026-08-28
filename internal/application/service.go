@@ -48,6 +48,13 @@ type Service struct {
 	maintenanceStop  context.CancelFunc
 	maintenanceDone  chan struct{}
 	memoryLimiter    scanMemoryLimiter
+	// advisor is optional and replaceable at runtime: it is configured by the
+	// user, and a nil one means the advice feature is the rule layer alone.
+	advisorMu      sync.RWMutex
+	advisor        ports.Advisor
+	advisorFault   string
+	credentials    ports.CredentialStore
+	advisorFactory AdvisorFactory
 }
 
 type Dependencies struct {
@@ -63,6 +70,10 @@ type Dependencies struct {
 	Trash          ports.Trash
 	Volumes        ports.VolumeCatalog
 	Preview        ports.PreviewPort
+	Credentials    ports.CredentialStore
+	// AdvisorFactory is injected rather than imported so the application layer
+	// stays free of transport code (PROJECT-STRUCTURE dependency rule).
+	AdvisorFactory AdvisorFactory
 	Emit           func(string, any)
 }
 
@@ -303,7 +314,7 @@ func NewService(deps Dependencies) *Service {
 	if emit == nil {
 		emit = func(string, any) {}
 	}
-	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, legacyCacheDir: deps.LegacyCacheDir, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
+	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, credentials: deps.Credentials, advisorFactory: deps.AdvisorFactory, legacyCacheDir: deps.LegacyCacheDir, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
 }
 
 // BeginRecovery lets the Wails window become visible before large legacy cache

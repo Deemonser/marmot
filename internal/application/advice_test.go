@@ -1,6 +1,7 @@
 package application
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,9 @@ type stubEvidenceStore struct {
 func (s *stubEvidenceStore) EvidenceNodes(query recommendation.EvidenceQuery) (recommendation.EvidenceResult, error) {
 	s.query = query
 	s.calls++
+	if query.RootID > 0 {
+		return s.subtree(query)
+	}
 	// The real store keeps nodes at or above the floor; the stub honours that so
 	// a raised floor actually shrinks the result.
 	filtered := recommendation.EvidenceResult{
@@ -32,6 +36,27 @@ func (s *stubEvidenceStore) EvidenceNodes(query recommendation.EvidenceQuery) (r
 		}
 	}
 	return filtered, nil
+}
+
+// subtree mirrors the real store's RootID scoping so an expansion returns the
+// region asked about rather than the whole tree.
+func (s *stubEvidenceStore) subtree(query recommendation.EvidenceQuery) (recommendation.EvidenceResult, error) {
+	var root recommendation.EvidenceNode
+	for _, node := range s.result.Nodes {
+		if node.ID == query.RootID {
+			root = node
+		}
+	}
+	if root.ID == 0 {
+		return recommendation.EvidenceResult{}, errors.New("unknown subtree root")
+	}
+	result := recommendation.EvidenceResult{Root: root.Path, FloorBytes: query.MinBytes, Nodes: []recommendation.EvidenceNode{root}}
+	for _, node := range s.result.Nodes {
+		if node.ParentID == root.ID {
+			result.Nodes = append(result.Nodes, node)
+		}
+	}
+	return result, nil
 }
 
 func serviceWithEvidence(result recommendation.EvidenceResult) (*Service, *stubEvidenceStore) {
@@ -241,7 +266,6 @@ func TestEvidencePackRaisesTheFloorToFitTheCeiling(t *testing.T) {
 // transform hashes do not make it a different sentence. Measured on a real
 // full-disk pack, those rows were 12.6% of the payload.
 func TestEvidencePackFoldsBelowSafeRules(t *testing.T) {
-	const gb = 1_000_000_000
 	service, _ := serviceWithEvidence(recommendation.EvidenceResult{
 		Root: "/Users/alice", FloorBytes: 1 << 20,
 		Nodes: []recommendation.EvidenceNode{

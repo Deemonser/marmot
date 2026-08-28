@@ -81,10 +81,15 @@ func (s *Service) BuildEvidencePack(snapshotID int64) (EvidencePack, error) {
 }
 
 func (s *Service) buildEvidencePackAt(snapshotID, floor int64) (EvidencePack, error) {
+	return s.buildEvidencePackFor(snapshotID, 0, floor, evidenceVolumeShare)
+}
+
+func (s *Service) buildEvidencePackFor(snapshotID, rootID, floor int64, share float64) (EvidencePack, error) {
 	result, err := s.store.EvidenceNodes(recommendation.EvidenceQuery{
 		SnapshotID:        snapshotID,
+		RootID:            rootID,
 		MinBytes:          floor,
-		MinShare:          evidenceVolumeShare,
+		MinShare:          share,
 		MaxNodes:          evidenceMaxNodes,
 		ExtensionsPerNode: evidenceExtensionsPerNode,
 	})
@@ -234,7 +239,17 @@ type Advice struct {
 	AdvisorItems int
 	// Rejected records advisor suggestions that failed validation. Surfaced
 	// rather than dropped silently (ADR-0061 §7.5).
-	Rejected []recommendation.Rejection
+	Rejected        []recommendation.Rejection
+	RejectedSummary string
+	// AdvisorError is a round trip that failed. The rule findings still stand,
+	// so this is reported alongside them rather than instead of them.
+	AdvisorError string
+	// Rounds is how many times the advisor was asked, and Expanded how many
+	// regions round two looked inside.
+	Rounds       int
+	Expanded     int
+	InputTokens  int64
+	OutputTokens int64
 	// EvidenceNodes and EvidenceBytes describe what would be sent, so the panel
 	// can say so without building the pack twice.
 	EvidenceNodes int
@@ -242,27 +257,14 @@ type Advice struct {
 	FloorBytes    int64
 }
 
-// GetCleanupAdvice produces the advice for a finished snapshot. Today that is
-// the rule layer alone: no Advisor is wired in yet, so nothing leaves the
-// machine and the result is fully deterministic.
+// GetCleanupAdvice is the rule layer alone: deterministic, local, and the
+// fallback whenever no advisor is configured.
 func (s *Service) GetCleanupAdvice(snapshotID int64) (Advice, error) {
 	pack, err := s.BuildEvidencePack(snapshotID)
 	if err != nil {
 		return Advice{}, err
 	}
-	items := pack.RuleFindings()
-	advice := Advice{
-		SnapshotID:    snapshotID,
-		Items:         items,
-		RuleItems:     len(items),
-		EvidenceNodes: len(pack.Nodes),
-		EvidenceBytes: len(pack.Text()),
-		FloorBytes:    pack.FloorBytes,
-	}
-	for _, item := range items {
-		advice.TotalBytes += item.ReclaimableBytes
-	}
-	return advice, nil
+	return adviceFromPack(snapshotID, pack), nil
 }
 
 // RuleFindings is the floor: what the catalog knows, produced without any model
@@ -366,6 +368,18 @@ func nodeEvidence(node recommendation.EvidenceNode, now time.Time) []string {
 // two bytes per level of indentation, and the tree shape is what a reader --
 // person or model -- actually needs. The kept set is closed under ancestors, so
 // it is always a tree and this is always renderable.
+// RowLabels is what each rendered row was labelled with, keyed by the id that
+// row carries. Validation needs it because a collapsed row shows `a/b/c` while
+// the node's own path ends at `a`, and an advisor quoting the row it was shown
+// is being accurate.
+func (p EvidencePack) RowLabels() map[int64]string {
+	labels := make(map[int64]string, len(p.Nodes))
+	p.walkRows(func(head, tail recommendation.EvidenceNode, label string, depth int) {
+		labels[head.ID] = label
+	})
+	return labels
+}
+
 func (p EvidencePack) Text() string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "# Marmot 扫描证据\n")
@@ -377,8 +391,23 @@ func (p EvidencePack) Text() string {
 	fmt.Fprintf(&out, "# 骨架下限: %s，共 %d 个节点\n", formatBytes(p.FloorBytes), len(p.Nodes))
 	fmt.Fprintf(&out, "# 低于下限的对象不单列，其字节计入最近的上级节点的 residue\n")
 	fmt.Fprintf(&out, "#\n")
-	fmt.Fprintf(&out, "# 列: id | 名称(缩进表示层级) | 占用 | residue | 文件数 | 目录数 | 最近改动天数 | 最早改动天数 | 最大单文件 | 扩展名画像 | 已知规则\n\n")
+	// The kind is its own column. It used to be glued onto the name as `x(d)`,
+	// and a real advisor faithfully echoed `".transforms(d)"` back as the name --
+	// which the validator then rejected as a mismatch. The model was being
+	// accurate; the format was ambiguous. Measured: 31 of 31 suggestions lost.
+	fmt.Fprintf(&out, "# 列: id | 名称(缩进表示层级) | 类型 | 占用 | residue | 文件数 | 目录数 | 最近改动天数 | 最早改动天数 | 最大单文件 | 扩展名画像 | 已知规则\n")
+	fmt.Fprintf(&out, "# 引用某一行时，name 请只写名称列，不要带类型或缩进。\n\n")
 
+	p.walkRows(func(head, tail recommendation.EvidenceNode, label string, depth int) {
+		p.writeRow(&out, head, tail, label, depth)
+	})
+	return out.String()
+}
+
+// walkRows is the single traversal both the rendering and the label index use,
+// so what the advisor is shown and what its answer is checked against cannot
+// drift apart.
+func (p EvidencePack) walkRows(visit func(head, tail recommendation.EvidenceNode, label string, depth int)) {
 	children := make(map[int64][]recommendation.EvidenceNode, len(p.Nodes))
 	byID := make(map[int64]recommendation.EvidenceNode, len(p.Nodes))
 	var roots []recommendation.EvidenceNode
@@ -417,13 +446,12 @@ func (p EvidencePack) Text() string {
 		current := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		head, tail, label := collapseChain(current.node, children)
-		p.writeRow(&out, head, tail, label, current.depth)
+		visit(head, tail, label, current.depth)
 		group := children[tail.ID]
 		for index := len(group) - 1; index >= 0; index-- {
 			stack = append(stack, stackEntry{node: group[index], depth: current.depth + 1})
 		}
 	}
-	return out.String()
 }
 
 // collapseChain folds a run of single-child directories into one row.
@@ -485,7 +513,7 @@ func (p EvidencePack) writeRow(out *strings.Builder, head, tail recommendation.E
 	} else if hit := p.RuleHits[tail.ID]; hit != nil {
 		rule = hit.Name
 	}
-	fmt.Fprintf(out, "%d\t%s%s(%s)\t%s\t%s\t%d\t%d\t%s\t%d\t%s\t%s\t%s\n",
+	fmt.Fprintf(out, "%d\t%s%s\t%s\t%s\t%s\t%d\t%d\t%s\t%d\t%s\t%s\t%s\n",
 		head.ID,
 		strings.Repeat("  ", depth), label, kind,
 		formatBytes(head.OwnedAllocated),

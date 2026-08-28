@@ -13,6 +13,19 @@ export function CancelScan(taskID: string): $CancellablePromise<$models.ScanStat
     return $Call.ByID(1079847515, taskID);
 }
 
+export function ClearAdvisor(): $CancellablePromise<void> {
+    return $Call.ByID(3874544543);
+}
+
+/**
+ * ConfigureAdvisor stores the endpoint, model and key, encrypted in the app's
+ * support directory. An empty apiKey keeps whatever is already stored, so
+ * editing the endpoint does not require pasting the credential again.
+ */
+export function ConfigureAdvisor(settings: $models.AdvisorSettings, apiKey: string): $CancellablePromise<$models.AdvisorStatus> {
+    return $Call.ByID(1599529864, settings, apiKey);
+}
+
 export function ConfirmCleanupPlan(planID: string, version: number): $CancellablePromise<$models.CleanupPlan> {
     return $Call.ByID(3725622731, planID, version);
 }
@@ -25,14 +38,16 @@ export function ExecuteCleanupPlan(planID: string, version: number): $Cancellabl
     return $Call.ByID(3364095130, planID, version);
 }
 
+export function GetAdvisorStatus(): $CancellablePromise<$models.AdvisorStatus> {
+    return $Call.ByID(3888212314);
+}
+
 export function GetChildren(query: $models.ChildrenQuery): $CancellablePromise<$models.ChildrenResult> {
     return $Call.ByID(3688422103, query);
 }
 
 /**
- * GetCleanupAdvice returns the suggestions for a finished snapshot. No advisor
- * is configured yet, so this is the rule layer alone and nothing leaves the
- * machine.
+ * GetCleanupAdvice is the rule layer alone, with no network request of any kind.
  */
 export function GetCleanupAdvice(snapshotID: number): $CancellablePromise<$models.Advice> {
     return $Call.ByID(4091719120, snapshotID);
@@ -94,6 +109,15 @@ export function RevealNode(snapshotID: number, nodeID: number): $CancellableProm
  */
 export function RevealStorageSource(sourceID: string): $CancellablePromise<$models.NodeActionResult> {
     return $Call.ByID(3892187735, sourceID);
+}
+
+/**
+ * RunAdvisorAnalysis is the full flow: rule layer, then the advisor if one is
+ * configured. The context is the frontend's -- cancelling the promise cancels
+ * the request in flight rather than merely discarding its result.
+ */
+export function RunAdvisorAnalysis(snapshotID: number): $CancellablePromise<$models.Advice> {
+    return $Call.ByID(1504811705, snapshotID);
 }
 
 export function StartScan(options: $models.ScanOptions): $CancellablePromise<$models.ScanStatus> {

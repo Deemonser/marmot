@@ -88,6 +88,13 @@ func (q *treeQuery) evidenceNodes(query recommendation.EvidenceQuery) (recommend
 	tree.ensureGrouped()
 
 	rootID := tree.rootNodeID
+	if query.RootID > 0 {
+		if !tree.valid(query.RootID) {
+			return recommendation.EvidenceResult{}, ErrNodeNotFound
+		}
+		rootID = query.RootID
+		result.Root = tree.path(rootID)
+	}
 	if rootID <= 0 || !tree.valid(rootID) {
 		return recommendation.EvidenceResult{}, ErrResultUnavailable
 	}
@@ -95,7 +102,7 @@ func (q *treeQuery) evidenceNodes(query recommendation.EvidenceQuery) (recommend
 	nowUnix := time.Now().UnixNano()
 	collected := make([]recommendation.EvidenceNode, 0, 256)
 	stack := make([]evidenceFrame, 0, 64)
-	// The scan root is always kept: it is the frame everything else hangs off,
+	// The subtree root is always kept: it is the frame everything else hangs off,
 	// and its residue is what nothing below the floor could explain.
 	stack = append(stack, newEvidenceFrame(tree, rootID, floor))
 

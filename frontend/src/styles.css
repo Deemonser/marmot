@@ -600,3 +600,26 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    scrim's `max-height`, and the overflow was clipped with no way to scroll to
    it. Fixing one axis and not the other is how that happened. */
 .evidence-text { min-width: 0; min-height: 0; max-width: 100%; flex: 1; margin: 0; padding: 12px 14px; overflow: auto; color: #c8c9cf; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.5; white-space: pre; }
+
+.advice-head-actions { display: flex; align-items: center; gap: 5px; }
+.advice-tag.is-ai { background: #2f3a4c; color: #a8c2e8; }
+.advice-fault { color: #d3a44b; }
+
+/* The advisor sheet reuses the evidence scrim, so it inherits the pinned grid
+   track and cannot stretch the window either. */
+.advisor-sheet { display: flex; width: min(460px, 100%); min-width: 0; max-width: 100%; max-height: 100%; flex-direction: column; border-radius: 9px; background: #2c2d33; box-shadow: 0 14px 40px rgba(0,0,0,.45); }
+.advisor-sheet header { display: flex; flex: 0 0 auto; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 12px 14px 10px; border-bottom: 1px solid #35363d; }
+.advisor-sheet h3 { margin: 0; overflow: hidden; color: #f1f1f3; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.advisor-body { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 10px; padding: 13px 14px; overflow-y: auto; }
+.advisor-body label { display: flex; flex-direction: column; gap: 4px; }
+.advisor-body label > span { color: #8b8c93; font-size: 9px; }
+.advisor-body input, .advisor-body select { padding: 6px 8px; border: 1px solid #4a4b52; border-radius: 4px; background: #232429; color: #e4e4e8; font-size: 11px; }
+.advisor-body input:focus, .advisor-body select:focus { border-color: #4c7cc4; outline: none; }
+.advisor-note { margin: 2px 0 0; color: #8b8c93; font-size: 9px; line-height: 1.6; }
+.advisor-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid #35363d; }
+
+.advice-corner-actions { display: flex; align-items: center; gap: 6px; }
+.advice-button.is-icon { padding: 8px 10px; }
+.advice-gear { color: #85868d; font-size: 10px; font-weight: 600; letter-spacing: .04em; }
+.advice-gear.is-on { color: #6f9ede; }
+.advisor-fault { margin: 0; padding: 7px 9px; border-radius: 5px; background: #3a3226; color: #e5cc91; font-size: 9px; line-height: 1.6; }
