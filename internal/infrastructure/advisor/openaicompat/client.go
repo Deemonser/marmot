@@ -33,6 +33,13 @@ type Config struct {
 	BaseURL string
 	Model   string
 	APIKey  string
+	// Temperature is sent when non-nil. It is not optional in practice: the task
+	// is extraction and classification against a fixed contract, and a provider
+	// default of 1.0 makes the model sample rather than decide. Measured with no
+	// temperature set: three runs over one identical evidence pack produced 42,
+	// 48 and 27 suggestions with a pairwise Jaccard of 0.35 -- two thirds of what
+	// a user sees would change between two clicks on the same disk.
+	Temperature *float64
 	// ReasoningEffort is sent as thinking.reasoning_effort when non-empty.
 	// Reasoning models default to a high effort, and on this task that is money
 	// and latency spent on the wrong thing: classifying rows against a fixed
@@ -106,6 +113,7 @@ type chatRequest struct {
 	Model          string          `json:"model"`
 	Messages       []chatMessage   `json:"messages"`
 	MaxTokens      int             `json:"max_tokens,omitempty"`
+	Temperature    *float64        `json:"temperature,omitempty"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 	Stream         bool            `json:"stream"`
 	StreamOptions  *streamOptions  `json:"stream_options,omitempty"`
@@ -178,6 +186,7 @@ func (c *Client) Advise(ctx context.Context, request ports.AdviceRequest) (recom
 	case JSONModeObject, JSONModeSchema:
 		body.ResponseFormat = &responseFormat{Type: c.config.JSONMode}
 	}
+	body.Temperature = c.config.Temperature
 	switch effort := strings.TrimSpace(c.config.ReasoningEffort); effort {
 	case "":
 		// Field omitted entirely: an endpoint that does not know it would reject

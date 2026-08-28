@@ -28,6 +28,10 @@ const (
 	// run, not a quietly shortened one.
 	triageMaxOutputTokens = 64000
 	expandMaxOutputTokens = 32000
+	// How many objects one round asks about. Bounded by the output budget: each
+	// verdict costs a couple of hundred tokens, and a question the model runs out
+	// of room to answer is worse than one not asked.
+	advisorCandidateLimit = 40
 )
 
 // SetAdvisor installs or replaces the advisor. Nil disables it, which is the
@@ -73,8 +77,18 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 	shown := indexLabelledNodes(pack)
 	system := recommendation.SystemPrompt()
 
+	candidates := pack.Candidates(advisorCandidateLimit)
+	if len(candidates) == 0 {
+		return advice, nil
+	}
+	asked := make([]int64, 0, len(candidates))
+	for _, node := range candidates {
+		asked = append(asked, node.ID)
+	}
 	round, err := advisor.Advise(ctx, ports.AdviceRequest{
-		System: system, User: recommendation.TriagePrompt(pack.Text()), MaxOutputTokens: triageMaxOutputTokens,
+		System:          system,
+		User:            recommendation.TriagePrompt(pack.Text(), pack.RenderCandidates(candidates), len(candidates)),
+		MaxOutputTokens: triageMaxOutputTokens,
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -86,20 +100,23 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 	advice.InputTokens += round.InputTokens
 	advice.OutputTokens += round.OutputTokens
 
-	validation := recommendation.Validate(round.Suggestions, shown, snapshotID)
+	// Coverage is now a property of the request: we asked about a fixed list, so
+	// anything unanswered is a question the advisor dropped.
+	advice.TopRows, advice.TopRowsAccounted = round.Coverage(asked)
+	validation := recommendation.Validate(round.Cleanable(), shown, snapshotID)
 	accepted := validation.Accepted
 	advice.Rejected = append(advice.Rejected, validation.Rejected...)
 	advice.Rounds = 1
 
 	// Round two: the regions the advisor itself said it could not classify.
-	if focus := recommendation.LimitExpansions(round.NeedsExpansion, shown); len(focus) > 0 {
-		asked := expansionsFor(round.NeedsExpansion, focus)
+	if focus := recommendation.LimitExpansions(round.Unresolved(), shown); len(focus) > 0 {
+		unresolved := expansionsFor(round.Unresolved(), focus)
 		evidence, expandedShown, expandErr := s.expansionEvidence(snapshotID, focus, shown)
 		if expandErr != nil {
 			advice.AdvisorError = "无法展开深挖区域：" + expandErr.Error()
 		} else {
 			second, secondErr := advisor.Advise(ctx, ports.AdviceRequest{
-				System: system, User: recommendation.ExpandPrompt(evidence, asked), MaxOutputTokens: expandMaxOutputTokens,
+				System: system, User: recommendation.ExpandPrompt(evidence, unresolved), MaxOutputTokens: expandMaxOutputTokens,
 			})
 			switch {
 			case secondErr != nil && ctx.Err() != nil:
@@ -110,7 +127,7 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 			default:
 				advice.InputTokens += second.InputTokens
 				advice.OutputTokens += second.OutputTokens
-				secondValidation := recommendation.Validate(second.Suggestions, expandedShown, snapshotID)
+				secondValidation := recommendation.Validate(second.Cleanable(), expandedShown, snapshotID)
 				accepted = append(accepted, secondValidation.Accepted...)
 				advice.Rejected = append(advice.Rejected, secondValidation.Rejected...)
 				advice.Rounds = 2
@@ -217,12 +234,12 @@ func (s *Service) expansionEvidence(snapshotID int64, focus []int64, shown map[i
 	return out.String(), widened, nil
 }
 
-func expansionsFor(requested []recommendation.Expansion, focus []int64) []recommendation.Expansion {
+func expansionsFor(requested []recommendation.Verdict, focus []int64) []recommendation.Verdict {
 	wanted := make(map[int64]bool, len(focus))
 	for _, id := range focus {
 		wanted[id] = true
 	}
-	asked := make([]recommendation.Expansion, 0, len(focus))
+	asked := make([]recommendation.Verdict, 0, len(focus))
 	for _, item := range requested {
 		if wanted[item.NodeID] {
 			wanted[item.NodeID] = false
@@ -234,6 +251,13 @@ func expansionsFor(requested []recommendation.Expansion, focus []int64) []recomm
 
 // indexLabelledNodes carries the rendered label onto each node, so validation
 // checks an advisor's echo against the text it was actually shown.
+// indexLabelledNodes carries the rendered label onto each node, so validation
+// checks an advisor's echo against the text it was actually shown.
+// coverageOfLargestRows counts how many of the biggest rows the advisor dealt
+// with at all -- suggested, expanded, or explicitly declined. A row that appears
+// in none of the three was passed over without saying so, which is the failure
+// the skipped list exists to make visible.
+
 func indexLabelledNodes(pack EvidencePack) map[int64]recommendation.EvidenceNode {
 	labels := pack.RowLabels()
 	index := make(map[int64]recommendation.EvidenceNode, len(pack.Nodes))

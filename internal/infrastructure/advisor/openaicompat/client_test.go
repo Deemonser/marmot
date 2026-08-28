@@ -79,7 +79,7 @@ func TestAdviseSendsTheTwoBlocksAndReadsUsage(t *testing.T) {
 		if got := request.Header.Get("Authorization"); got != "Bearer "+secretKey {
 			t.Errorf("authorization header is %q", got)
 		}
-		reply(t, `{"suggestions":[{"node_id":7,"name":"caches"}],"needs_expansion":[]}`, "stop")(writer, request)
+		reply(t, `{"verdicts":[{"node_id":7,"name":"caches","verdict":"cleanable"}]}`, "stop")(writer, request)
 	}))
 	defer server.Close()
 
@@ -99,8 +99,8 @@ func TestAdviseSendsTheTwoBlocksAndReadsUsage(t *testing.T) {
 	if !seen.Stream || seen.StreamOptions == nil || !seen.StreamOptions.IncludeUsage {
 		t.Fatalf("the request was not a usage-reporting stream: %#v", seen)
 	}
-	if len(result.Suggestions) != 1 || result.Suggestions[0].NodeID != 7 {
-		t.Fatalf("suggestions did not survive the round trip: %#v", result.Suggestions)
+	if len(result.Verdicts) != 1 || result.Verdicts[0].NodeID != 7 {
+		t.Fatalf("verdicts did not survive the round trip: %#v", result.Verdicts)
 	}
 	if result.InputTokens != 1234 || result.OutputTokens != 56 {
 		t.Fatalf("usage not reported: %d/%d", result.InputTokens, result.OutputTokens)
@@ -110,13 +110,13 @@ func TestAdviseSendsTheTwoBlocksAndReadsUsage(t *testing.T) {
 // Reasoning deltas must not reach the document: concatenating the model's
 // thinking into its answer would corrupt the JSON.
 func TestAdviseIgnoresReasoningDeltas(t *testing.T) {
-	server := httptest.NewServer(reply(t, `{"suggestions":[{"node_id":5,"name":"y"}]}`, "stop"))
+	server := httptest.NewServer(reply(t, `{"verdicts":[{"node_id":5,"name":"y","verdict":"cleanable"}]}`, "stop"))
 	defer server.Close()
 	result, err := clientFor(t, server).Advise(context.Background(), ports.AdviceRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Suggestions) != 1 || result.Suggestions[0].NodeID != 5 {
+	if len(result.Verdicts) != 1 || result.Verdicts[0].NodeID != 5 {
 		t.Fatalf("reasoning content leaked into the answer: %#v", result)
 	}
 }
@@ -125,13 +125,13 @@ func TestAdviseIgnoresReasoningDeltas(t *testing.T) {
 // ignore response_format. Refusing a fenced reply would be a worse product for
 // no safety gain: the fields are validated afterwards either way.
 func TestAdviseAcceptsAFencedReply(t *testing.T) {
-	server := httptest.NewServer(reply(t, "这是结果：\n```json\n{\"suggestions\":[{\"node_id\":3,\"name\":\"x\"}]}\n```\n", "stop"))
+	server := httptest.NewServer(reply(t, "这是结果：\n```json\n{\"verdicts\":[{\"node_id\":3,\"name\":\"x\",\"verdict\":\"cleanable\"}]}\n```\n", "stop"))
 	defer server.Close()
 	result, err := clientFor(t, server).Advise(context.Background(), ports.AdviceRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Suggestions) != 1 || result.Suggestions[0].NodeID != 3 {
+	if len(result.Verdicts) != 1 || result.Verdicts[0].NodeID != 3 {
 		t.Fatalf("fenced JSON was not recovered: %#v", result)
 	}
 }
@@ -139,7 +139,7 @@ func TestAdviseAcceptsAFencedReply(t *testing.T) {
 // Truncated output is truncated JSON. Parsing what arrived would silently drop
 // whatever the model had not finished saying.
 func TestAdviseRefusesATruncatedReply(t *testing.T) {
-	server := httptest.NewServer(reply(t, `{"suggestions":[{"node_id":3`, "length"))
+	server := httptest.NewServer(reply(t, `{"verdicts":[{"node_id":3`, "length"))
 	defer server.Close()
 	if _, err := clientFor(t, server).Advise(context.Background(), ports.AdviceRequest{}); err == nil {
 		t.Fatal("a length-truncated reply was accepted")
@@ -211,7 +211,7 @@ func TestAdviseSendsTheThinkingShapeTheProviderRequires(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			raw, _ := io.ReadAll(request.Body)
 			_ = json.Unmarshal(raw, &seen)
-			reply(t, `{"suggestions":[]}`, "stop")(writer, request)
+			reply(t, `{"verdicts":[]}`, "stop")(writer, request)
 		}))
 		client, err := New(Config{BaseURL: server.URL, Model: "m", ReasoningEffort: effort})
 		if err != nil {
@@ -231,3 +231,35 @@ func TestAdviseSendsTheThinkingShapeTheProviderRequires(t *testing.T) {
 		}
 	}
 }
+
+// Temperature is omitted when unset and sent verbatim when set, including zero
+// -- which is the value that matters here and the one a naive omitempty on a
+// float64 would silently drop.
+func TestAdviseSendsTemperatureIncludingZero(t *testing.T) {
+	for _, want := range []*float64{nil, ptr(0.0), ptr(0.7)} {
+		var seen chatRequest
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			raw, _ := io.ReadAll(request.Body)
+			_ = json.Unmarshal(raw, &seen)
+			reply(t, `{"verdicts":[]}`, "stop")(writer, request)
+		}))
+		client, err := New(Config{BaseURL: server.URL, Model: "m", Temperature: want})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Advise(context.Background(), ports.AdviceRequest{}); err != nil {
+			t.Fatal(err)
+		}
+		server.Close()
+		switch {
+		case want == nil && seen.Temperature != nil:
+			t.Fatalf("unset temperature was sent as %v", *seen.Temperature)
+		case want != nil && seen.Temperature == nil:
+			t.Fatalf("temperature %v was dropped", *want)
+		case want != nil && *seen.Temperature != *want:
+			t.Fatalf("temperature sent as %v, want %v", *seen.Temperature, *want)
+		}
+	}
+}
+
+func ptr(value float64) *float64 { return &value }

@@ -54,9 +54,9 @@ func advisorNodes() []recommendation.EvidenceNode {
 	}
 }
 
-func goodSuggestion(id int64, name string) recommendation.Suggestion {
-	return recommendation.Suggestion{
-		NodeID: id, Name: name, Category: "应用缓存",
+func goodSuggestion(id int64, name string) recommendation.Verdict {
+	return recommendation.Verdict{
+		NodeID: id, Name: name, Verdict: recommendation.VerdictCleanable, Category: "应用缓存",
 		Recovery: string(recommendation.RecoveryRegenerable), Risk: string(recommendation.RiskReview),
 		Confidence: 0.7, Evidence: []string{"占用 5GB"},
 		WhatBreaks: "应用要重新下载内容。", HowToRestore: "应用自行重建。",
@@ -111,12 +111,14 @@ func TestRunAdvisorAnalysisExpandsWhatTheAdvisorAsksAbout(t *testing.T) {
 	service, _ := adviceService(t, advisorNodes())
 	advisor := &fakeAdvisor{rounds: []recommendation.AdvisorResult{
 		{
-			Suggestions:    []recommendation.Suggestion{goodSuggestion(4, "thing")},
-			NeedsExpansion: []recommendation.Expansion{{NodeID: 3, Why: "认不出这个应用的数据目录"}},
-			InputTokens:    100, OutputTokens: 10,
+			Verdicts: []recommendation.Verdict{
+				goodSuggestion(4, "thing"),
+				{NodeID: 3, Name: "Store", Verdict: recommendation.VerdictUnknown, Why: "认不出这个应用的数据目录"},
+			},
+			InputTokens: 100, OutputTokens: 10,
 		},
 		{
-			Suggestions: []recommendation.Suggestion{goodSuggestion(3, "Store")},
+			Verdicts:    []recommendation.Verdict{goodSuggestion(3, "Store")},
 			InputTokens: 50, OutputTokens: 5,
 		},
 	}}
@@ -156,7 +158,7 @@ func TestRunAdvisorAnalysisExpandsWhatTheAdvisorAsksAbout(t *testing.T) {
 func TestRunAdvisorAnalysisKeepsTheRuleWhenBothClaimTheSameBytes(t *testing.T) {
 	service, _ := adviceService(t, advisorNodes())
 	service.SetAdvisor(&fakeAdvisor{rounds: []recommendation.AdvisorResult{
-		{Suggestions: []recommendation.Suggestion{goodSuggestion(2, "Caches")}},
+		{Verdicts: []recommendation.Verdict{goodSuggestion(2, "Caches")}},
 	}})
 	advice, err := service.RunAdvisorAnalysis(context.Background(), 7)
 	if err != nil {
@@ -186,8 +188,10 @@ func TestRunAdvisorAnalysisKeepsRoundOneWhenRoundTwoFails(t *testing.T) {
 	service, _ := adviceService(t, advisorNodes())
 	service.SetAdvisor(&fakeAdvisor{
 		rounds: []recommendation.AdvisorResult{{
-			Suggestions:    []recommendation.Suggestion{goodSuggestion(4, "thing")},
-			NeedsExpansion: []recommendation.Expansion{{NodeID: 3}},
+			Verdicts: []recommendation.Verdict{
+				goodSuggestion(4, "thing"),
+				{NodeID: 3, Name: "Store", Verdict: recommendation.VerdictUnknown, Why: "认不出"},
+			},
 		}},
 		errs: []error{nil, errors.New("触发限流 (HTTP 429)")},
 	})

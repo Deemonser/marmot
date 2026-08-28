@@ -9,21 +9,38 @@ import (
 	"example.com/marmot/internal/domain/cleanup"
 )
 
-// Suggestion is one raw item as an advisor returned it. Nothing here is trusted:
-// the type exists to be validated into a Recommendation, or rejected.
+// Verdict is the advisor's answer about one candidate it was asked about.
 //
-// It deliberately has no size field. ADR-0061 §7.4 said to overwrite whatever
-// figure a model reported with the snapshot's own; not asking for one at all is
-// strictly better, because a number that was never requested cannot be wrong,
-// cannot disagree with the wheel, and cannot be quoted back at a user who is
-// deciding whether to delete something.
-type Suggestion struct {
+// One answer per question, and that shape is the finding rather than a
+// preference. Asking the open question -- "here is the tree, tell me what is
+// cleanable" -- was measured three times over one identical evidence pack:
+// 36, 25 and 31 objects, pairwise Jaccard 0.37. Temperature 0 did not move it
+// (0.35 -> 0.37), and demanding exhaustiveness in the prompt made it worse
+// (0.28, with only a quarter of the large rows accounted for) because the pack
+// is a tree and re-ranking 666 rows by size is not something a model does
+// reliably against that format.
+//
+// What stayed stable throughout was its judgement of any given object:
+// citations checked out at 100%, and risk labels drifted on one object in
+// fifty. So selection moved to our side -- deterministic, size-ordered,
+// rule-filtered -- and the advisor is left with the part it is good at.
+// Coverage became a property of the request instead of a hope about the reply.
+type Verdict struct {
 	NodeID int64 `json:"node_id"`
 	// Name as the advisor believes it to be. Its only job is to fail: an id that
 	// exists but names something else means the model lost track of which row it
-	// was talking about, and the suggestion is discarded rather than applied to
-	// whatever object happens to hold that id.
-	Name         string   `json:"name"`
+	// meant, and the answer is discarded rather than applied to whatever object
+	// happens to hold that id.
+	Name string `json:"name"`
+	// Verdict is Cleanable, Keep or Unknown. Unknown is a legitimate answer: it
+	// asks for the object to be opened up rather than guessed at.
+	Verdict string `json:"verdict"`
+	// Why is required for keep and unknown. A refusal with no reason is
+	// indistinguishable from never having looked.
+	Why string `json:"why"`
+	// The rest is required for cleanable and ignored otherwise. There is
+	// deliberately no size field: the snapshot's own figure is used, so a number
+	// that was never requested cannot disagree with the wheel.
 	Category     string   `json:"category"`
 	Recovery     string   `json:"recovery"`
 	Risk         string   `json:"risk"`
@@ -33,23 +50,57 @@ type Suggestion struct {
 	HowToRestore string   `json:"how_to_restore"`
 }
 
-// Expansion is the advisor saying it cannot classify a region and wants to see
-// inside it. R-062 §3.3 is why this is the model's call and not a size rule: the
-// largest opaque block on the reference machine was a Gradle transform cache
-// that needed no expansion at all, because one rule already settles it.
-type Expansion struct {
-	NodeID int64  `json:"node_id"`
-	Why    string `json:"why"`
-}
+const (
+	VerdictCleanable = "cleanable"
+	VerdictKeep      = "keep"
+	VerdictUnknown   = "unknown"
+)
 
-// AdvisorResult is one round's output.
+// AdvisorResult is one round's output: one verdict per candidate asked about.
 type AdvisorResult struct {
-	Suggestions    []Suggestion `json:"suggestions"`
-	NeedsExpansion []Expansion  `json:"needs_expansion"`
+	Verdicts []Verdict `json:"verdicts"`
 	// InputTokens and OutputTokens are reported so the UI can say what a run
 	// cost. Zero when the adapter cannot tell.
 	InputTokens  int64 `json:"-"`
 	OutputTokens int64 `json:"-"`
+}
+
+// Cleanable are the verdicts that propose removing something.
+func (r AdvisorResult) Cleanable() []Verdict {
+	return r.withVerdict(VerdictCleanable)
+}
+
+// Unresolved are the candidates the advisor could not classify. Round two opens
+// these up; asking is better than guessing.
+func (r AdvisorResult) Unresolved() []Verdict {
+	return r.withVerdict(VerdictUnknown)
+}
+
+func (r AdvisorResult) withVerdict(kind string) []Verdict {
+	out := make([]Verdict, 0, len(r.Verdicts))
+	for _, verdict := range r.Verdicts {
+		if verdict.Verdict == kind {
+			out = append(out, verdict)
+		}
+	}
+	return out
+}
+
+// Coverage reports how many of the candidates came back with any verdict at all.
+// With selection on our side this is a property of the request, so anything
+// below total is the advisor dropping a question rather than a limit of ours.
+func (r AdvisorResult) Coverage(asked []int64) (total, answered int) {
+	seen := make(map[int64]bool, len(r.Verdicts))
+	for _, verdict := range r.Verdicts {
+		seen[verdict.NodeID] = true
+	}
+	for _, id := range asked {
+		total++
+		if seen[id] {
+			answered++
+		}
+	}
+	return total, answered
 }
 
 // MaxExpansions bounds round two. Four passes of "look a little deeper" is a
@@ -57,58 +108,59 @@ type AdvisorResult struct {
 // look-ins is a fixed bound (ADR-0061 §6).
 const MaxExpansions = 8
 
-// Validation is the outcome of checking a round's suggestions.
+// Validation is the outcome of checking a round's verdicts.
 type Validation struct {
 	Accepted []Recommendation
 	Rejected []Rejection
 }
 
-// Validate turns raw suggestions into recommendations, or into recorded
+// Validate turns cleanable verdicts into recommendations, or into recorded
 // rejections. Every check is here rather than spread across the caller, and
 // every rejection is kept: a tool that reports "the model proposed three things
 // I refused" is easier to trust than one that quietly shows fewer rows.
 //
 // shown is the set of nodes the advisor was actually given. Validating against
 // it rather than against the whole snapshot is deliberate and stricter: a node
-// id the model was never shown is not a suggestion it could have reasoned about,
-// whether it invented the id or inferred one that happens to exist.
-func Validate(suggestions []Suggestion, shown map[int64]EvidenceNode, snapshotID int64) Validation {
+// id the model was never shown is not something it could have reasoned about,
+// whether it invented the id or named one that happens to exist.
+func Validate(verdicts []Verdict, shown map[int64]EvidenceNode, snapshotID int64) Validation {
 	result := Validation{}
 	type candidate struct {
-		suggestion Suggestion
-		node       EvidenceNode
+		verdict Verdict
+		node    EvidenceNode
 	}
-	candidates := make([]candidate, 0, len(suggestions))
+	candidates := make([]candidate, 0, len(verdicts))
 
-	for _, suggestion := range suggestions {
-		node, known := shown[suggestion.NodeID]
+	for _, verdict := range verdicts {
+		if verdict.Verdict != VerdictCleanable {
+			continue
+		}
+		node, known := shown[verdict.NodeID]
 		if !known {
 			result.Rejected = append(result.Rejected, Rejection{
-				NodeID: suggestion.NodeID, ClaimedName: suggestion.Name, Reason: RejectUnknownNode,
+				NodeID: verdict.NodeID, ClaimedName: verdict.Name, Reason: RejectUnknownNode,
 			})
 			continue
 		}
-		// A trailing path fragment counts: a collapsed row is labelled `a/b/c`
-		// and the advisor may echo any of it back.
-		if !nameMatches(suggestion.Name, node) {
+		if !nameMatches(verdict.Name, node) {
 			result.Rejected = append(result.Rejected, Rejection{
-				NodeID: suggestion.NodeID, ClaimedName: suggestion.Name, Reason: RejectNameMismatch,
+				NodeID: verdict.NodeID, ClaimedName: verdict.Name, Reason: RejectNameMismatch,
 			})
 			continue
 		}
 		if reason := cleanup.DeleteBlock(node.Path); reason != "" {
 			result.Rejected = append(result.Rejected, Rejection{
-				NodeID: suggestion.NodeID, ClaimedName: node.Name, Reason: RejectProtected,
+				NodeID: verdict.NodeID, ClaimedName: node.Name, Reason: RejectProtected,
 			})
 			continue
 		}
-		if !validEnums(suggestion) {
+		if !validEnums(verdict) {
 			result.Rejected = append(result.Rejected, Rejection{
-				NodeID: suggestion.NodeID, ClaimedName: node.Name, Reason: RejectMalformed,
+				NodeID: verdict.NodeID, ClaimedName: node.Name, Reason: RejectMalformed,
 			})
 			continue
 		}
-		candidates = append(candidates, candidate{suggestion: suggestion, node: node})
+		candidates = append(candidates, candidate{verdict: verdict, node: node})
 	}
 
 	// Overlap is resolved after the per-item checks so the survivor is chosen
@@ -128,7 +180,7 @@ func Validate(suggestions []Suggestion, shown map[int64]EvidenceNode, snapshotID
 		}
 		if covered {
 			result.Rejected = append(result.Rejected, Rejection{
-				NodeID: item.suggestion.NodeID, ClaimedName: item.node.Name, Reason: RejectOverlapping,
+				NodeID: item.verdict.NodeID, ClaimedName: item.node.Name, Reason: RejectOverlapping,
 			})
 			continue
 		}
@@ -137,16 +189,16 @@ func Validate(suggestions []Suggestion, shown map[int64]EvidenceNode, snapshotID
 			SnapshotID: snapshotID,
 			NodeID:     item.node.ID,
 			Source:     SourceAdvisor,
-			Category:   strings.TrimSpace(item.suggestion.Category),
+			Category:   strings.TrimSpace(item.verdict.Category),
 			// The snapshot's own figure, always. The advisor was never asked for
 			// one, so there is nothing to reconcile.
 			ReclaimableBytes: item.node.OwnedAllocated,
-			Recovery:         Recovery(item.suggestion.Recovery),
-			Risk:             Risk(item.suggestion.Risk),
-			Confidence:       item.suggestion.Confidence,
-			Evidence:         trimAll(item.suggestion.Evidence),
-			WhatBreaks:       strings.TrimSpace(item.suggestion.WhatBreaks),
-			HowToRestore:     strings.TrimSpace(item.suggestion.HowToRestore),
+			Recovery:         Recovery(item.verdict.Recovery),
+			Risk:             Risk(item.verdict.Risk),
+			Confidence:       item.verdict.Confidence,
+			Evidence:         trimAll(item.verdict.Evidence),
+			WhatBreaks:       strings.TrimSpace(item.verdict.WhatBreaks),
+			HowToRestore:     strings.TrimSpace(item.verdict.HowToRestore),
 		})
 	}
 	sort.SliceStable(result.Accepted, func(left, right int) bool {
@@ -155,9 +207,9 @@ func Validate(suggestions []Suggestion, shown map[int64]EvidenceNode, snapshotID
 	return result
 }
 
-// nameMatches accepts the node's own name or any segment of the collapsed label
-// the row was rendered with, so echoing back `transformed` for a row labelled
-// `<hash>/transformed/react-android` is not treated as a hallucination.
+// nameMatches accepts the node's own name, the label the row was rendered with,
+// or any whole-segment tail of either, so an advisor quoting the row it was
+// shown is not treated as having hallucinated.
 func nameMatches(claimed string, node EvidenceNode) bool {
 	claimed = strings.TrimSpace(trimKindAnnotation(claimed))
 	if claimed == "" {
@@ -169,16 +221,26 @@ func nameMatches(claimed string, node EvidenceNode) bool {
 	if strings.EqualFold(claimed, path.Base(node.Path)) {
 		return true
 	}
-	// The label the row was rendered with, and any tail of it on segment
-	// boundaries: a collapsed row shows `a/b/c` and an advisor may quote the
-	// whole thing or just the part it means.
 	if label := strings.Trim(node.Label, "/"); label != "" {
 		if strings.EqualFold(claimed, label) || hasSegmentSuffix(label, claimed) {
 			return true
 		}
 	}
-	// The claim is a tail of the path, on segment boundaries.
 	return hasSegmentSuffix(node.Path, claimed)
+}
+
+// trimKindAnnotation drops a trailing "(d)" or "(f)". The pack no longer glues
+// the kind onto the name, but a model that copies a row verbatim is being
+// accurate about which row it means, and rejecting that would throw away a
+// correct answer. Everything after the trim still has to match.
+func trimKindAnnotation(claimed string) string {
+	trimmed := strings.TrimSpace(claimed)
+	for _, suffix := range []string{"(d)", "(f)", "(directory)", "(file)"} {
+		if strings.HasSuffix(trimmed, suffix) {
+			return strings.TrimSpace(strings.TrimSuffix(trimmed, suffix))
+		}
+	}
+	return trimmed
 }
 
 // hasSegmentSuffix reports whether claimed is a whole-segment tail of value, so
@@ -191,56 +253,40 @@ func hasSegmentSuffix(value, claimed string) bool {
 	return strings.EqualFold(value, trimmed) || strings.HasSuffix(strings.ToLower(value), "/"+strings.ToLower(trimmed))
 }
 
-// trimKindAnnotation drops a trailing "(d)" or "(f)". The pack no longer glues
-// the kind onto the name, but a model that copies a row verbatim -- including
-// one following an older example or annotating on its own -- is being accurate
-// about which row it means, and rejecting that as a hallucinated name would
-// throw away a correct suggestion. This is tolerance for a faithful echo, not
-// tolerance for a wrong name: everything after the trim still has to match.
-func trimKindAnnotation(claimed string) string {
-	trimmed := strings.TrimSpace(claimed)
-	for _, suffix := range []string{"(d)", "(f)", "(directory)", "(file)"} {
-		if strings.HasSuffix(trimmed, suffix) {
-			return strings.TrimSpace(strings.TrimSuffix(trimmed, suffix))
-		}
-	}
-	return trimmed
-}
-
-func validEnums(suggestion Suggestion) bool {
-	switch Recovery(suggestion.Recovery) {
+func validEnums(verdict Verdict) bool {
+	switch Recovery(verdict.Recovery) {
 	case RecoveryRegenerable, RecoveryRedownloadable, RecoveryIrreplaceable:
 	default:
 		return false
 	}
-	switch Risk(suggestion.Risk) {
+	switch Risk(verdict.Risk) {
 	case RiskSafe, RiskReview, RiskRisky:
 	default:
 		return false
 	}
-	if suggestion.Confidence < 0 || suggestion.Confidence > 1 {
+	if verdict.Confidence < 0 || verdict.Confidence > 1 {
 		return false
 	}
 	// A suggestion that cannot say what breaks or how to recover is not
-	// reviewable, and being unreviewable is the whole failure mode this feature
-	// has to avoid.
-	if strings.TrimSpace(suggestion.WhatBreaks) == "" || strings.TrimSpace(suggestion.HowToRestore) == "" {
+	// reviewable, and being unreviewable is the failure mode this feature has to
+	// avoid.
+	if strings.TrimSpace(verdict.WhatBreaks) == "" || strings.TrimSpace(verdict.HowToRestore) == "" {
 		return false
 	}
 	// Nothing irreplaceable is safe. The model is told this; the rule is enforced
 	// here because being told is not the same as complying.
-	if Recovery(suggestion.Recovery) == RecoveryIrreplaceable && Risk(suggestion.Risk) == RiskSafe {
+	if Recovery(verdict.Recovery) == RecoveryIrreplaceable && Risk(verdict.Risk) == RiskSafe {
 		return false
 	}
 	return true
 }
 
-// LimitExpansions keeps the requested look-ins bounded and free of duplicates,
-// and drops any that name a node the advisor was not shown.
-func LimitExpansions(requested []Expansion, shown map[int64]EvidenceNode) []int64 {
-	seen := make(map[int64]bool, len(requested))
+// LimitExpansions keeps round two bounded and free of duplicates, and drops any
+// candidate the advisor was not shown or that has no inside to look at.
+func LimitExpansions(unresolved []Verdict, shown map[int64]EvidenceNode) []int64 {
+	seen := make(map[int64]bool, len(unresolved))
 	focus := make([]int64, 0, MaxExpansions)
-	for _, item := range requested {
+	for _, item := range unresolved {
 		if len(focus) >= MaxExpansions {
 			break
 		}

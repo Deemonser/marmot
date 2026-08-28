@@ -246,10 +246,15 @@ type Advice struct {
 	AdvisorError string
 	// Rounds is how many times the advisor was asked, and Expanded how many
 	// regions round two looked inside.
-	Rounds       int
-	Expanded     int
-	InputTokens  int64
-	OutputTokens int64
+	Rounds   int
+	Expanded int
+	// TopRowsAccounted / TopRows measure whether the largest rows were each
+	// dealt with rather than silently passed over. Coverage, not correctness:
+	// a row explicitly declined counts as accounted for.
+	TopRowsAccounted int
+	TopRows          int
+	InputTokens      int64
+	OutputTokens     int64
 	// EvidenceNodes and EvidenceBytes describe what would be sent, so the panel
 	// can say so without building the pack twice.
 	EvidenceNodes int
@@ -368,6 +373,107 @@ func nodeEvidence(node recommendation.EvidenceNode, now time.Time) []string {
 // two bytes per level of indentation, and the tree shape is what a reader --
 // person or model -- actually needs. The kept set is closed under ancestors, so
 // it is always a tree and this is always renderable.
+// Candidates picks what the advisor is asked about: deterministic, size-ordered,
+// and free of anything a rule already covers or the delete guard refuses.
+//
+// Selection is ours because it is the half the model was bad at. Asked to find
+// things itself, it produced a different two thirds of its answer on every run
+// (Jaccard 0.37); asked about a fixed list, coverage becomes a property of the
+// request. Filtering out rule-covered paths also means the whole budget goes
+// where the catalog reaches nothing, which is the only place the advisor adds
+// anything (R-062 §3.4).
+func (p EvidencePack) Candidates(limit int) []recommendation.EvidenceNode {
+	ruled := make([]string, 0, len(p.RuleHits))
+	byID := make(map[int64]recommendation.EvidenceNode, len(p.Nodes))
+	for _, node := range p.Nodes {
+		byID[node.ID] = node
+	}
+	for id := range p.RuleHits {
+		if node, ok := byID[id]; ok {
+			ruled = append(ruled, node.Path)
+		}
+	}
+	labels := p.RowLabels()
+
+	candidates := make([]recommendation.EvidenceNode, 0, len(p.Nodes))
+	for _, node := range p.Nodes {
+		// The pack's own root anchors the tree and is never a candidate.
+		if _, hasParent := byID[node.ParentID]; !hasParent {
+			continue
+		}
+		if cleanup.DeleteBlock(node.Path) != "" {
+			continue
+		}
+		if coveredByRule(ruled, node.Path) {
+			continue
+		}
+		node.Label = labels[node.ID]
+		candidates = append(candidates, node)
+	}
+	// Ranked by RESIDUE, not by subtree size. Residue is the part of an object
+	// no listed child accounts for, so a large residue means the content is on
+	// this node itself -- it is the actionable unit -- while a small one means
+	// the node is a waypoint whose content sits in children that are listed
+	// separately.
+	//
+	// Ranking by subtree size instead was a real defect, measured: ~/Library is
+	// 28 GB and no rule matches it (the rule matches Library/Caches), so it took
+	// the top slot, an ancestor-first pass then excluded everything inside it,
+	// and every deep find of the previous runs -- Code/CachedExtensionVSIXs,
+	// Application Support/Caches -- disappeared. The advisor correctly answered
+	// `keep` for ~/Library, and the run produced two suggestions instead of
+	// thirty.
+	//
+	// Residue also partitions the total, so the top N cover disjoint bytes by
+	// construction and no ancestor-versus-descendant pass is needed at all.
+	sort.SliceStable(candidates, func(left, right int) bool {
+		if candidates[left].Residue != candidates[right].Residue {
+			return candidates[left].Residue > candidates[right].Residue
+		}
+		return candidates[left].ID < candidates[right].ID
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates
+}
+
+func coveredByRule(paths []string, candidate string) bool {
+	for _, existing := range paths {
+		if existing == candidate || cleanup.IsPathWithin(existing, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+// RenderCandidates writes the candidate rows in the same column layout as the
+// tree, so a row means the same thing in both places.
+func (p EvidencePack) RenderCandidates(candidates []recommendation.EvidenceNode) string {
+	var out strings.Builder
+	out.WriteString("# 列: id | 名称 | 类型 | 占用 | residue | 文件数 | 目录数 | 最近改动天数 | 最早改动天数 | 最大单文件 | 扩展名画像\n\n")
+	for _, node := range candidates {
+		kind := "d"
+		if node.Kind != "directory" {
+			kind = "f"
+		}
+		age := fmt.Sprintf("%d", node.AgeDays(p.GeneratedAt))
+		if node.FutureModified {
+			age = "future"
+		}
+		label := node.Label
+		if label == "" {
+			label = node.Name
+		}
+		fmt.Fprintf(&out, "%d\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%d\t%s\t%s\n",
+			node.ID, label, kind,
+			formatBytes(node.OwnedAllocated), formatBytes(node.Residue),
+			node.SubtreeFiles, node.SubtreeDirs, age, node.OldestDays(p.GeneratedAt),
+			formatBytes(node.BiggestFile), formatExtensions(node.TopExtensions))
+	}
+	return out.String()
+}
+
 // RowLabels is what each rendered row was labelled with, keyed by the id that
 // row carries. Validation needs it because a collapsed row shows `a/b/c` while
 // the node's own path ends at `a`, and an advisor quoting the row it was shown

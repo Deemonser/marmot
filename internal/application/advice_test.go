@@ -308,3 +308,61 @@ func TestEvidencePackFoldsBelowSafeRules(t *testing.T) {
 		t.Fatalf("the settled node absorbed %d, expected %d", got, want)
 	}
 }
+
+// Selection is the half that moved to our side, so it has to be deterministic,
+// ranked by where the content actually is, and free of anything a rule already
+// covers or the guard refuses.
+func TestCandidatesAreDeterministicAndRuleFree(t *testing.T) {
+	service, _ := serviceWithEvidence(recommendation.EvidenceResult{
+		Root: "/Users/alice", FloorBytes: 1 << 20,
+		Nodes: []recommendation.EvidenceNode{
+			evidenceNode(1, 0, "/Users/alice", "alice", "directory", 40*gb, 1*gb),
+			// A rule covers this one, so neither it nor anything inside it is a
+			// question worth spending on.
+			evidenceNode(2, 1, "/Users/alice/Library/Caches", "Caches", "directory", 9*gb, 4*gb),
+			evidenceNode(3, 2, "/Users/alice/Library/Caches/com.example", "com.example", "directory", 5*gb, 5*gb),
+			// The guard refuses a home folder outright.
+			evidenceNode(4, 1, "/Users/bob", "bob", "directory", 8*gb, 8*gb),
+			// A waypoint: 12 GB of subtree but almost none of it its own, because
+			// the content is in the child listed below. Ranking by subtree size
+			// put this first and then excluded its child, which is exactly the
+			// defect that cost a real run its findings.
+			evidenceNode(5, 1, "/Users/alice/work", "work", "directory", 12*gb, 100),
+			// Where the content actually is.
+			evidenceNode(6, 5, "/Users/alice/work/deep", "deep", "directory", 7*gb, 7*gb),
+			evidenceNode(7, 5, "/Users/alice/work/other", "other", "directory", 5*gb, 5*gb),
+		},
+	})
+	pack, err := service.BuildEvidencePack(7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates := pack.Candidates(10)
+	got := make([]int64, 0, len(candidates))
+	for _, node := range candidates {
+		got = append(got, node.ID)
+	}
+	// Residue order: deep (7 GB), other (5 GB), then the waypoint last.
+	if len(got) != 3 || got[0] != 6 || got[1] != 7 || got[2] != 5 {
+		t.Fatalf("candidates are %v, expected content holders first [6 7 5]", got)
+	}
+	// Same pack, same list: selection must not be a source of variance.
+	for round := 0; round < 3; round++ {
+		again := pack.Candidates(10)
+		if len(again) != len(candidates) {
+			t.Fatalf("selection is not deterministic: %d then %d", len(candidates), len(again))
+		}
+		for index := range again {
+			if again[index].ID != candidates[index].ID {
+				t.Fatalf("selection order changed between calls")
+			}
+		}
+	}
+	// The rendered rows carry the label, so an advisor quoting one is checkable.
+	rendered := pack.RenderCandidates(candidates)
+	for _, want := range []string{"deep", "other", "7.0GB"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("candidate rows do not mention %q:\n%s", want, rendered)
+		}
+	}
+}
