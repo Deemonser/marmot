@@ -3,6 +3,7 @@ import { paintMorph, clearMorphStyles, planMorph, arcPath, morphDuration, morphA
 import type { ArcGeom, MorphPlan } from "./morph";
 import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstHiddenSpace, sunburstEndAngle, previewDwellMs, previewLeaveMs } from "./sunburst";
 import type { HueBand } from "./sunburst";
+import { autoStageable, stageSummary } from "./advice";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
@@ -1351,6 +1352,11 @@ export default function App() {
   // Which suggestion has its reasoning open. One at a time: the panel is a list
   // to scan, and the explanation is what you open when a row is worth deciding.
   const [adviceDetail, setAdviceDetail] = useState<number | null>(null);
+  // Why the last analysis produced nothing. Without it the header read "没有结果"
+  // after a failed call -- a false statement about the disk, with the real reason
+  // only in a transient notice.
+  const [adviceError, setAdviceError] = useState("");
+  const [adviceStaged, setAdviceStaged] = useState({ added: 0, bytes: 0 });
   const [evidence, setEvidence] = useState<EvidencePreview | null>(null);
   const [advisor, setAdvisor] = useState<AdvisorStatus | null>(null);
   const [advisorOpen, setAdvisorOpen] = useState(false);
@@ -1880,19 +1886,67 @@ export default function App() {
     }
     setAdviceBusy(true);
     setAdviceOpen(true);
+    setAdviceError("");
+    setAdviceStaged({ added: 0, bytes: 0 });
     const call = advisor?.configured
       ? MarmotService.RunAdvisorAnalysis(snapshotId)
       : MarmotService.GetCleanupAdvice(snapshotId);
     adviceCall.current = call;
     try {
-      setAdvice(await call);
+      const result = await call;
+      setAdvice(result);
+      // The deterministic half of the answer needs no further decision from the
+      // user, so it does not wait for one.
+      setAdviceStaged(await stageAdviceItems((result.items ?? []).filter(autoStageable), result.snapshotId));
     } catch (error) {
       // A cancelled analysis is not a failure and does not need a notice.
-      if (!String(error).includes("cancel")) setNotice("分析失败：" + String(error));
+      if (!String(error).includes("cancel")) {
+        setAdviceError(String(error));
+        setNotice("分析失败：" + String(error));
+      }
     } finally {
       adviceCall.current = null;
       setAdviceBusy(false);
     }
+  }
+
+  // stageAdviceItems puts suggestions in the dock through exactly the checks a
+  // manual drop goes through: a protected object, an aggregate, or one that
+  // changed under us is refused whether a rule named it or a hand dragged it.
+  // Staging is not authorisation -- the dock still needs the delete press, its
+  // countdown, and the plan's own re-validation of every path.
+  async function stageAdviceItems(items: AdviceItem[], snapshotId: number) {
+    const pending = items.filter((item) => !isCollected(item));
+    if (snapshotId <= 0 || pending.length === 0) return { added: 0, bytes: 0 };
+    const entries = await Promise.all(
+      pending.map((item) => MarmotService.GetNodeEntry(snapshotId, item.nodeId).catch(() => null)),
+    );
+    const staged: MapEntry[] = [];
+    let bytes = 0;
+    entries.forEach((entry, index) => {
+      if (!entry || entry.protection || !hasCapability(entry, "collect") || !entryNode(entry)) return;
+      if (staleEntry && entryKey(staleEntry) === entryKey(entry)) return;
+      staged.push(entry);
+      bytes += pending[index].reclaimableBytes;
+    });
+    if (staged.length > 0) {
+      setCollector((current) => {
+        const known = new Set(current.map(entryKey));
+        return current.concat(staged.filter((entry) => !known.has(entryKey(entry))));
+      });
+    }
+    return { added: staged.length, bytes };
+  }
+
+  // The bulk action for everything automatic staging deliberately left behind.
+  // Explicit, on a list already on screen -- which is the difference between this
+  // and pre-filling the cart with items that say "look at me".
+  async function stageRemainingAdvice() {
+    if (!advice) return;
+    const staged = await stageAdviceItems((advice.items ?? []).filter((item) => !isCollected(item)), advice.snapshotId);
+    setNotice(staged.added > 0
+      ? "已加入 " + staged.added + " 项 · " + formatBytes(staged.bytes)
+      : "没有可加入的项。");
   }
 
   function stopAdvice() {
@@ -1937,6 +1991,13 @@ export default function App() {
   // authorises anything. Collecting one goes back to the snapshot for the real
   // entry -- the same route an arc from an outer ring takes, and the place
   // capabilities and protection are decided (ADR-0061 §1).
+  // One definition, used by the row's badge and by staging. Two copies of "is
+  // this already in the dock" would eventually disagree, and the visible symptom
+  // would be a suggestion staged twice or a badge that lies.
+  function isCollected(item: AdviceItem): boolean {
+    return collector.some((entry) => entryNode(entry)?.path === item.path);
+  }
+
   async function collectAdviceItem(item: AdviceItem) {
     const snapshotId = advice?.snapshotId ?? 0;
     if (snapshotId <= 0) return;
@@ -2601,9 +2662,11 @@ export default function App() {
                   <h3>
                     {adviceBusy
                       ? "分析中…"
-                      : advice
-                        ? formatBytes(advice.totalBytes) + " 可回收"
-                        : "没有结果"}
+                      : adviceError
+                        ? "分析失败"
+                        : advice
+                          ? formatBytes(advice.totalBytes) + " 可回收"
+                          : "没有结果"}
                   </h3>
                 </div>
                 <div className="advice-head-actions">
@@ -2613,14 +2676,32 @@ export default function App() {
                 </div>
               </header>
 
+              {!adviceBusy && advice && (advice.items ?? []).length > 0 && (
+                <div className="advice-stage">
+                  <span>
+                    {stageSummary(
+                      adviceStaged.added,
+                      formatBytes(adviceStaged.bytes),
+                      (advice.items ?? []).filter((item) => !isCollected(item)).length,
+                    )}
+                  </span>
+                  {(advice.items ?? []).some((item) => !isCollected(item)) && (
+                    <button className="quiet-button" onClick={() => void stageRemainingAdvice()}>
+                      加入其余 {(advice.items ?? []).filter((item) => !isCollected(item)).length} 项
+                    </button>
+                  )}
+                </div>
+              )}
+
               <div className="advice-list">
                 {adviceBusy && <p className="advice-empty">{advisor?.configured ? "正在询问 " + advisor.description + "…" : "正在读取扫描结果…"}</p>}
-                {!adviceBusy && advice && (advice.items ?? []).length === 0 && (
+                {!adviceBusy && adviceError && <p className="advice-empty advice-fault">{adviceError}</p>}
+                {!adviceBusy && !adviceError && advice && (advice.items ?? []).length === 0 && (
                   <p className="advice-empty">没有找到可清理的对象。</p>
                 )}
                 {!adviceBusy && (advice?.items ?? []).map((item) => {
                   const open = adviceDetail === item.nodeId;
-                  const collected = collector.some((entry) => entryNode(entry)?.path === item.path);
+                  const collected = isCollected(item);
                   return (
                     <article key={item.nodeId} className={"advice-item risk-" + item.risk}>
                       <button

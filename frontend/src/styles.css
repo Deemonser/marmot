@@ -541,6 +541,11 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .advice-panel { display: flex; width: min(420px, calc(100vw - 44px)); max-height: min(58vh, 520px); flex-direction: column; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0,0,0,.35); }
 .advice-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 11px 12px 8px; border-bottom: 1px solid #35363d; }
 .advice-head h3 { margin: 0; color: #f1f1f3; font-size: 14px; font-weight: 500; }
+/* Between the header and the list: what was staged for you, and one button for
+   everything that deliberately was not. */
+.advice-stage { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; border-bottom: 1px solid #35363d; color: #96979e; font-size: 9px; line-height: 1.6; }
+.advice-stage span { min-width: 0; }
+.advice-stage .quiet-button { flex: none; }
 .advice-list { min-height: 0; flex: 1; padding: 4px 6px; overflow-y: auto; }
 .advice-empty { margin: 0; padding: 18px 8px; color: #96979e; font-size: 10px; text-align: center; }
 
