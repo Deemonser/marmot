@@ -56,6 +56,13 @@ type EvidencePack struct {
 	// without a source change, or recommendation.NoProject. Computed here, never
 	// asked of a model: it is arithmetic over mtimes.
 	ProjectIdleDays map[int64]int64
+	// GenerationHits maps node ID to the generational rule that offered it: a
+	// version-numbered directory whose newer sibling is the one still in use.
+	// Computed before folding, because the sibling comparison needs every
+	// generation present.
+	GenerationHits map[int64]*recommendation.GenerationRule
+	// generationNote explains, per offered generation, which sibling was kept.
+	generationNote map[int64]string
 }
 
 // BuildEvidencePack assembles the skeleton for one finished snapshot.
@@ -114,6 +121,7 @@ func (s *Service) buildEvidencePackFor(snapshotID, rootID, floor int64, share fl
 			hits[node.ID] = rule
 		}
 	}
+	generations, notes := generationHits(result.Nodes, now)
 	nodes := foldUnderSettledRules(result.Nodes, hits)
 	return EvidencePack{
 		SnapshotID:       snapshotID,
@@ -126,6 +134,8 @@ func (s *Service) buildEvidencePackFor(snapshotID, rootID, floor int64, share fl
 		Nodes:            nodes,
 		RuleHits:         hits,
 		ProjectIdleDays:  idle,
+		GenerationHits:   generations,
+		generationNote:   notes,
 	}, nil
 }
 
@@ -319,13 +329,52 @@ func (p EvidencePack) RuleFindings() []AdviceItem {
 		}
 		matched = append(matched, node)
 	}
+	// Paths a rule already claims, so a generation can tell an ancestor's claim
+	// (which subsumes it, and is worth more) from a descendant's (which it
+	// subsumes).
+	ruleClaimed := make([]string, 0, len(matched))
+	for _, node := range matched {
+		ruleClaimed = append(ruleClaimed, node.Path)
+	}
+	generations := make([]recommendation.EvidenceNode, 0, len(p.GenerationHits))
+	for id := range p.GenerationHits {
+		node, ok := byID[id]
+		// A generation folded away under a settled ancestor rule is not lost: the
+		// ancestor already offers the bytes, and more of them.
+		if !ok || cleanup.DeleteBlock(node.Path) != "" {
+			continue
+		}
+		if _, alreadyMatched := p.RuleHits[id]; alreadyMatched {
+			continue
+		}
+		// An ancestor rule offers a superset, so it keeps the claim. Folding
+		// usually removes this case before it gets here -- ~/.gradle/caches is one
+		// 33.9 GB leaf on the reference machine, with no version directory left
+		// below it -- but relying on that is relying on a coincidence between two
+		// mechanisms with different conditions.
+		if hasAncestorIn(ruleClaimed, node.Path) {
+			continue
+		}
+		generations = append(generations, node)
+	}
+	// Generations first. A rule firing INSIDE a dead generation is a weaker
+	// statement about the same bytes: ~/.rustup/toolchains/*/share/doc claims 718
+	// of the 1.1 GB in a toolchain that was superseded 55 days ago, and it is more
+	// specific by pattern, so specificity alone handed it the claim and dropped
+	// the whole-generation offer as its ancestor. The user was then shown the
+	// documentation of a toolchain they no longer use, and not the toolchain.
+	matched = append(generations, matched...)
 	// Specific rules claim their bytes before generic ones get the chance, and
 	// only then does the shorter path win. Sorting by path length alone let a
 	// generic ancestor swallow a precise descendant -- which maximises the number
 	// on screen and destroys the only thing that makes it actionable.
 	sort.SliceStable(matched, func(left, right int) bool {
-		leftRule, rightRule := p.RuleHits[matched[left].ID], p.RuleHits[matched[right].ID]
-		leftSpec, rightSpec := leftRule.Specificity(), rightRule.Specificity()
+		leftGeneration := p.GenerationHits[matched[left].ID] != nil
+		rightGeneration := p.GenerationHits[matched[right].ID] != nil
+		if leftGeneration != rightGeneration {
+			return leftGeneration
+		}
+		leftSpec, rightSpec := p.specificityOf(matched[left]), p.specificityOf(matched[right])
 		if leftSpec != rightSpec {
 			return leftSpec > rightSpec
 		}
@@ -343,6 +392,10 @@ func (p EvidencePack) RuleFindings() []AdviceItem {
 			continue
 		}
 		kept = append(kept, node.Path)
+		if generation := p.GenerationHits[node.ID]; generation != nil {
+			findings = append(findings, p.generationFinding(node, generation))
+			continue
+		}
 		rule := p.RuleHits[node.ID]
 		risk := rule.Risk
 		whatBreaks := rule.WhatBreaks
@@ -757,4 +810,108 @@ func formatBytes(value int64) string {
 		return fmt.Sprintf("%.0f%s", size, units[index])
 	}
 	return fmt.Sprintf("%.1f%s", size, units[index])
+}
+
+// specificityOf ranks two findings of the same kind against each other. A
+// generation is pinned down by its parent's literal segments plus the version
+// itself; generations are already ordered ahead of rules by the caller, so this
+// only ever compares generations with generations.
+func (p EvidencePack) specificityOf(node recommendation.EvidenceNode) int {
+	if generation := p.GenerationHits[node.ID]; generation != nil {
+		return len(strings.Split(strings.Trim(generation.Parent, "/"), "/")) + 1
+	}
+	return p.RuleHits[node.ID].Specificity()
+}
+
+// hasAncestorIn reports whether any of the paths strictly contains the target.
+func hasAncestorIn(paths []string, target string) bool {
+	for _, candidate := range paths {
+		if candidate != target && strings.HasPrefix(target, strings.TrimSuffix(candidate, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (p EvidencePack) generationFinding(node recommendation.EvidenceNode, generation *recommendation.GenerationRule) AdviceItem {
+	evidence := nodeEvidence(node, p.GeneratedAt)
+	if note := p.generationNote[node.ID]; note != "" {
+		evidence = append(evidence, note)
+	}
+	return AdviceItem{
+		Recommendation: recommendation.Recommendation{
+			SnapshotID:       p.SnapshotID,
+			NodeID:           node.ID,
+			Source:           recommendation.SourceRule,
+			RuleName:         generation.Name,
+			Category:         generation.Category,
+			ReclaimableBytes: node.OwnedAllocated,
+			Recovery:         generation.Recovery,
+			Risk:             generation.Risk,
+			Confidence:       1,
+			Evidence:         evidence,
+			WhatBreaks:       generation.WhatBreaks,
+			HowToRestore:     generation.HowToRestore,
+		},
+		Name: node.Name,
+		Path: node.Path,
+	}
+}
+
+// generationHits finds version-partitioned directories and decides which of
+// their generations may be offered.
+//
+// The comparison is between siblings, never against an absolute age, because
+// there is no absolute age at which a toolchain becomes junk: what makes a
+// generation dead is that a newer one has taken over. And "newer" alone is not
+// enough either -- see GenerationRule.Offerable.
+func generationHits(nodes []recommendation.EvidenceNode, now time.Time) (map[int64]*recommendation.GenerationRule, map[int64]string) {
+	children := make(map[int64][]recommendation.EvidenceNode, len(nodes))
+	var parents []recommendation.EvidenceNode
+	for _, node := range nodes {
+		children[node.ParentID] = append(children[node.ParentID], node)
+		if node.Kind == "directory" && recommendation.IsGenerationParent(node.Path) != nil {
+			parents = append(parents, node)
+		}
+	}
+
+	hits := make(map[int64]*recommendation.GenerationRule)
+	notes := make(map[int64]string)
+	for _, parent := range parents {
+		rule := recommendation.IsGenerationParent(parent.Path)
+		siblings := make([]recommendation.EvidenceNode, 0, len(children[parent.ID]))
+		for _, child := range children[parent.ID] {
+			if child.Kind == "directory" && rule.IsGeneration(child.Name) {
+				siblings = append(siblings, child)
+			}
+		}
+		// Newest use first. Ties by name so the ordering is deterministic and the
+		// same generation is kept across runs.
+		sort.SliceStable(siblings, func(left, right int) bool {
+			leftAge, rightAge := siblings[left].AgeDays(now), siblings[right].AgeDays(now)
+			if leftAge != rightAge {
+				return leftAge < rightAge
+			}
+			return siblings[left].Name < siblings[right].Name
+		})
+		ages := make([]int64, len(siblings))
+		for index, sibling := range siblings {
+			ages[index] = sibling.AgeDays(now)
+		}
+		offerable := rule.Offerable(ages)
+		if len(offerable) == 0 {
+			continue
+		}
+		keptIndex := rule.KeepNewest - 1
+		if keptIndex < 0 {
+			keptIndex = 0
+		}
+		for _, index := range offerable {
+			hits[siblings[index].ID] = rule
+			notes[siblings[index].ID] = fmt.Sprintf(
+				"同目录共 %d 代，仍在用的 %s 是 %d 天前动过的，这一代 %d 天没动过",
+				len(siblings), siblings[keptIndex].Name, ages[keptIndex], ages[index])
+		}
+	}
+	return hits, notes
 }

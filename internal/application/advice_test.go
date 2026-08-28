@@ -2,6 +2,7 @@ package application
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -433,5 +434,138 @@ func TestProjectActivityProtectsAnActiveProjectsBuildCache(t *testing.T) {
 		if item.NodeID == build.ID && item.Risk != recommendation.RiskSafe {
 			t.Fatalf("a build cache in a project idle 600 days is still %q", item.Risk)
 		}
+	}
+}
+
+// End to end over the shape actually measured in ~/.rustup/toolchains: the
+// superseded generations become findings, the live one does not, and the finding
+// says which sibling it compared against.
+func TestRuleFindingsOfferSupersededGenerations(t *testing.T) {
+	aged := func(id, parent int64, path, name string, bytes int64, days int) recommendation.EvidenceNode {
+		node := evidenceNode(id, parent, path, name, "directory", bytes, bytes)
+		node.NewestModified = time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+		return node
+	}
+	service, _ := serviceWithEvidence(recommendation.EvidenceResult{
+		Root: "/Users/alice", FloorBytes: 1 << 20,
+		Nodes: []recommendation.EvidenceNode{
+			evidenceNode(1, 0, "/Users/alice", "alice", "directory", 4*gb, 0),
+			evidenceNode(2, 1, "/Users/alice/.rustup/toolchains", "toolchains", "directory", 4*gb, 0),
+			aged(3, 2, "/Users/alice/.rustup/toolchains/stable-aarch64-apple-darwin", "stable-aarch64-apple-darwin", 1454<<20, 4),
+			aged(4, 2, "/Users/alice/.rustup/toolchains/1.91.0-aarch64-apple-darwin", "1.91.0-aarch64-apple-darwin", 1225<<20, 57),
+			aged(5, 2, "/Users/alice/.rustup/toolchains/1.89.0-aarch64-apple-darwin", "1.89.0-aarch64-apple-darwin", 1207<<20, 59),
+		},
+	})
+	pack, err := service.BuildEvidencePack(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offered := map[string]AdviceItem{}
+	for _, item := range pack.RuleFindings() {
+		offered[item.Name] = item
+	}
+	if _, live := offered["stable-aarch64-apple-darwin"]; live {
+		t.Fatal("the toolchain in use was offered for deletion")
+	}
+	superseded, ok := offered["1.89.0-aarch64-apple-darwin"]
+	if !ok {
+		t.Fatalf("a toolchain superseded 55 days ago was not offered: %v", offered)
+	}
+	if superseded.RuleName != "旧版 Rust 工具链" {
+		t.Fatalf("offered by the wrong rule: %q", superseded.RuleName)
+	}
+	// Without the comparison the row is indistinguishable from a plain age rule,
+	// and the user cannot tell why this generation and not the other.
+	joined := strings.Join(superseded.Evidence, " ")
+	if !strings.Contains(joined, "stable-aarch64-apple-darwin") || !strings.Contains(joined, "4 天") {
+		t.Fatalf("the finding does not name the generation it kept: %q", joined)
+	}
+	if _, ok := offered["1.91.0-aarch64-apple-darwin"]; !ok {
+		t.Fatal("only one of the two superseded toolchains was offered")
+	}
+}
+
+// The bug this pins down: ~/.rustup/toolchains/*/share/doc is a real rule and by
+// pattern it is more specific than the generation containing it, so specificity
+// ordering gave it the claim and then discarded the whole-generation offer as its
+// ancestor. The user saw 718 MB of documentation for a toolchain they had stopped
+// using, and not the 1.1 GB toolchain.
+func TestAGenerationOutranksARuleFiringInsideIt(t *testing.T) {
+	aged := func(id, parent int64, path, name string, bytes int64, days int) recommendation.EvidenceNode {
+		node := evidenceNode(id, parent, path, name, "directory", bytes, bytes)
+		node.NewestModified = time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+		return node
+	}
+	const dead = "/Users/alice/.rustup/toolchains/1.89.0-aarch64-apple-darwin"
+	service, _ := serviceWithEvidence(recommendation.EvidenceResult{
+		Root: "/Users/alice", FloorBytes: 1 << 20,
+		Nodes: []recommendation.EvidenceNode{
+			evidenceNode(1, 0, "/Users/alice", "alice", "directory", 3*gb, 0),
+			evidenceNode(2, 1, "/Users/alice/.rustup/toolchains", "toolchains", "directory", 3*gb, 0),
+			aged(3, 2, "/Users/alice/.rustup/toolchains/stable-aarch64-apple-darwin", "stable-aarch64-apple-darwin", 1454<<20, 4),
+			aged(4, 3, "/Users/alice/.rustup/toolchains/stable-aarch64-apple-darwin/share", "share", 800<<20, 4),
+			aged(5, 4, "/Users/alice/.rustup/toolchains/stable-aarch64-apple-darwin/share/doc", "doc", 794<<20, 4),
+			aged(6, 2, dead, "1.89.0-aarch64-apple-darwin", 1207<<20, 59),
+			aged(7, 6, dead+"/share", "share", 720<<20, 59),
+			aged(8, 6+1, dead+"/share/doc", "doc", 713<<20, 59),
+		},
+	})
+	pack, err := service.BuildEvidencePack(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claimed []string
+	for _, item := range pack.RuleFindings() {
+		claimed = append(claimed, item.Path)
+	}
+	if !slices.Contains(claimed, dead) {
+		t.Fatalf("the superseded toolchain was not offered, only pieces of it: %v", claimed)
+	}
+	if slices.Contains(claimed, dead+"/share/doc") {
+		t.Fatalf("the toolchain and its own documentation were both offered: %v", claimed)
+	}
+	// The live toolchain keeps its safe, specific offer -- the generation rule has
+	// nothing to say about it.
+	if !slices.Contains(claimed, "/Users/alice/.rustup/toolchains/stable-aarch64-apple-darwin/share/doc") {
+		t.Fatalf("the live toolchain's docs stopped being offered: %v", claimed)
+	}
+}
+
+// The other direction. A rule on an ancestor offers a superset, so a generation
+// inside it must not take the claim: ~/.gradle/caches is one 33.9 GB offer on the
+// reference machine, and trading it for a single version directory inside would
+// lose most of the reclaimable space on the disk.
+func TestAnAncestorRuleKeepsItsClaimOverAGeneration(t *testing.T) {
+	aged := func(id, parent int64, path, name string, bytes int64, days int) recommendation.EvidenceNode {
+		node := evidenceNode(id, parent, path, name, "directory", bytes, bytes)
+		node.NewestModified = time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+		return node
+	}
+	service, _ := serviceWithEvidence(recommendation.EvidenceResult{
+		Root: "/Users/alice", FloorBytes: 1 << 20,
+		Nodes: []recommendation.EvidenceNode{
+			evidenceNode(1, 0, "/Users/alice", "alice", "directory", 34*gb, 0),
+			aged(2, 1, "/Users/alice/.gradle/caches", "caches", 34*gb, 0),
+			aged(3, 2, "/Users/alice/.gradle/caches/9.6.1", "9.6.1", 20*gb, 0),
+			aged(4, 2, "/Users/alice/.gradle/caches/8.13", "8.13", 8*gb, 400),
+		},
+	})
+	pack, err := service.BuildEvidencePack(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := pack.RuleFindings()
+	if len(findings) == 0 {
+		t.Fatal("nothing was offered under a rule-covered cache")
+	}
+	if findings[0].Path != "/Users/alice/.gradle/caches" {
+		t.Fatalf("the whole cache lost its claim to something inside it: %s", findings[0].Path)
+	}
+	var total int64
+	for _, item := range findings {
+		total += item.ReclaimableBytes
+	}
+	if total > 34*gb {
+		t.Fatalf("the same bytes were offered twice: %s over a 34GB cache", formatBytes(total))
 	}
 }

@@ -131,6 +131,26 @@ func TestEvidencePackOnARealTree(t *testing.T) {
 			strings.TrimPrefix(item.Path, os.Getenv("HOME")))
 	}
 
+	// Generational cleanup: which version directories were offered, and against
+	// which sibling. A generation offered with no live sibling named above it
+	// would mean the comparison did not happen.
+	t.Log("代际清理（保留仍在用的一代，其余按代际间隔提供）：")
+	var generationBytes int64
+	for _, item := range findings {
+		if item.Category != "旧代际" {
+			continue
+		}
+		generationBytes += item.ReclaimableBytes
+		t.Logf("  %-7s %-9s %-24s %s", item.Risk, humanBytes(item.ReclaimableBytes), item.RuleName,
+			strings.TrimPrefix(item.Path, os.Getenv("HOME")))
+		for _, line := range item.Evidence {
+			if strings.Contains(line, "同目录共") {
+				t.Logf("            %s", line)
+			}
+		}
+	}
+	t.Logf("  代际合计 %s", humanBytes(generationBytes))
+
 	if out := os.Getenv("PROBE_EVIDENCE_OUT"); out != "" {
 		if err := os.WriteFile(out, []byte(text), 0o600); err != nil {
 			t.Fatal(err)
