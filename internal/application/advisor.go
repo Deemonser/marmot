@@ -106,6 +106,7 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 	validation := recommendation.Validate(round.Cleanable(), shown, snapshotID)
 	accepted := validation.Accepted
 	advice.Rejected = append(advice.Rejected, validation.Rejected...)
+	advice.Corrections = append(advice.Corrections, validation.Corrections...)
 	advice.Rounds = 1
 
 	// Round two: the regions the advisor itself said it could not classify.
@@ -130,6 +131,7 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 				secondValidation := recommendation.Validate(second.Cleanable(), expandedShown, snapshotID)
 				accepted = append(accepted, secondValidation.Accepted...)
 				advice.Rejected = append(advice.Rejected, secondValidation.Rejected...)
+				advice.Corrections = append(advice.Corrections, secondValidation.Corrections...)
 				advice.Rounds = 2
 			}
 		}
@@ -148,6 +150,7 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 		}
 	}
 	advice.RejectedSummary = recommendation.RejectionSummary(advice.Rejected)
+	advice.CorrectionSummary = correctionSummary(advice.Corrections)
 	return advice, nil
 }
 
@@ -257,6 +260,16 @@ func expansionsFor(requested []recommendation.Verdict, focus []int64) []recommen
 // with at all -- suggested, expanded, or explicitly declined. A row that appears
 // in none of the three was passed over without saying so, which is the failure
 // the skipped list exists to make visible.
+
+// correctionSummary names what was overridden. Shown, not absorbed: a tool that
+// says "the model called your photo library regenerable and I disagreed" is
+// telling the user something they need to know about how much to trust it.
+func correctionSummary(corrections []recommendation.Correction) string {
+	if len(corrections) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d 条被判为可恢复，但实际删除后无法找回，已改标为不可恢复", len(corrections))
+}
 
 func indexLabelledNodes(pack EvidencePack) map[int64]recommendation.EvidenceNode {
 	labels := pack.RowLabels()

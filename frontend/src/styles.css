@@ -623,3 +623,10 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .advice-gear { color: #85868d; font-size: 10px; font-weight: 600; letter-spacing: .04em; }
 .advice-gear.is-on { color: #6f9ede; }
 .advisor-fault { margin: 0; padding: 7px 9px; border-radius: 5px; background: #3a3226; color: #e5cc91; font-size: 9px; line-height: 1.6; }
+
+/* Recoverability is the axis a person actually decides on, so it is coloured and
+   risk is not: everything regenerable costs at most a download, and only
+   `irreplaceable` is a decision that cannot be walked back. */
+.advice-tag.is-recovery { font-weight: 600; }
+.advice-tag.recovery-regenerable, .advice-tag.recovery-redownloadable { background: #2b3a2e; color: #a6cfa8; }
+.advice-tag.recovery-irreplaceable { background: #46281f; color: #f0b3a3; }

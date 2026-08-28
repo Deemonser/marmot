@@ -108,10 +108,27 @@ func (r AdvisorResult) Coverage(asked []int64) (total, answered int) {
 // look-ins is a fixed bound (ADR-0061 §6).
 const MaxExpansions = 8
 
+// Correction is a recoverability claim that was wrong and has been overridden.
+//
+// This is the error class that matters. Reinstalling Flutter to reclaim 2.4 GB
+// costs a download; deleting a photo library costs the photos. Everything else
+// the advisor can get wrong is recoverable by waiting, so a wrong `regenerable`
+// on something permanent is the one mistake that cannot be walked back -- and
+// the rate of it is the number that decides whether this feature may ship.
+type Correction struct {
+	NodeID          int64
+	Path            string
+	ClaimedRecovery string
+	Reason          string
+}
+
 // Validation is the outcome of checking a round's verdicts.
 type Validation struct {
 	Accepted []Recommendation
 	Rejected []Rejection
+	// Corrections are claims that were overridden rather than discarded: the
+	// object may still be worth showing, with the truth attached.
+	Corrections []Correction
 }
 
 // Validate turns cleanable verdicts into recommendations, or into recorded
@@ -185,6 +202,21 @@ func Validate(verdicts []Verdict, shown map[int64]EvidenceNode, snapshotID int64
 			continue
 		}
 		accepted = append(accepted, item.node.Path)
+		recovery := Recovery(item.verdict.Recovery)
+		risk := Risk(item.verdict.Risk)
+		whatBreaks := strings.TrimSpace(item.verdict.WhatBreaks)
+		// A wrong recoverability claim is corrected, not believed and not thrown
+		// away. Being told the rule in the prompt is not the same as complying
+		// with it, and this is the one class of mistake that is permanent.
+		if reason := IrreplaceableReason(item.node.Path); reason != "" && recovery != RecoveryIrreplaceable {
+			result.Corrections = append(result.Corrections, Correction{
+				NodeID: item.node.ID, Path: item.node.Path,
+				ClaimedRecovery: item.verdict.Recovery, Reason: reason,
+			})
+			recovery = RecoveryIrreplaceable
+			risk = RiskRisky
+			whatBreaks = strings.TrimSpace(IrreplaceableMessage(reason) + " " + whatBreaks)
+		}
 		result.Accepted = append(result.Accepted, Recommendation{
 			SnapshotID: snapshotID,
 			NodeID:     item.node.ID,
@@ -193,11 +225,11 @@ func Validate(verdicts []Verdict, shown map[int64]EvidenceNode, snapshotID int64
 			// The snapshot's own figure, always. The advisor was never asked for
 			// one, so there is nothing to reconcile.
 			ReclaimableBytes: item.node.OwnedAllocated,
-			Recovery:         Recovery(item.verdict.Recovery),
-			Risk:             Risk(item.verdict.Risk),
+			Recovery:         recovery,
+			Risk:             risk,
 			Confidence:       item.verdict.Confidence,
 			Evidence:         trimAll(item.verdict.Evidence),
-			WhatBreaks:       strings.TrimSpace(item.verdict.WhatBreaks),
+			WhatBreaks:       whatBreaks,
 			HowToRestore:     strings.TrimSpace(item.verdict.HowToRestore),
 		})
 	}

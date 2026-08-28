@@ -16,6 +16,12 @@ export interface Advice {
     "rejectedSummary": string;
 
     /**
+     * CorrectionSummary reports recoverability claims that were overridden --
+     * the one error class that cannot be undone by waiting.
+     */
+    "correctionSummary": string;
+
+    /**
      * AdvisorError is a failed round trip. The rule findings still stand.
      */
     "advisorError": string;

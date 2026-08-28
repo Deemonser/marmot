@@ -1,22 +1,45 @@
 # R-063 建议标注表
 #
-# 只填第一列。问题不是「这东西该不该删」——那要求你预测自己未来还用不用它，
-# 很多时候确实答不上来。问题是：
+# 只填第一列。问题不是「这东西该不该删」——那要求你预测自己未来还用不用它。
+# 也不是「你介不介意」——那还是偏好。问题是一个事实问题：
 #
-#     如果 Marmot 按它给的判定把这个对象删了，你会不会难受？
+#     它给的 recovery 判断对不对？删了之后真的能按它说的方式回来吗？
 #
-#   ok     = 不会。删了我不在意
-#   bad    = 会。删了我会难受 / 会出事   ← 这一条就是缺陷
-#   unsure = 光看它给的说明，我判断不了
+#   ok     = 对。删了确实能重建/重新下载/重装回来
+#   bad    = 错。删了就没了，或者恢复代价远超它说的   ← 这一条就是缺陷
+#   unsure = 我不知道这东西删了能不能回来
 #
-# unsure 不是「没做完」，它是一个真实指标：模型把某个东西判成 safe 却没能给出
-# 让你放心的理由，那这条建议本来就不该是 safe。
-# 答不上来的可以留空，只在有标注的子集上算比例，一样有效。
+# 为什么问这个：可恢复的东西判错了，最坏结果是多等一次下载；
+# 不可恢复的东西被说成可恢复，是唯一无法挽回的错误。重装整个工具链
+# （Flutter、Rust）算完全可接受的恢复方式，那种不要标 bad。
 #
-# 优先看 risk=safe 的那些：模型说「安全」的东西如果你标 bad，那是最严重的缺陷。
-# risk=review/risky 的模型本来就在说「你自己看」，标 bad 不算它错。
+# unsure 不是「没做完」：如果连你都不知道它能不能回来，那这条建议
+# 给出的 recovery 判断就没有依据。答不上来的可以留空。
 #
 # risk_runs 显示三次运行分别判成什么。带 | 的是它自己都拿不定主意的对象。
-# 共 0 条，来自 1 次运行的去重合并。其余列不要改，自动评分按 node_id 对齐。
 #
-label	node_id	bytes	risk	risk_runs	seen_runs	category	path	contents	evidence	what_breaks	how_to_restore
+# 自动评分按 **path** 对齐，不按 node_id：node_id 是每次扫描重新编号的，
+# 重扫一次同一个路径就是另一个 id，按它对齐的标注跨扫描全部失效。
+# 共 20 条，来自 3 次运行的去重合并。其余列不要改。
+#
+label	node_id	bytes	recovery	risk	risk_runs	seen_runs	category	path	contents	what_breaks	how_to_restore
+	40663	3.3GB	redownloadable	review	review×3	3/3	音乐应用缓存	/Users/deemo/Library/Containers/com.soda.music/Data/Library/Application Support/SodaMusic/LunaCacheV2	1071 文件 / 1 目录；.bin 3.3GB，.db 4.4MB，.db-lock 36KB	SodaMusic 的缓存/离线播放内容会丢失，播放时需要重新下载	打开 SodaMusic 重新播放或重新下载；若为离线歌曲则在应用内重新下载
+	925963	2.4GB	redownloadable	safe	safe×3	3/3	Flutter 引擎缓存	/Users/deemo/dev/flutter/bin/cache/artifacts/engine	531 文件 / 156 目录；darwin-x64-release 513.1MB，ios-release 422.5MB，ios 254.8MB	下次 flutter 构建/运行会提示重新下载引擎构件，首次会等待下载	运行 flutter doctor 或任意 flutter 命令，SDK 会自动重新下载引擎
+	11849	1GB	regenerable	review	review×1|safe×2	3/3	代码索引数据库	/Users/deemo/AndroidStudioProjects/luffa2/.codegraph/codegraph.db	1 文件 / 0 目录；.db 1GB	Codegraph/IDE 的代码索引、符号跳转会暂时失效，需要重新扫描	运行 codegraph 或让 IDE 重新索引该目录，会重建索引库
+	1104364	980.6MB	regenerable	safe	safe×3	3/3	Gradle 执行历史	/Users/deemo/AndroidStudioProjects/android/.gradle/8.7/executionHistory/executionHistory.bin	1 文件 / 0 目录；.bin 980.6MB	下次 Gradle 构建时需重新计算增量/执行历史，首次构建可能变慢	运行任意 Gradle 构建会自动重新生成 executionHistory.bin
+	858622	820.9MB	regenerable	safe	safe×3	3/3	Android Gradle transform 缓存	/Users/deemo/AndroidStudioProjects/zymix-im-android-cloud/zymix-model/build/.transforms	180 文件 / 101 目录；.dex 820.8MB，.bin 80KB	下次 Gradle 构建需要重新执行 transform，首次构建耗时增加	执行 Gradle 构建会自动重新生成 .transforms
+	374596	778.9MB	redownloadable	review	review×1|safe×2	3/3	Rust 离线文档	/Users/deemo/.rustup/toolchains/stable-aarch64-apple-darwin/share/doc/rust/html	52024 文件 / 1460 目录；core 335.4MB	rustup doc 的本地文档将不可用，需要访问在线文档或重新安装 rust-docs 组件	运行 rustup component add rust-docs 或 rustup toolchain reinstall 重新获取
+	1306423	778.1MB	redownloadable	review	review×1|safe×1	2/3	系统屏保缓存视频	/Users/deemo/Library/Application Support/com.apple.wallpaper/aerials/videos/8A57476A-E177-4AAD-B317-643F681584E1.mov	1 文件 / 0 目录；.mov 778.1MB	macOS 动态壁纸/屏保的该视频可能不再显示，需要重新下载	在系统设置中重新选择动态壁纸，或由 macOS 自动重新下载
+	878	745.7MB	regenerable	review	review×2	2/3	Codex 应用日志数据库	/Users/deemo/.codex/logs_2.sqlite	1 文件 / 0 目录；.sqlite 745.7MB	Codex 的历史日志查询/调试记录会丢失，但不影响代码生成功能	无需恢复；Codex 会在后续运行中重建新的日志数据库
+	1287991	705.7MB	redownloadable	review	review×1|safe×2	3/3	Chrome 扩展安装包缓存	/Users/deemo/Library/Application Support/Google/GoogleUpdater/crx_cache/7fec8ae7233b32ff692d63fce83784b79d4cde27517e8eeb18d0e42aee7769ba	1 文件 / 0 目录； 705.7MB	对应 Chrome 扩展的更新缓存丢失，下次更新/重装扩展需重新下载	让 Chrome/Google 更新程序重新下载该扩展包
+	323034	705.2MB	redownloadable	review	review×1|safe×2	3/3	Rust 离线文档	/Users/deemo/.rustup/toolchains/1.91.0-aarch64-apple-darwin/share/doc/rust/html	49221 文件 / 1353 目录；core 312.5MB	该工具链的本地 rust 文档不可用	运行 rustup component add rust-docs --toolchain 1.91.0-aarch64-apple-darwin 或重新安装工具链
+	325012	700.7MB	redownloadable	review	review×1|safe×2	3/3	Rust 离线文档	/Users/deemo/.rustup/toolchains/1.89.0-aarch64-apple-darwin/share/doc/rust/html	47079 文件 / 1315 目录；core 323.9MB	该工具链的本地 rust 文档不可用	运行 rustup component add rust-docs --toolchain 1.89.0-aarch64-apple-darwin 或重新安装工具链
+	175855	630.7MB	regenerable	safe	safe×3	3/3	Cargo/Rust 编译依赖产物	/Users/deemo/CodeProjects/StarChat/target/aarch64-linux-android/debug/deps	672 文件 / 1 目录；libstarchat_iroh_ffi-6cbd9b74f37573ec.a 179MB	下次 cargo 构建会重新编译这些依赖，编译时间增加	运行 cargo build 会自动重新生成 deps
+	851361	455MB	regenerable	safe	safe×3	3/3	Android Gradle transform 缓存	/Users/deemo/AndroidStudioProjects/zymix-im-android-cloud/zymix-chat/build/.transforms	112 文件 / 281 目录；.dex 454.8MB，.bin 224KB	下次 Gradle 构建需重新执行 transform，构建时间变长	运行 Gradle 构建即可重新生成
+	1399762	438.5MB	irreplaceable	risky	risky×3	3/3	Git 临时 pack 文件	/Users/deemo/AndroidStudioProjects/nook/.git/objects/pack/tmp_pack_Z8vjYY	1 文件 / 0 目录； 438.5MB	这是版本库历史。即使远端可能有副本，本工具无法确认，删除后可能永久丢失未推送的提交。 若存在未完成的 git 打包/垃圾回收进程，删除可能影响该操作；通常是残留临时文件，删除后 git 会重新整理	运行 git gc / git repack 重新生成对象包；如果仓库有远程，也可重新克隆恢复
+	1306454	425.5MB	redownloadable	review	review×2|safe×1	3/3	pnpm 内容寻址存储缓存	/Users/deemo/Library/pnpm/store/v11/files	7141 文件 / 257 目录； 425.5MB	pnpm 安装依赖时可能需要重新下载对应包；已有 node_modules 通常不受影响	在项目目录运行 pnpm install，会按需要重新获取并填充 store
+	906535	408.3MB	regenerable	safe	safe×3	3/3	Gradle 执行历史	/Users/deemo/AndroidStudioProjects/zymix-im-android-cloud/.gradle/8.13/executionHistory/executionHistory.bin	1 文件 / 0 目录；.bin 408.3MB	下次 Gradle 构建会重新计算任务执行历史，增量判断暂时失效	运行 Gradle 构建会自动重新生成
+	1016568	380.7MB	redownloadable	review	review×1|safe×2	3/3	Android 构建产物 APK	/Users/deemo/AndroidStudioProjects/zymix-im-android-cloud/app/build/outputs/apk/dev/debug/app-dev-debug.apk	1 文件 / 0 目录；.apk 380.7MB	缺少可以直接安装的 debug APK；需要重新构建才能安装/分发	运行 ./gradlew assembleDevDebug 重新构建生成
+	1251	357.8MB	redownloadable	review	review×1|safe×2	3/3	JetBrains JBR SDK 安装包缓存	/Users/deemo/.gradle/jdks/jbrsdk_jcef-21-JetBrains-21.0.11-osx-aarch64-b1163.116.tar.gz	1 文件 / 0 目录；.gz 357.8MB	如果之后需要重装该 JBR/JCEF SDK，需要重新下载；已安装的 SDK 不受影响	从 JetBrains 或 Gradle JDK 配置中重新下载/安装对应 .tar.gz
+	935305	349.6MB	redownloadable	safe	safe×3	3/3	Dart SDK 快照缓存	/Users/deemo/dev/flutter/bin/cache/dart-sdk/bin/snapshots	15 文件 / 1 目录；.snapshot 349.6MB	Dart/Flutter 工具首次启动时需要重新生成/下载快照，启动变慢	运行 flutter/dart 命令会自动重建或从 SDK 缓存重新获取
+	1052108	321MB	redownloadable	review	review×2	2/3	Android 发布 APK 构建产物	/Users/deemo/AndroidStudioProjects/android/app/develop/release/luffa_release_v1.1.291.apk	1 文件 / 0 目录；.apk 321MB	该版本的发布 APK 文件消失；如需安装/分发需重新构建	从对应 git tag/分支重新构建 release APK，或从 CI/发布渠道重新获取

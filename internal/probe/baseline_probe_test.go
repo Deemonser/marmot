@@ -93,6 +93,8 @@ func TestAdvisorBaseline(t *testing.T) {
 
 	observed := []marmotapp.AdviceItem{}
 	riskByNode := map[int64]map[string]int{}
+	recoveryByPath := map[string]map[string]int{}
+	corrections := 0
 	seenByRun := []map[int64]bool{}
 
 	for run := 1; run <= runs; run++ {
@@ -116,8 +118,15 @@ func TestAdvisorBaseline(t *testing.T) {
 				riskByNode[item.NodeID] = map[string]int{}
 			}
 			riskByNode[item.NodeID][string(item.Risk)]++
+			// Keyed by path: recoverability is the axis a person decides on, and
+			// node ids change with every scan.
+			if recoveryByPath[item.Path] == nil {
+				recoveryByPath[item.Path] = map[string]int{}
+			}
+			recoveryByPath[item.Path][string(item.Recovery)]++
 		}
 		seenByRun = append(seenByRun, present)
+		corrections += len(advice.Corrections)
 		coverage := 0.0
 		if advice.TopRows > 0 {
 			coverage = float64(advice.TopRowsAccounted) / float64(advice.TopRows) * 100
@@ -126,9 +135,16 @@ func TestAdvisorBaseline(t *testing.T) {
 			run, time.Since(start).Seconds(), advice.Rounds, advice.Expanded, advisorItems,
 			len(advice.Rejected), advice.RejectedSummary,
 			advice.TopRows, advice.TopRowsAccounted, coverage, faultSuffix(advice.AdvisorError))
+		if advice.CorrectionSummary != "" {
+			t.Logf("        纠正：%s", advice.CorrectionSummary)
+			for _, item := range advice.Corrections {
+				t.Logf("          %s ← 模型判 %s，守卫判 %s", item.Path, item.ClaimedRecovery, item.Reason)
+			}
+		}
 	}
 
 	reportStability(t, seenByRun, riskByNode)
+	reportRecoveryDrift(t, recoveryByPath, corrections)
 	reportCitations(t, observed, packText)
 	writeLabelSheet(t, observed, riskByNode, runs, describeContents(pack))
 }
@@ -232,6 +248,33 @@ func reportStability(t *testing.T, seenByRun []map[int64]bool, riskByNode map[in
 			}
 		}
 	}
+}
+
+// reportRecoveryDrift measures the axis that now decides everything. Risk drift
+// was being reported while recoverability was the field a person actually acts
+// on -- measuring the demoted axis and not the promoted one.
+func reportRecoveryDrift(t *testing.T, byPath map[string]map[string]int, corrections int) {
+	t.Helper()
+	drifting := make([]string, 0, 4)
+	for path, kinds := range byPath {
+		if len(kinds) > 1 {
+			labels := make([]string, 0, len(kinds))
+			for kind, count := range kinds {
+				labels = append(labels, fmt.Sprintf("%s×%d", kind, count))
+			}
+			sort.Strings(labels)
+			drifting = append(drifting, fmt.Sprintf("%s  %s", strings.Join(labels, " / "), path))
+		}
+	}
+	sort.Strings(drifting)
+	t.Logf("恢复性漂移：%d / %d 个对象在不同运行里被判成不同的可恢复性", len(drifting), len(byPath))
+	for index, line := range drifting {
+		if index >= 8 {
+			break
+		}
+		t.Logf("   %s", line)
+	}
+	t.Logf("守卫纠正：%d 次（模型说可恢复、已知清单说删了就没了）", corrections)
 }
 
 func jaccard(left, right map[int64]bool) float64 {
@@ -368,21 +411,21 @@ func writeLabelSheet(t *testing.T, items []marmotapp.AdviceItem, riskByNode map[
 	var out strings.Builder
 	out.WriteString("# R-063 建议标注表\n")
 	out.WriteString("#\n")
-	out.WriteString("# 只填第一列。问题不是「这东西该不该删」——那要求你预测自己未来还用不用它，\n")
-	out.WriteString("# 很多时候确实答不上来。问题是：\n")
+	out.WriteString("# 只填第一列。问题不是「这东西该不该删」——那要求你预测自己未来还用不用它。\n")
+	out.WriteString("# 也不是「你介不介意」——那还是偏好。问题是一个事实问题：\n")
 	out.WriteString("#\n")
-	out.WriteString("#     如果 Marmot 按它给的判定把这个对象删了，你会不会难受？\n")
+	out.WriteString("#     它给的 recovery 判断对不对？删了之后真的能按它说的方式回来吗？\n")
 	out.WriteString("#\n")
-	out.WriteString("#   ok     = 不会。删了我不在意\n")
-	out.WriteString("#   bad    = 会。删了我会难受 / 会出事   ← 这一条就是缺陷\n")
-	out.WriteString("#   unsure = 光看它给的说明，我判断不了\n")
+	out.WriteString("#   ok     = 对。删了确实能重建/重新下载/重装回来\n")
+	out.WriteString("#   bad    = 错。删了就没了，或者恢复代价远超它说的   ← 这一条就是缺陷\n")
+	out.WriteString("#   unsure = 我不知道这东西删了能不能回来\n")
 	out.WriteString("#\n")
-	out.WriteString("# unsure 不是「没做完」，它是一个真实指标：模型把某个东西判成 safe 却没能给出\n")
-	out.WriteString("# 让你放心的理由，那这条建议本来就不该是 safe。\n")
-	out.WriteString("# 答不上来的可以留空，只在有标注的子集上算比例，一样有效。\n")
+	out.WriteString("# 为什么问这个：可恢复的东西判错了，最坏结果是多等一次下载；\n")
+	out.WriteString("# 不可恢复的东西被说成可恢复，是唯一无法挽回的错误。重装整个工具链\n")
+	out.WriteString("# （Flutter、Rust）算完全可接受的恢复方式，那种不要标 bad。\n")
 	out.WriteString("#\n")
-	out.WriteString("# 优先看 risk=safe 的那些：模型说「安全」的东西如果你标 bad，那是最严重的缺陷。\n")
-	out.WriteString("# risk=review/risky 的模型本来就在说「你自己看」，标 bad 不算它错。\n")
+	out.WriteString("# unsure 不是「没做完」：如果连你都不知道它能不能回来，那这条建议\n")
+	out.WriteString("# 给出的 recovery 判断就没有依据。答不上来的可以留空。\n")
 	out.WriteString("#\n")
 	out.WriteString("# risk_runs 显示三次运行分别判成什么。带 | 的是它自己都拿不定主意的对象。\n")
 	out.WriteString("#\n")
@@ -390,20 +433,20 @@ func writeLabelSheet(t *testing.T, items []marmotapp.AdviceItem, riskByNode map[
 	out.WriteString("# 重扫一次同一个路径就是另一个 id，按它对齐的标注跨扫描全部失效。\n")
 	fmt.Fprintf(&out, "# 共 %d 条，来自 %d 次运行的去重合并。其余列不要改。\n", len(ordered), runs)
 	out.WriteString("#\n")
-	out.WriteString("label\tnode_id\tbytes\trisk\trisk_runs\tseen_runs\tcategory\tpath\tcontents\tevidence\twhat_breaks\thow_to_restore\n")
+	out.WriteString("label\tnode_id\tbytes\trecovery\trisk\trisk_runs\tseen_runs\tcategory\tpath\tcontents\twhat_breaks\thow_to_restore\n")
 	for _, entry := range ordered {
 		risks := make([]string, 0, len(entry.risks))
 		for risk, count := range entry.risks {
 			risks = append(risks, fmt.Sprintf("%s×%d", risk, count))
 		}
 		sort.Strings(risks)
-		fmt.Fprintf(&out, "\t%d\t%s\t%s\t%s\t%d/%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			entry.item.NodeID, humanBytes(entry.item.ReclaimableBytes), entry.item.Risk,
+		fmt.Fprintf(&out, "\t%d\t%s\t%s\t%s\t%s\t%d/%d\t%s\t%s\t%s\t%s\t%s\n",
+			entry.item.NodeID, humanBytes(entry.item.ReclaimableBytes),
+			entry.item.Recovery, entry.item.Risk,
 			strings.Join(risks, "|"), entry.seen, runs,
 			clean(entry.item.Category), clean(entry.item.Path),
 			clean(contents[entry.item.NodeID]),
-			clean(strings.Join(entry.item.Evidence, " · ")), clean(entry.item.WhatBreaks),
-			clean(entry.item.HowToRestore))
+			clean(entry.item.WhatBreaks), clean(entry.item.HowToRestore))
 	}
 	// An empty result must not overwrite a good sheet. Learned the hard way: a
 	// run that failed on a 402 wrote a zero-row file over a 26-row one that had

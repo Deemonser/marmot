@@ -1,6 +1,7 @@
 package recommendation
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -223,5 +224,89 @@ func TestCoverageCountsUnansweredCandidates(t *testing.T) {
 	}
 	if len(result.Cleanable()) != 1 || len(result.Unresolved()) != 0 {
 		t.Fatalf("verdict partition is wrong: %#v", result)
+	}
+}
+
+// The one error class that cannot be walked back. Reinstalling a toolchain costs
+// a download; a photo library costs the photos. A wrong recoverability claim is
+// therefore corrected in place and counted, not believed and not silently
+// dropped -- dropping it would hide both the object and the mistake.
+func TestValidateCorrectsWrongRecoverabilityClaims(t *testing.T) {
+	cases := map[string]string{
+		"/Users/a/Pictures/Trip":                                 IrreplaceableUserContent,
+		"/Users/a/work/thing/.git":                               IrreplaceableRepository,
+		"/Users/a/Library/Application Support/MobileSync/Backup": IrreplaceableBackup,
+		"/Users/a/Library/Containers/com.x/Data/Documents":       IrreplaceableUserContent,
+		"/Users/a/vm/ubuntu.qcow2":                               IrreplaceableVirtualDisk,
+		"/Users/a/.ssh":                                          IrreplaceableCredentials,
+	}
+	for path, wantReason := range cases {
+		target := node(1, path, "thing", 5_000_000_000)
+		suggestion := goodSuggestion(1, "thing")
+		suggestion.Recovery = string(RecoveryRegenerable)
+		suggestion.Risk = string(RiskSafe)
+
+		result := Validate([]Verdict{suggestion}, shownNodes(target), 7)
+		if len(result.Accepted) != 1 {
+			t.Fatalf("%s: expected the object to survive with the truth attached, got %#v", path, result.Rejected)
+		}
+		item := result.Accepted[0]
+		if item.Recovery != RecoveryIrreplaceable {
+			t.Fatalf("%s: recovery left as %q", path, item.Recovery)
+		}
+		if item.Risk != RiskRisky {
+			t.Fatalf("%s: risk left as %q", path, item.Risk)
+		}
+		if len(result.Corrections) != 1 || result.Corrections[0].Reason != wantReason {
+			t.Fatalf("%s: corrections are %#v, expected reason %q", path, result.Corrections, wantReason)
+		}
+		if !strings.Contains(item.WhatBreaks, "无法") && !strings.Contains(item.WhatBreaks, "唯一") &&
+			!strings.Contains(item.WhatBreaks, "整个") && !strings.Contains(item.WhatBreaks, "永久") {
+			t.Fatalf("%s: the correction did not reach what_breaks: %q", path, item.WhatBreaks)
+		}
+	}
+}
+
+// A correct claim is left alone, and a recoverable object is not dragged into
+// the irreplaceable bucket by an over-eager guard.
+func TestValidateLeavesSoundRecoverabilityClaimsAlone(t *testing.T) {
+	for _, path := range []string{
+		"/Users/a/dev/flutter/bin/cache/artifacts/engine",
+		"/Users/a/.rustup/toolchains/stable/share/doc",
+		"/Users/a/work/thing/build/intermediates",
+		"/Users/a/Library/Caches/com.example",
+	} {
+		result := Validate([]Verdict{goodSuggestion(1, "thing")}, shownNodes(node(1, path, "thing", 100)), 7)
+		if len(result.Corrections) != 0 {
+			t.Fatalf("%s was corrected but is recoverable: %#v", path, result.Corrections)
+		}
+		if len(result.Accepted) != 1 || result.Accepted[0].Recovery != RecoveryRegenerable {
+			t.Fatalf("%s: a sound claim was altered: %#v", path, result.Accepted)
+		}
+	}
+}
+
+// A stale temp pack is not repository history. The .git rule fired on one
+// measured at 438 MB and labelled it permanent, which is wrong in the cautious
+// direction -- still wrong. The carve-out is two literal prefixes, not a
+// pattern, because broad exceptions are how safety guards acquire holes.
+func TestIrreplaceableSkipsGitTransientArtifacts(t *testing.T) {
+	for _, path := range []string{
+		"/Users/a/work/thing/.git/objects/pack/tmp_pack_Z8vjYY",
+		"/Users/a/work/thing/.git/objects/pack/tmp_idx_abc123",
+	} {
+		if reason := IrreplaceableReason(path); reason != "" {
+			t.Fatalf("%s was called %q but git abandoned it", path, reason)
+		}
+	}
+	// Everything else under .git stays permanent, including a real pack.
+	for _, path := range []string{
+		"/Users/a/work/thing/.git",
+		"/Users/a/work/thing/.git/objects/pack/pack-abc.pack",
+		"/Users/a/work/thing/.git/objects",
+	} {
+		if IrreplaceableReason(path) != IrreplaceableRepository {
+			t.Fatalf("%s is repository history and must stay irreplaceable", path)
+		}
 	}
 }

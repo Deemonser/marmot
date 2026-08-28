@@ -241,6 +241,11 @@ type Advice struct {
 	// rather than dropped silently (ADR-0061 §7.5).
 	Rejected        []recommendation.Rejection
 	RejectedSummary string
+	// Corrections are recoverability claims that were overridden. This is the
+	// error class that cannot be undone by waiting, so it is reported rather
+	// than absorbed.
+	Corrections       []recommendation.Correction
+	CorrectionSummary string
 	// AdvisorError is a round trip that failed. The rule findings still stand,
 	// so this is reported alongside them rather than instead of them.
 	AdvisorError string

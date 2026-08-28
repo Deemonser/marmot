@@ -274,7 +274,7 @@ function formatBytes(value: number): string {
 const recoveryLabels: Record<string, string> = {
   regenerable: "会自动重建",
   redownloadable: "可重新下载",
-  irreplaceable: "无法恢复",
+  irreplaceable: "删了就没了",
 };
 
 const riskLabels: Record<string, string> = {
@@ -2638,8 +2638,14 @@ export default function App() {
                       <div className="advice-tags">
                         <span className="advice-tag">{item.ruleName || item.category}</span>
                         {item.source === "advisor" && <span className="advice-tag is-ai">AI · {Math.round(item.confidence * 100)}%</span>}
+                        {/* Recoverability leads. It is the axis that decides
+                            whether a suggestion is frightening: reinstalling a
+                            toolchain costs a download, losing a photo library
+                            costs the photos. Risk follows it. */}
+                        <span className={"advice-tag is-recovery recovery-" + item.recovery}>
+                          {recoveryLabels[item.recovery] ?? item.recovery}
+                        </span>
                         <span className="advice-tag">{riskLabels[item.risk] ?? item.risk}</span>
-                        <span className="advice-tag">{recoveryLabels[item.recovery] ?? item.recovery}</span>
                         <button
                           className="advice-collect"
                           disabled={collected}
@@ -2673,6 +2679,7 @@ export default function App() {
                       : <>本轮全部来自本机规则，未联网。</>}
                     {" "}证据 {advice.evidenceNodes} 个节点 / {formatBytes(advice.evidenceBytes)} · 下限{" "}
                     {formatBytes(advice.floorBytes)}
+                    {advice.correctionSummary && <><br /><span className="advice-fault">{advice.correctionSummary}</span></>}
                     {advice.rejectedSummary && <><br />已丢弃：{advice.rejectedSummary}</>}
                     {advice.advisorError && <><br /><span className="advice-fault">{advice.advisorError}</span></>}
                   </span>
