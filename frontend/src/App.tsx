@@ -18,6 +18,9 @@ type PermissionStatus = Models.PermissionStatus;
 type StorageSourceOverview = Models.StorageSourceOverview;
 type CleanupPlan = Models.CleanupPlan;
 type CleanupValidation = Models.CleanupValidation;
+type Advice = Models.Advice;
+type AdviceItem = Models.AdviceItem;
+type EvidencePreview = Models.EvidencePreview;
 // hue is the level's slice of the colour wheel, carried on the crumb so
 // navigating up restores exactly the colours that level had on the way down.
 // HueBand is the stretch of the colour wheel a level's children are spread over.
@@ -261,6 +264,30 @@ function formatBytes(value: number): string {
   if (unit === 0) return size.toFixed(0) + " B";
   const text = size.toFixed(1);
   return (text.endsWith(".0") ? text.slice(0, -2) : text) + " " + units[unit];
+}
+
+// The three answers to "what does it cost me to get this back". Recovery is
+// deliberately separate from risk: a 40 GB build directory is regenerable and
+// deleting it still costs an hour of rebuilding, and the user is entitled to
+// know which of the two they are being asked to accept.
+const recoveryLabels: Record<string, string> = {
+  regenerable: "会自动重建",
+  redownloadable: "可重新下载",
+  irreplaceable: "无法恢复",
+};
+
+const riskLabels: Record<string, string> = {
+  safe: "安全",
+  review: "需确认",
+  risky: "有风险",
+};
+
+// Home paths are shown the way the shell writes them. Only the display is
+// abbreviated: what gets sent to CreateCleanupPlan is always the real path.
+function homePath(path: string): string {
+  const match = /^(?:\/System\/Volumes\/Data)?\/Users\/[^/]+(\/.*)?$/.exec(path);
+  if (!match) return path;
+  return "~" + (match[1] ?? "");
 }
 
 function confidenceLabel(confidence: string): string {
@@ -1317,6 +1344,13 @@ export default function App() {
   const [selectedEntry, setSelectedEntry] = useState<MapEntry | null>(null);
   const [staleEntry, setStaleEntry] = useState<MapEntry | null>(null);
   const [collector, setCollector] = useState<MapEntry[]>([]);
+  const [advice, setAdvice] = useState<Advice | null>(null);
+  const [adviceOpen, setAdviceOpen] = useState(false);
+  const [adviceBusy, setAdviceBusy] = useState(false);
+  // Which suggestion has its reasoning open. One at a time: the panel is a list
+  // to scan, and the explanation is what you open when a row is worth deciding.
+  const [adviceDetail, setAdviceDetail] = useState<number | null>(null);
+  const [evidence, setEvidence] = useState<EvidencePreview | null>(null);
   const [collectorOpen, setCollectorOpen] = useState(false);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
@@ -1599,6 +1633,9 @@ export default function App() {
     setSelectedEntry(null);
     setStaleEntry(null);
     setCollector([]);
+    setAdvice(null);
+    setAdviceOpen(false);
+    setAdviceDetail(null);
     setPlan(null);
     setValidation(null);
     try {
@@ -1806,6 +1843,51 @@ export default function App() {
     }
   }
 
+  // Advice is produced from the finished snapshot on demand. Today the whole
+  // result comes from the local rule catalog and nothing leaves the machine;
+  // when an advisor is wired in it joins these same rows, tagged by source.
+  async function runAdvice() {
+    const snapshotId = mapRef.current?.snapshotId ?? status?.snapshotId ?? 0;
+    if (snapshotId <= 0) {
+      setNotice("请先完成一次扫描。");
+      return;
+    }
+    setAdviceBusy(true);
+    setAdviceOpen(true);
+    try {
+      setAdvice(await MarmotService.GetCleanupAdvice(snapshotId));
+    } catch (error) {
+      setNotice("分析失败：" + String(error));
+      setAdviceOpen(false);
+    } finally {
+      setAdviceBusy(false);
+    }
+  }
+
+  // A suggestion carries a node id and a path for display, and neither
+  // authorises anything. Collecting one goes back to the snapshot for the real
+  // entry -- the same route an arc from an outer ring takes, and the place
+  // capabilities and protection are decided (ADR-0061 §1).
+  async function collectAdviceItem(item: AdviceItem) {
+    const snapshotId = advice?.snapshotId ?? 0;
+    if (snapshotId <= 0) return;
+    try {
+      toggleCollector(await MarmotService.GetNodeEntry(snapshotId, item.nodeId), "add");
+    } catch (error) {
+      setNotice("无法收集该对象：" + String(error));
+    }
+  }
+
+  async function showEvidence() {
+    const snapshotId = advice?.snapshotId ?? mapRef.current?.snapshotId ?? 0;
+    if (snapshotId <= 0) return;
+    try {
+      setEvidence(await MarmotService.PreviewEvidence(snapshotId));
+    } catch (error) {
+      setNotice("无法生成证据包：" + String(error));
+    }
+  }
+
   function activateEntry(entry: MapEntry, geom?: ArcGeom) {
     if (dragSuppressesClick.current) return;
     setFocusedEntry(entry);
@@ -1910,6 +1992,9 @@ export default function App() {
     setSelectedEntry(null);
     setStaleEntry(null);
     setCollector([]);
+    setAdvice(null);
+    setAdviceOpen(false);
+    setAdviceDetail(null);
     setPlan(null);
     setValidation(null);
     setNotice("已放弃扫描结果。结果只存在于内存，重新查看需要再扫描一次。");
@@ -2050,6 +2135,9 @@ export default function App() {
       setPlan(applied);
       if (applied.state === "applied") {
         setCollector([]);
+    setAdvice(null);
+    setAdviceOpen(false);
+    setAdviceDetail(null);
         setNotice("已移入废纸篓，请重新扫描刷新结果");
       } else {
         setNotice(applied.state);
@@ -2429,6 +2517,116 @@ export default function App() {
           </div>
         )}
       </section>}
+
+      {/* The dock sits bottom-left (ADR-0018), so the advice entry takes the
+          opposite corner. The two are a pair: this side proposes, that side
+          stages, and a suggestion crosses between them the same way an arc does
+          -- through the snapshot, never by handing a path straight to a delete. */}
+      {showResult && (
+        <div className={"advice-corner" + (adviceOpen ? " is-open" : "")}>
+          {adviceOpen && (
+            <section className="advice-panel" aria-label="可清理项">
+              <header className="advice-head">
+                <div>
+                  <p className="eyebrow">可清理项</p>
+                  <h3>
+                    {adviceBusy
+                      ? "分析中…"
+                      : advice
+                        ? formatBytes(advice.totalBytes) + " 可回收"
+                        : "没有结果"}
+                  </h3>
+                </div>
+                <button className="quiet-button" onClick={() => setAdviceOpen(false)} aria-label="收起">收起</button>
+              </header>
+
+              <div className="advice-list">
+                {adviceBusy && <p className="advice-empty">正在读取扫描结果…</p>}
+                {!adviceBusy && advice && (advice.items ?? []).length === 0 && (
+                  <p className="advice-empty">没有找到可清理的对象。</p>
+                )}
+                {!adviceBusy && (advice?.items ?? []).map((item) => {
+                  const open = adviceDetail === item.nodeId;
+                  const collected = collector.some((entry) => entryNode(entry)?.path === item.path);
+                  return (
+                    <article key={item.nodeId} className={"advice-item risk-" + item.risk}>
+                      <button
+                        className="advice-summary"
+                        onClick={() => setAdviceDetail(open ? null : item.nodeId)}
+                        aria-expanded={open}
+                      >
+                        <span className="advice-risk" aria-hidden="true" />
+                        <span className="advice-text">
+                          <strong>{item.name}</strong>
+                          <span className="advice-path">{homePath(item.path)}</span>
+                        </span>
+                        <span className="advice-size">{formatBytes(item.reclaimableBytes)}</span>
+                      </button>
+                      <div className="advice-tags">
+                        <span className="advice-tag">{item.ruleName || item.category}</span>
+                        <span className="advice-tag">{riskLabels[item.risk] ?? item.risk}</span>
+                        <span className="advice-tag">{recoveryLabels[item.recovery] ?? item.recovery}</span>
+                        <button
+                          className="advice-collect"
+                          disabled={collected}
+                          onClick={() => void collectAdviceItem(item)}
+                        >
+                          {collected ? "已收集" : "加入收集区"}
+                        </button>
+                      </div>
+                      {open && (
+                        <dl className="advice-detail">
+                          <dt>依据</dt>
+                          <dd>{(item.evidence ?? []).join(" · ") || "—"}</dd>
+                          <dt>删除后</dt>
+                          <dd>{item.whatBreaks}</dd>
+                          <dt>如何恢复</dt>
+                          <dd>{item.howToRestore}</dd>
+                        </dl>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+
+              {advice && !adviceBusy && (
+                <footer className="advice-foot">
+                  <span>
+                    本轮全部来自本机规则，未联网。证据 {advice.evidenceNodes} 个节点 /{" "}
+                    {formatBytes(advice.evidenceBytes)} · 下限 {formatBytes(advice.floorBytes)}
+                  </span>
+                  <button className="quiet-button" onClick={() => void showEvidence()}>查看发送内容</button>
+                </footer>
+              )}
+            </section>
+          )}
+
+          <button
+            className="advice-button"
+            onClick={() => (adviceOpen ? setAdviceOpen(false) : void runAdvice())}
+            disabled={adviceBusy}
+          >
+            {adviceBusy ? "分析中…" : "分析可清理项"}
+          </button>
+        </div>
+      )}
+
+      {/* One rendering serves both the payload and this preview, so what is
+          shown here cannot drift from what would be sent. */}
+      {evidence && (
+        <div className="evidence-scrim" role="dialog" aria-modal="true" onClick={() => setEvidence(null)}>
+          <div className="evidence-sheet" onClick={(event) => event.stopPropagation()}>
+            <header>
+              <div>
+                <p className="eyebrow">将要发送的内容</p>
+                <h3>{evidence.nodes} 个节点 · {formatBytes(evidence.bytes)} · 下限 {formatBytes(evidence.floorBytes)}</h3>
+              </div>
+              <button className="quiet-button" onClick={() => setEvidence(null)}>关闭</button>
+            </header>
+            <pre className="evidence-text">{evidence.text}</pre>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

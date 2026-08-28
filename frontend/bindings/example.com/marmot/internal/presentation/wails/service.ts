@@ -29,6 +29,15 @@ export function GetChildren(query: $models.ChildrenQuery): $CancellablePromise<$
     return $Call.ByID(3688422103, query);
 }
 
+/**
+ * GetCleanupAdvice returns the suggestions for a finished snapshot. No advisor
+ * is configured yet, so this is the rule layer alone and nothing leaves the
+ * machine.
+ */
+export function GetCleanupAdvice(snapshotID: number): $CancellablePromise<$models.Advice> {
+    return $Call.ByID(4091719120, snapshotID);
+}
+
 export function GetMap(query: $models.MapQuery): $CancellablePromise<$models.MapResult> {
     return $Call.ByID(2827691950, query);
 }
@@ -62,6 +71,13 @@ export function GetStorageSources(): $CancellablePromise<$models.StorageSourceOv
  */
 export function PrepareVolumeMenu(sourceID: string, hasResult: boolean): $CancellablePromise<string> {
     return $Call.ByID(3520626822, sourceID, hasResult);
+}
+
+/**
+ * PreviewEvidence renders exactly what an advisor would receive.
+ */
+export function PreviewEvidence(snapshotID: number): $CancellablePromise<$models.EvidencePreview> {
+    return $Call.ByID(1628376013, snapshotID);
 }
 
 export function PreviewNode(snapshotID: number, nodeID: number): $CancellablePromise<$models.NodeActionResult> {

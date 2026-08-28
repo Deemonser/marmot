@@ -7,6 +7,9 @@ export {
 };
 
 export type {
+    Advice,
+    AdviceItem,
+    AdviceRejection,
     ChildrenQuery,
     ChildrenResult,
     CleanupItemResult,
@@ -14,6 +17,7 @@ export type {
     CleanupPlan,
     CleanupPlanRequest,
     CleanupValidation,
+    EvidencePreview,
     MapEntry,
     MapQuery,
     MapResult,

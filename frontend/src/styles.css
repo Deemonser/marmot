@@ -524,3 +524,79 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    so the wedges that are not part of the destination do not leave a hole. */
 .sunburst-ghosts { pointer-events: none; }
 .sunburst-slice.is-ghost { pointer-events: none; }
+
+/* The advice corner is the dock's opposite number: the dock stages what you are
+   about to delete (bottom-left, ADR-0018), this proposes what is worth staging.
+   Both are fixed-position and neither reserves layout space. */
+.advice-corner { position: fixed; right: 22px; bottom: 18px; z-index: 26; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+/* The transient notice used to own this corner. On the result page it moves up
+   so the two never sit on top of each other. */
+.app-shell-result .notice { bottom: 62px; }
+
+.advice-button { padding: 8px 13px; border: 1px solid #5b5c63; border-radius: 6px; background: #2c2d33; color: #e4e4e8; font-size: 11px; box-shadow: 0 6px 16px rgba(0,0,0,.3); }
+.advice-button:hover:not(:disabled) { border-color: #a4a5ac; color: #fff; }
+.advice-button:disabled { color: #85868d; }
+.advice-corner.is-open .advice-button { border-color: #4c7cc4; }
+
+.advice-panel { display: flex; width: min(420px, calc(100vw - 44px)); max-height: min(58vh, 520px); flex-direction: column; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0,0,0,.35); }
+.advice-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 11px 12px 8px; border-bottom: 1px solid #35363d; }
+.advice-head h3 { margin: 0; color: #f1f1f3; font-size: 14px; font-weight: 500; }
+.advice-list { min-height: 0; flex: 1; padding: 4px 6px; overflow-y: auto; }
+.advice-empty { margin: 0; padding: 18px 8px; color: #96979e; font-size: 10px; text-align: center; }
+
+.advice-item { padding: 6px 6px 7px; border-radius: 6px; }
+.advice-item + .advice-item { border-top: 1px solid #33343a; }
+.advice-summary { display: flex; width: 100%; align-items: center; gap: 8px; padding: 0; border: 0; background: transparent; text-align: left; }
+/* Risk is a colour and a word, never a colour alone: the word is in the tag row
+   below, so the dot is a scanning aid rather than the only statement. */
+.advice-risk { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; }
+.risk-safe .advice-risk { background: #7fb96a; }
+.risk-review .advice-risk { background: #d3a44b; }
+.risk-risky .advice-risk { background: #d0453a; }
+.advice-text { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; }
+.advice-text strong { overflow: hidden; color: #eeeef1; font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+/* Deliberately NOT `direction: rtl`. That was the first attempt at putting the
+   ellipsis at the front of a path, and bidi reordering moved the leading `~/`
+   -- neutral characters -- to the right end, so `~/Library/Caches` rendered as
+   `Library/Caches/~`. The row already shows the object's own name in bold, so
+   the useful half of the path is its head; a normal trailing ellipsis is both
+   correct and the more informative choice. */
+.advice-path { overflow: hidden; color: #8b8c93; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.advice-size { flex: 0 0 auto; color: #d7d7dc; font-size: 11px; font-variant-numeric: tabular-nums; }
+
+.advice-tags { display: flex; align-items: center; gap: 5px; padding: 5px 0 0 15px; flex-wrap: wrap; }
+.advice-tag { padding: 2px 6px; border-radius: 3px; background: #383941; color: #b6b7bd; font-size: 9px; }
+.advice-collect { margin-left: auto; padding: 2px 8px; border: 1px solid #5b5c63; border-radius: 3px; background: transparent; color: #d0d0d5; font-size: 9px; }
+.advice-collect:hover:not(:disabled) { border-color: #a4a5ac; color: #fff; }
+.advice-collect:disabled { border-color: #3f4047; color: #7b7c83; }
+
+.advice-detail { display: grid; margin: 7px 0 2px; padding: 8px 9px; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; border-radius: 5px; background: #26272c; }
+.advice-detail dt { color: #8b8c93; font-size: 9px; white-space: nowrap; }
+.advice-detail dd { margin: 0; color: #c8c9cf; font-size: 9px; line-height: 1.45; }
+
+.advice-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px 10px; border-top: 1px solid #35363d; color: #8b8c93; font-size: 9px; }
+
+/* grid-template-* is not decoration. The implicit row is `auto`, which is sized
+   by content and is allowed to grow past a definite-height grid container -- so
+   the sheet's `max-height: 100%` resolved against a row taller than the viewport
+   and clamped nothing. The pack rendered at full height, the bottom was clipped
+   by this element's overflow, and there was nothing to scroll. minmax(0, 1fr)
+   pins the track to the container so the percentage means what it says. */
+.evidence-scrim { position: fixed; z-index: 50; display: grid; inset: 0; padding: 34px 22px 22px; overflow: hidden; background: rgba(0,0,0,.5); grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr); place-items: center; }
+/* min-width: 0 on both the sheet and the pre is load-bearing, not defensive.
+   A flex item's automatic minimum size is its CONTENT size, so a <pre> of
+   never-wrapping rows pushed the sheet straight past `width: min(940px, 100%)`,
+   the page grew a horizontal overflow and the window came out 1673px wide.
+   The pack is a fixed-column rendering and must not wrap, so the only correct
+   answer is to let it scroll inside its own box. */
+.evidence-sheet { display: flex; width: min(940px, 100%); min-width: 0; max-width: 100%; max-height: 100%; flex-direction: column; border-radius: 9px; background: #2c2d33; box-shadow: 0 14px 40px rgba(0,0,0,.45); }
+.evidence-sheet header { display: flex; flex: 0 0 auto; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 12px 14px 10px; border-bottom: 1px solid #35363d; }
+.evidence-sheet h3 { margin: 0; color: #f1f1f3; font-size: 13px; font-weight: 500; }
+/* The pack scrolls inside this box in BOTH axes: it is a fixed-column rendering
+   of hundreds of rows, so it must neither wrap nor stretch the sheet.
+   `min-height: 0` is as load-bearing here as `min-width: 0` is above, and for
+   the same reason -- a flex item's automatic minimum size is its content size,
+   so without it the <pre> grew to its full height, pushed the sheet past the
+   scrim's `max-height`, and the overflow was clipped with no way to scroll to
+   it. Fixing one axis and not the other is how that happened. */
+.evidence-text { min-width: 0; min-height: 0; max-width: 100%; flex: 1; margin: 0; padding: 12px 14px; overflow: auto; color: #c8c9cf; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.5; white-space: pre; }

@@ -226,6 +226,100 @@ type CleanupValidation struct {
 	Items   []CleanupItemValidation `json:"items"`
 }
 
+// AdviceItem is one suggestion. It carries nodeId as its identity and path for
+// display; neither authorises anything, because CreateCleanupPlan re-checks
+// every path it is handed (ADR-0061 §1).
+type AdviceItem struct {
+	NodeID           int64    `json:"nodeId"`
+	Name             string   `json:"name"`
+	Path             string   `json:"path"`
+	Source           string   `json:"source"`
+	RuleName         string   `json:"ruleName"`
+	Category         string   `json:"category"`
+	ReclaimableBytes int64    `json:"reclaimableBytes"`
+	Recovery         string   `json:"recovery"`
+	Risk             string   `json:"risk"`
+	Confidence       float64  `json:"confidence"`
+	Evidence         []string `json:"evidence"`
+	WhatBreaks       string   `json:"whatBreaks"`
+	HowToRestore     string   `json:"howToRestore"`
+}
+
+type Advice struct {
+	SnapshotID   int64        `json:"snapshotId"`
+	Items        []AdviceItem `json:"items"`
+	TotalBytes   int64        `json:"totalBytes"`
+	RuleItems    int          `json:"ruleItems"`
+	AdvisorItems int          `json:"advisorItems"`
+	// Rejected suggestions are reported, not hidden: a tool that says what it
+	// refused is easier to trust than one that quietly shows fewer rows.
+	Rejected []AdviceRejection `json:"rejected"`
+	// EvidenceNodes and EvidenceBytes describe what an advisor would be sent.
+	EvidenceNodes int   `json:"evidenceNodes"`
+	EvidenceBytes int   `json:"evidenceBytes"`
+	FloorBytes    int64 `json:"floorBytes"`
+}
+
+type AdviceRejection struct {
+	NodeID      int64  `json:"nodeId"`
+	ClaimedName string `json:"claimedName"`
+	Reason      string `json:"reason"`
+}
+
+// EvidencePreview is what "查看发送内容" shows. Text is the same rendering that
+// would be sent, so the preview cannot drift from the payload.
+type EvidencePreview struct {
+	SnapshotID int64  `json:"snapshotId"`
+	Root       string `json:"root"`
+	FloorBytes int64  `json:"floorBytes"`
+	Nodes      int    `json:"nodes"`
+	Bytes      int    `json:"bytes"`
+	Text       string `json:"text"`
+}
+
+// GetCleanupAdvice returns the suggestions for a finished snapshot. No advisor
+// is configured yet, so this is the rule layer alone and nothing leaves the
+// machine.
+func (s *Service) GetCleanupAdvice(snapshotID int64) (Advice, error) {
+	advice, err := s.application.GetCleanupAdvice(snapshotID)
+	if err != nil {
+		return Advice{}, err
+	}
+	items := make([]AdviceItem, 0, len(advice.Items))
+	for _, item := range advice.Items {
+		items = append(items, AdviceItem{
+			NodeID: item.NodeID, Name: item.Name, Path: item.Path,
+			Source: string(item.Source), RuleName: item.RuleName, Category: item.Category,
+			ReclaimableBytes: item.ReclaimableBytes,
+			Recovery:         string(item.Recovery), Risk: string(item.Risk),
+			Confidence: item.Confidence, Evidence: append([]string{}, item.Evidence...),
+			WhatBreaks: item.WhatBreaks, HowToRestore: item.HowToRestore,
+		})
+	}
+	rejected := make([]AdviceRejection, 0, len(advice.Rejected))
+	for _, item := range advice.Rejected {
+		rejected = append(rejected, AdviceRejection{NodeID: item.NodeID, ClaimedName: item.ClaimedName, Reason: item.Reason})
+	}
+	return Advice{
+		SnapshotID: advice.SnapshotID, Items: items, TotalBytes: advice.TotalBytes,
+		RuleItems: advice.RuleItems, AdvisorItems: advice.AdvisorItems, Rejected: rejected,
+		EvidenceNodes: advice.EvidenceNodes, EvidenceBytes: advice.EvidenceBytes, FloorBytes: advice.FloorBytes,
+	}, nil
+}
+
+// PreviewEvidence renders exactly what an advisor would receive.
+func (s *Service) PreviewEvidence(snapshotID int64) (EvidencePreview, error) {
+	pack, err := s.application.BuildEvidencePack(snapshotID)
+	if err != nil {
+		return EvidencePreview{}, err
+	}
+	text := pack.Text()
+	return EvidencePreview{
+		SnapshotID: snapshotID, Root: pack.Root, FloorBytes: pack.FloorBytes,
+		Nodes: len(pack.Nodes), Bytes: len(text), Text: text,
+	}, nil
+}
+
 func (s *Service) GetPermissionStatus() PermissionStatus {
 	status := s.application.GetPermissionStatus()
 	return PermissionStatus{Platform: status.Platform, State: status.State, Message: status.Message}
