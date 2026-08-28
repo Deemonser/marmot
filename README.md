@@ -69,6 +69,7 @@ DaisyDisk 交互状态模型和 ADR-0018 视觉版式第一版已落地；当前
 - [文档基准](docs/BASELINE.md)
 - [项目目录规范](docs/PROJECT-STRUCTURE.md)
 - [技术预研](docs/research/README.md)
+- [AI 清理建议的证据装配与规则覆盖率](docs/research/R-062-AI清理建议证据装配与规则覆盖率预研.md)
 - [产品体验与交互基线](docs/research/R-009-DaisyDisk产品体验与交互基线.md)
 - [DaisyDisk 交互与开源参考复核](docs/research/R-013-DaisyDisk原生交互与开源参考复核.md)
 - [DaisyDisk 本机实机交互复核](docs/research/R-014-DaisyDisk本机实机交互复核.md)

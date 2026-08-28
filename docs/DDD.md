@@ -155,7 +155,10 @@ APFS 完整克隆可通过 macOS `getattrlist` 识别；部分共享块、FilePr
 - `CleanupPlan` 是清理聚合根，负责来源快照、版本、候选项、校验、确认和逐项结果。
 - `ScanScope`、`FileIdentity`、`SizeReport`、`Confidence` 和 `PlanVersion` 是值对象语义；
   它们不能被一个无口径的 `size` 或字符串路径替代。
-- `Recommendation` 只作为独立边界保留，第一阶段不进入扫描或清理聚合。
+- `Recommendation` 是独立聚合，不进入扫描或清理聚合。它的身份是 `snapshotId + nodeId`，
+  另带路径仅供显示。建议不是授权：前端交来的路径一律是待核 claim，由 `CleanupPlan` 创建时
+  重新归一化、过删除护栏、查重叠、比对快照记录并重新 stat 后才可能成立。
+  边界由 [ADR-0061](adr/0061-AI清理建议边界与证据装配.md) 定义。
 
 ### 空间图条目
 
