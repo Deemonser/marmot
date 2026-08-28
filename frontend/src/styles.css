@@ -545,6 +545,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    everything that deliberately was not. */
 .advice-stage { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; border-bottom: 1px solid #35363d; color: #96979e; font-size: 9px; line-height: 1.6; }
 .advice-stage span { min-width: 0; }
+.advice-waiting { color: #85868d; }
 .advice-stage .quiet-button { flex: none; }
 .advice-list { min-height: 0; flex: 1; padding: 4px 6px; overflow-y: auto; }
 .advice-empty { margin: 0; padding: 18px 8px; color: #96979e; font-size: 10px; text-align: center; }

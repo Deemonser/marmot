@@ -1357,6 +1357,24 @@ export default function App() {
   // only in a transient notice.
   const [adviceError, setAdviceError] = useState("");
   const [adviceStaged, setAdviceStaged] = useState({ added: 0, bytes: 0 });
+  // The advisor round is a separate wait from the rule pass, and it must not
+  // block it. Measured against deepseek-v4-flash: the rule layer is under a
+  // second, the model round was 235 seconds.
+  const [advisorBusy, setAdvisorBusy] = useState(false);
+  const [advisorSeconds, setAdvisorSeconds] = useState(0);
+  // A transport failure or a refused key, as opposed to advice.advisorError which
+  // the backend reports when the round itself came back unusable. Kept apart from
+  // adviceError so a failed AI round never overwrites a good rule result.
+  const [advisorFault, setAdvisorFault] = useState("");
+  // A four-minute wait with no moving number is indistinguishable from a hang,
+  // and the first thing it costs is the user's trust that the button did anything.
+  useEffect(() => {
+    if (!advisorBusy) return;
+    setAdvisorSeconds(0);
+    const started = Date.now();
+    const timer = window.setInterval(() => setAdvisorSeconds(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [advisorBusy]);
   const [evidence, setEvidence] = useState<EvidencePreview | null>(null);
   const [advisor, setAdvisor] = useState<AdvisorStatus | null>(null);
   const [advisorOpen, setAdvisorOpen] = useState(false);
@@ -1878,35 +1896,54 @@ export default function App() {
   // Advice always includes the local rule layer. When an advisor is configured
   // the same call adds its suggestions, tagged by source; when one is not, the
   // rule layer is the whole answer and nothing leaves the machine.
+  // Two passes, shown as they finish rather than together. The rule layer needs
+  // no network and takes under a second; holding it back until a 235-second model
+  // round returns meant staring at a spinner while 73.8 GB of deterministic,
+  // already-computed answers sat behind it. The model is now an addition that
+  // lands late, not a gate on the part that was ready.
   async function runAdvice() {
     const snapshotId = mapRef.current?.snapshotId ?? status?.snapshotId ?? 0;
     if (snapshotId <= 0) {
       setNotice("请先完成一次扫描。");
       return;
     }
-    setAdviceBusy(true);
     setAdviceOpen(true);
     setAdviceError("");
+    setAdvisorFault("");
     setAdviceStaged({ added: 0, bytes: 0 });
-    const call = advisor?.configured
-      ? MarmotService.RunAdvisorAnalysis(snapshotId)
-      : MarmotService.GetCleanupAdvice(snapshotId);
-    adviceCall.current = call;
+    setAdviceBusy(true);
     try {
-      const result = await call;
-      setAdvice(result);
+      const rules = await MarmotService.GetCleanupAdvice(snapshotId);
+      setAdvice(rules);
       // The deterministic half of the answer needs no further decision from the
       // user, so it does not wait for one.
-      setAdviceStaged(await stageAdviceItems((result.items ?? []).filter(autoStageable), result.snapshotId));
+      setAdviceStaged(await stageAdviceItems((rules.items ?? []).filter(autoStageable), rules.snapshotId));
     } catch (error) {
-      // A cancelled analysis is not a failure and does not need a notice.
+      setAdviceError(String(error));
+      setNotice("分析失败：" + String(error));
+      return;
+    } finally {
+      setAdviceBusy(false);
+    }
+    if (!advisor?.configured) return;
+
+    setAdvisorBusy(true);
+    const call = MarmotService.RunAdvisorAnalysis(snapshotId);
+    adviceCall.current = call;
+    try {
+      // The merged result contains the rule pass, so it supersedes it. Staging is
+      // deliberately NOT repeated: the rule items are already in the dock, and
+      // re-staging would put back anything the user removed while waiting.
+      setAdvice(await call);
+    } catch (error) {
+      // A cancelled round is not a failure and does not need a notice.
       if (!String(error).includes("cancel")) {
-        setAdviceError(String(error));
-        setNotice("分析失败：" + String(error));
+        setAdvisorFault(String(error));
+        setNotice("AI 分析失败：" + String(error));
       }
     } finally {
       adviceCall.current = null;
-      setAdviceBusy(false);
+      setAdvisorBusy(false);
     }
   }
 
@@ -1952,7 +1989,7 @@ export default function App() {
   function stopAdvice() {
     adviceCall.current?.cancel();
     adviceCall.current = null;
-    setAdviceBusy(false);
+    setAdvisorBusy(false);
   }
 
   async function saveAdvisor() {
@@ -2670,8 +2707,10 @@ export default function App() {
                   </h3>
                 </div>
                 <div className="advice-head-actions">
-                  {adviceBusy
-                    ? <button className="quiet-button" onClick={stopAdvice}>停止</button>
+                  {/* Only the advisor round is stoppable. The rule pass is under a
+                      second, so a stop button on it would be decoration. */}
+                  {advisorBusy
+                    ? <button className="quiet-button" onClick={stopAdvice}>停止 AI</button>
                     : <button className="quiet-button" onClick={() => setAdviceOpen(false)} aria-label="收起">收起</button>}
                 </div>
               </header>
@@ -2684,6 +2723,12 @@ export default function App() {
                       formatBytes(adviceStaged.bytes),
                       (advice.items ?? []).filter((item) => !isCollected(item)).length,
                     )}
+                    {advisorBusy && (
+                      <><br /><span className="advice-waiting">
+                        AI 仍在分析（已 {advisorSeconds} 秒，上次实测约 235 秒）。上面这些来自本机规则，现在就可以用。
+                      </span></>
+                    )}
+                    {!advisorBusy && advisorFault && <><br /><span className="advice-fault">AI 未完成：{advisorFault}</span></>}
                   </span>
                   {(advice.items ?? []).some((item) => !isCollected(item)) && (
                     <button className="quiet-button" onClick={() => void stageRemainingAdvice()}>
@@ -2694,7 +2739,7 @@ export default function App() {
               )}
 
               <div className="advice-list">
-                {adviceBusy && <p className="advice-empty">{advisor?.configured ? "正在询问 " + advisor.description + "…" : "正在读取扫描结果…"}</p>}
+                {adviceBusy && <p className="advice-empty">正在读取扫描结果…</p>}
                 {!adviceBusy && adviceError && <p className="advice-empty advice-fault">{adviceError}</p>}
                 {!adviceBusy && !adviceError && advice && (advice.items ?? []).length === 0 && (
                   <p className="advice-empty">没有找到可清理的对象。</p>
@@ -2786,9 +2831,13 @@ export default function App() {
             <button
               className="advice-button"
               onClick={() => (adviceOpen ? setAdviceOpen(false) : void runAdvice())}
-              disabled={adviceBusy}
+              disabled={adviceBusy || advisorBusy}
             >
-              {adviceBusy ? "分析中…" : advisor?.configured ? "AI 分析" : "分析可清理项"}
+              {adviceBusy
+                ? "读取中…"
+                : advisorBusy
+                  ? "AI " + advisorSeconds + "s"
+                  : advisor?.configured ? "AI 分析" : "分析可清理项"}
             </button>
           </div>
         </div>
