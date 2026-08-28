@@ -15,7 +15,7 @@
 9	ok	同上，但命令需带 --toolchain 1.91.0，模型给的命令不完整
 10	ok	同上，命令需带 --toolchain 1.89.0
 11	ok	cargo build 重新编译
-12	unsure	klib/platform 是解压出的发行版子目录，Kotlin 是否按目录存在性判断未查实
+12	ok	已从 kotlin-gradle-plugin 2.2.21 源码 PlatformLibrariesGenerator.checkLibrariesInDistribution 查实：逐个校验 klib/platform 下每个 platform lib 目录是否存在，缺失则调 runGenerationTool 从 .def 本地重新生成。会自愈。模型判 redownloadable 略有偏差（实际是 regenerable），但可恢复性判断正确
 13	ok	Gradle 自行重建
 14	ok	repack 中断遗留的垃圾，删掉无影响（模型给的理由是错的，但结论对）
 15	ok	实测 store 内文件 nlink=1，未被硬链接占用；pnpm install 可恢复
