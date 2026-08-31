@@ -55,6 +55,9 @@ type Service struct {
 	advisorFault   string
 	credentials    ports.CredentialStore
 	advisorFactory AdvisorFactory
+	// batchSize and maxParallel shape the triage round; zero means the default.
+	batchSize   int
+	maxParallel int
 }
 
 type Dependencies struct {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"example.com/marmot/internal/domain/cleanup"
@@ -33,7 +34,147 @@ const (
 	// verdict costs a couple of hundred tokens, and a question the model runs out
 	// of room to answer is worse than one not asked.
 	advisorCandidateLimit = 40
+	// One request per batch, run concurrently. The 40 candidates are independent
+	// by construction -- the contract is one verdict per candidate -- but a single
+	// request makes the model think about them in sequence, and thinking is where
+	// the time goes: 10,084 of 13,414 output tokens at effort "low" (R-063 §4e).
+	// Splitting does not reduce the thinking, it stops it being serialised.
+	//
+	// The prompt puts the pruned tree first and the candidate list last, so every
+	// batch shares a long identical prefix and a provider with prefix caching pays
+	// for it once.
+	// One batch, measured rather than assumed. Splitting 40 candidates into four
+	// concurrent requests of 10 was the obvious fix for a 98s round and it does
+	// not work: measured 95.6s against 117.6s, a 19% gain for 3.8x the input
+	// tokens and 2.9x the output.
+	//
+	// The reason is in the numbers. One request thinking about 40 candidates spent
+	// 10,084 tokens; each request thinking about 10 spent 7,404-10,273. Thinking
+	// barely tracks the candidate count -- it is the fixed cost of digesting the
+	// 24.6k-token tree, and every batch pays it again. Total thinking therefore
+	// scales with the number of requests, which makes splitting the wrong
+	// direction: fewer, larger requests are cheaper, and the wall clock has a
+	// floor of roughly one digest of the context (R-063 §4f).
+	//
+	// The machinery stays because it is what makes that answer checkable, and
+	// because a smaller per-batch context is the one hypothesis it leaves open.
+	advisorBatchSize = advisorCandidateLimit
+	// Concurrency cap, because the failure mode of guessing high is a rate limit
+	// that fails the whole analysis rather than a slow one.
+	advisorMaxParallel = 4
+	// Output budget per candidate, so a smaller batch gets a proportionally
+	// smaller cap instead of the whole round's.
+	perCandidateOutputTokens = triageMaxOutputTokens / advisorCandidateLimit
+	minBatchOutputTokens     = 4000
 )
+
+// SetAdvisorBatching overrides the batch size and concurrency. For probes
+// comparing shapes against a real endpoint; zero or negative keeps the default.
+func (s *Service) SetAdvisorBatching(size, parallel int) {
+	s.advisorMu.Lock()
+	defer s.advisorMu.Unlock()
+	if size > 0 {
+		s.batchSize = size
+	}
+	if parallel > 0 {
+		s.maxParallel = parallel
+	}
+}
+
+func (s *Service) batching() (int, int) {
+	s.advisorMu.RLock()
+	defer s.advisorMu.RUnlock()
+	size, parallel := s.batchSize, s.maxParallel
+	if size <= 0 {
+		size = advisorBatchSize
+	}
+	if parallel <= 0 {
+		parallel = advisorMaxParallel
+	}
+	return size, parallel
+}
+
+// triageInBatches asks about the candidates in concurrent slices and merges the
+// answers into one result. A batch that fails costs its own candidates and
+// nothing else: the rest of the analysis stands, which is the same degradation
+// the two-round flow already uses.
+func (s *Service) triageInBatches(
+	ctx context.Context, advisor ports.Advisor, system, evidence string,
+	candidates []recommendation.EvidenceNode, pack EvidencePack,
+) (recommendation.AdvisorResult, []RoundStats, error) {
+	size, parallel := s.batching()
+	var batches [][]recommendation.EvidenceNode
+	for start := 0; start < len(candidates); start += size {
+		end := start + size
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		batches = append(batches, candidates[start:end])
+	}
+
+	type outcome struct {
+		result recommendation.AdvisorResult
+		stats  RoundStats
+		err    error
+	}
+	outcomes := make([]outcome, len(batches))
+	gate := make(chan struct{}, parallel)
+	var wait sync.WaitGroup
+	for index, batch := range batches {
+		wait.Add(1)
+		go func(index int, batch []recommendation.EvidenceNode) {
+			defer wait.Done()
+			gate <- struct{}{}
+			defer func() { <-gate }()
+			budget := len(batch) * perCandidateOutputTokens
+			if budget < minBatchOutputTokens {
+				budget = minBatchOutputTokens
+			}
+			start := time.Now()
+			result, err := advisor.Advise(ctx, ports.AdviceRequest{
+				System:          system,
+				User:            recommendation.TriagePrompt(evidence, pack.RenderCandidates(batch), len(batch)),
+				MaxOutputTokens: budget,
+			})
+			outcomes[index] = outcome{
+				result: result,
+				stats: RoundStats{
+					Name:    fmt.Sprintf("分诊 %d/%d", index+1, len(batches)),
+					Seconds: time.Since(start).Seconds(), Asked: len(batch),
+					InputTokens: result.InputTokens, OutputTokens: result.OutputTokens,
+					ReasoningTokens: result.ReasoningTokens, Failed: err != nil,
+				},
+				err: err,
+			}
+		}(index, batch)
+	}
+	wait.Wait()
+
+	var merged recommendation.AdvisorResult
+	stats := make([]RoundStats, 0, len(batches))
+	var firstErr error
+	failed := 0
+	for _, item := range outcomes {
+		stats = append(stats, item.stats)
+		if item.err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = item.err
+			}
+			continue
+		}
+		merged.Verdicts = append(merged.Verdicts, item.result.Verdicts...)
+		merged.InputTokens += item.result.InputTokens
+		merged.OutputTokens += item.result.OutputTokens
+		merged.ReasoningTokens += item.result.ReasoningTokens
+	}
+	// Every batch failing is the round failing. Some failing is a smaller answer,
+	// which is worth more than no answer.
+	if failed == len(batches) {
+		return recommendation.AdvisorResult{}, stats, firstErr
+	}
+	return merged, stats, nil
+}
 
 // SetAdvisor installs or replaces the advisor. Nil disables it, which is the
 // state the app ships in: without one configured the feature is the rule layer
@@ -86,17 +227,8 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 	for _, node := range candidates {
 		asked = append(asked, node.ID)
 	}
-	triageStart := time.Now()
-	round, err := advisor.Advise(ctx, ports.AdviceRequest{
-		System:          system,
-		User:            recommendation.TriagePrompt(pack.Text(), pack.RenderCandidates(candidates), len(candidates)),
-		MaxOutputTokens: triageMaxOutputTokens,
-	})
-	advice.RoundStats = append(advice.RoundStats, RoundStats{
-		Name: "分诊", Seconds: time.Since(triageStart).Seconds(), Asked: len(candidates),
-		InputTokens: round.InputTokens, OutputTokens: round.OutputTokens,
-		ReasoningTokens: round.ReasoningTokens, Failed: err != nil,
-	})
+	round, batchStats, err := s.triageInBatches(ctx, advisor, system, pack.Text(), candidates, pack)
+	advice.RoundStats = append(advice.RoundStats, batchStats...)
 	if err != nil {
 		if ctx.Err() != nil {
 			return advice, ctx.Err()

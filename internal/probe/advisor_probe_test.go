@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -76,7 +77,11 @@ func TestAdvisorRoundTripOnARealTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	service.SetAdvisor(advisor)
-	t.Logf("advisor: %s（推理档 %q）", advisor.Describe(), effort)
+	// PROBE_BATCH / PROBE_PARALLEL compare shapes against the real endpoint.
+	batch, _ := strconv.Atoi(os.Getenv("PROBE_BATCH"))
+	parallel, _ := strconv.Atoi(os.Getenv("PROBE_PARALLEL"))
+	service.SetAdvisorBatching(batch, parallel)
+	t.Logf("advisor: %s（推理档 %q，分批 %d，并发 %d）", advisor.Describe(), effort, batch, parallel)
 
 	status, err := service.StartScan(marmotapp.ScanOptions{Root: root})
 	if err != nil {
@@ -106,9 +111,18 @@ func TestAdvisorRoundTripOnARealTree(t *testing.T) {
 		elapsed.Seconds(), advice.Rounds, advice.Expanded, advice.InputTokens, advice.OutputTokens)
 	// Where the time actually went. A slow provider and a long answer both look
 	// like "it took four minutes", and they need opposite fixes.
-	var roundSeconds float64
+	// Concurrent batches overlap, so the model's share of the wall clock is the
+	// longest of them plus any sequential rounds -- not the sum. Summing produced
+	// a local time of -238.1s, which is at least an honest way to be wrong.
+	var slowestBatch, sequentialSeconds float64
 	for _, round := range advice.RoundStats {
-		roundSeconds += round.Seconds
+		if strings.HasPrefix(round.Name, "分诊") {
+			if round.Seconds > slowestBatch {
+				slowestBatch = round.Seconds
+			}
+		} else {
+			sequentialSeconds += round.Seconds
+		}
 		state := ""
 		if round.Failed {
 			state = "  [失败]"
@@ -123,7 +137,7 @@ func TestAdvisorRoundTripOnARealTree(t *testing.T) {
 				float64(round.OutputTokens-round.ReasoningTokens)/float64(round.Asked))
 		}
 	}
-	t.Logf("  本机部分（装配证据 + 校验 + 合并）：%.1fs", elapsed.Seconds()-roundSeconds)
+	t.Logf("  本机部分（装配证据 + 校验 + 合并）：%.1fs", elapsed.Seconds()-slowestBatch-sequentialSeconds)
 	t.Logf("规则 %d 条，AI %d 条，合计 %s", advice.RuleItems, advice.AdvisorItems, humanBytes(advice.TotalBytes))
 	if advice.AdvisorError != "" {
 		t.Logf("advisor error: %s", advice.AdvisorError)
