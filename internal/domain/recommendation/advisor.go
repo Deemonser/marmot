@@ -63,6 +63,10 @@ type AdvisorResult struct {
 	// cost. Zero when the adapter cannot tell.
 	InputTokens  int64 `json:"-"`
 	OutputTokens int64 `json:"-"`
+	// ReasoningTokens is the part of OutputTokens the model spent thinking rather
+	// than answering. Reported separately because the two have opposite fixes: a
+	// long answer is a prompt problem, a long think is a setting.
+	ReasoningTokens int64 `json:"-"`
 }
 
 // Cleanable are the verdicts that propose removing something.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"example.com/marmot/internal/domain/cleanup"
 	"example.com/marmot/internal/domain/recommendation"
@@ -85,10 +86,16 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 	for _, node := range candidates {
 		asked = append(asked, node.ID)
 	}
+	triageStart := time.Now()
 	round, err := advisor.Advise(ctx, ports.AdviceRequest{
 		System:          system,
 		User:            recommendation.TriagePrompt(pack.Text(), pack.RenderCandidates(candidates), len(candidates)),
 		MaxOutputTokens: triageMaxOutputTokens,
+	})
+	advice.RoundStats = append(advice.RoundStats, RoundStats{
+		Name: "分诊", Seconds: time.Since(triageStart).Seconds(), Asked: len(candidates),
+		InputTokens: round.InputTokens, OutputTokens: round.OutputTokens,
+		ReasoningTokens: round.ReasoningTokens, Failed: err != nil,
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -116,8 +123,14 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 		if expandErr != nil {
 			advice.AdvisorError = "无法展开深挖区域：" + expandErr.Error()
 		} else {
+			expandStart := time.Now()
 			second, secondErr := advisor.Advise(ctx, ports.AdviceRequest{
 				System: system, User: recommendation.ExpandPrompt(evidence, unresolved), MaxOutputTokens: expandMaxOutputTokens,
+			})
+			advice.RoundStats = append(advice.RoundStats, RoundStats{
+				Name: "深挖", Seconds: time.Since(expandStart).Seconds(), Asked: len(focus),
+				InputTokens: second.InputTokens, OutputTokens: second.OutputTokens,
+				ReasoningTokens: second.ReasoningTokens, Failed: secondErr != nil,
 			})
 			switch {
 			case secondErr != nil && ctx.Err() != nil:

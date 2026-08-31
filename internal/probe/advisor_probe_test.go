@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +62,12 @@ func TestAdvisorRoundTripOnARealTree(t *testing.T) {
 	if effort == "" {
 		effort = "low"
 	}
+	// Overridable so the effort can be compared without changing what the app is
+	// configured with. Measured at "low": 75% of the output tokens were the model
+	// thinking, and the answer for 40 candidates was only 3,330 of them.
+	if override := os.Getenv("PROBE_EFFORT"); override != "" {
+		effort = override
+	}
 	advisor, err := openaicompat.New(openaicompat.Config{
 		BaseURL: settings.BaseURL, Model: settings.Model, APIKey: apiKey,
 		JSONMode: settings.JSONMode, ReasoningEffort: effort,
@@ -96,6 +104,26 @@ func TestAdvisorRoundTripOnARealTree(t *testing.T) {
 
 	t.Logf("用时 %.1fs：%d 轮，深挖 %d 处，token %d in / %d out",
 		elapsed.Seconds(), advice.Rounds, advice.Expanded, advice.InputTokens, advice.OutputTokens)
+	// Where the time actually went. A slow provider and a long answer both look
+	// like "it took four minutes", and they need opposite fixes.
+	var roundSeconds float64
+	for _, round := range advice.RoundStats {
+		roundSeconds += round.Seconds
+		state := ""
+		if round.Failed {
+			state = "  [失败]"
+		}
+		t.Logf("  %s：%.1fs，问了 %d 项，%d in / %d out（其中思考 %d，答案 %d），出字速度 %.0f token/s%s",
+			round.Name, round.Seconds, round.Asked, round.InputTokens, round.OutputTokens,
+			round.ReasoningTokens, round.OutputTokens-round.ReasoningTokens,
+			round.OutputPerSecond(), state)
+		if round.Asked > 0 {
+			t.Logf("      每个候选平均 %.0f 输出 token（答案部分 %.0f）",
+				float64(round.OutputTokens)/float64(round.Asked),
+				float64(round.OutputTokens-round.ReasoningTokens)/float64(round.Asked))
+		}
+	}
+	t.Logf("  本机部分（装配证据 + 校验 + 合并）：%.1fs", elapsed.Seconds()-roundSeconds)
 	t.Logf("规则 %d 条，AI %d 条，合计 %s", advice.RuleItems, advice.AdvisorItems, humanBytes(advice.TotalBytes))
 	if advice.AdvisorError != "" {
 		t.Logf("advisor error: %s", advice.AdvisorError)
@@ -122,6 +150,19 @@ func TestAdvisorRoundTripOnARealTree(t *testing.T) {
 			t.Logf("        依据: %v", item.Evidence)
 			t.Logf("        删除后: %s", item.WhatBreaks)
 		}
+	}
+	// The set the advisor contributed, so two efforts can be compared on what
+	// they found rather than only on how long they took.
+	var found []string
+	for _, item := range advice.Items {
+		if item.Source == "advisor" {
+			found = append(found, item.Path)
+		}
+	}
+	sort.Strings(found)
+	t.Logf("AI 给出的对象（%d 个）：", len(found))
+	for _, path := range found {
+		t.Logf("    %s", strings.TrimPrefix(path, os.Getenv("HOME")))
 	}
 	if advice.Rounds == 0 {
 		t.Error("the advisor was configured but never called")

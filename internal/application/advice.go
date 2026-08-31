@@ -37,6 +37,31 @@ const (
 	evidenceFloorAttempts = 4
 )
 
+// RoundStats is what one advisor round actually cost. Without it a four-minute
+// wait can only be guessed at, and the guess is usually "the network" when the
+// real answer is how many tokens the model was asked to write.
+type RoundStats struct {
+	Name         string
+	Seconds      float64
+	Asked        int
+	InputTokens  int64
+	OutputTokens int64
+	// ReasoningTokens is the share of OutputTokens spent thinking. A long think
+	// and a long answer both read as "it took four minutes" and are fixed in
+	// opposite places -- one is a setting, the other is the prompt.
+	ReasoningTokens int64
+	Failed          bool
+}
+
+// OutputPerSecond is the rate the answer was written at. It separates a slow
+// provider from a long answer, which need opposite fixes.
+func (r RoundStats) OutputPerSecond() float64 {
+	if r.Seconds <= 0 {
+		return 0
+	}
+	return float64(r.OutputTokens) / r.Seconds
+}
+
 // EvidencePack is what an advisor is asked about, and exactly what a user sees
 // when they ask what is being sent. There is no second, richer form held back:
 // the text this renders IS the payload (ADR-0061 §3).
@@ -276,6 +301,8 @@ type Advice struct {
 	// regions round two looked inside.
 	Rounds   int
 	Expanded int
+	// RoundStats is what each round cost, in order.
+	RoundStats []RoundStats
 	// TopRowsAccounted / TopRows measure whether the largest rows were each
 	// dealt with rather than silently passed over. Coverage, not correctness:
 	// a row explicitly declined counts as accounted for.

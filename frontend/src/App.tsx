@@ -1378,7 +1378,7 @@ export default function App() {
   const [evidence, setEvidence] = useState<EvidencePreview | null>(null);
   const [advisor, setAdvisor] = useState<AdvisorStatus | null>(null);
   const [advisorOpen, setAdvisorOpen] = useState(false);
-  const [advisorForm, setAdvisorForm] = useState({ baseUrl: "https://api.deepseek.com", model: "", jsonMode: "json_object", reasoningEffort: "low", apiKey: "" });
+  const [advisorForm, setAdvisorForm] = useState({ baseUrl: "https://api.deepseek.com", model: "", jsonMode: "json_object", reasoningEffort: "disabled", apiKey: "" });
   const [advisorSaving, setAdvisorSaving] = useState(false);
   // The in-flight analysis, kept so it can be cancelled. Wails returns a
   // cancellable promise, so stopping is a real cancellation of the request
@@ -2905,12 +2905,15 @@ export default function App() {
                   {/* Reasoning models default to a high effort. This task is
                       classification against a fixed output contract, and the
                       measured cost of the default was 239s spent thinking and an
-                      answer cut off at the output cap. */}
-                  <option value="low">low（推荐：本任务是分类，不需要深度推理）</option>
+                      answer cut off at the output cap. The numbers on each option
+                      are real: one identical pack, deepseek-v4-flash, R-063 §4e.
+                      They are here because the choice is a trade, and a trade
+                      cannot be made from a word like "low". */}
+                  <option value="disabled">关闭思考（实测 34s，AI 给出 22 条，更激进）</option>
+                  <option value="low">low（实测 118–191s，AI 给出 6–7 条，更保守）</option>
                   <option value="high">high（服务端默认，更慢更贵）</option>
                   <option value="max">max</option>
-                  <option value="disabled">关闭思考</option>
-                  <option value="">不发送该字段（非 DeepSeek 服务）</option>
+                  <option value="omit">不发送该字段（非 DeepSeek 服务）</option>
                 </select>
               </label>
               {advisor?.fault && <p className="advisor-fault">{advisor.fault}</p>}

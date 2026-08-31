@@ -46,6 +46,45 @@ type AdvisorStatus struct {
 	Fault string `json:"fault"`
 }
 
+// ReasoningOmit is the explicit choice to send no thinking field at all, for an
+// endpoint that would reject one. It has to be a value distinct from the empty
+// string, because empty is also what a config saved before this field existed
+// unmarshals to -- and those two must never mean the same thing.
+//
+// They did, and it cost real time. The stored config on the reference machine had
+// no reasoning effort at all, so the app sent no thinking block and got the
+// provider's own default, which on deepseek-v4-flash is the most expensive one.
+// The probe defaults an empty value to "low", so every measurement I took was of
+// a setting the app never ran. A default that exists in the measuring tool and
+// not in the product is worse than no default: it makes the product's real
+// behaviour invisible.
+const ReasoningOmit = "omit"
+
+// DefaultReasoningEffort is what an unset effort means. Measured on one identical
+// pack, deepseek-v4-flash: thinking disabled 34.4s, "low" 118-191s, and the
+// provider default slower still (R-063 §4e).
+const DefaultReasoningEffort = "disabled"
+
+// resolved is the settings as they actually take effect, which is what the user
+// must be shown. Only the empty legacy value moves.
+func (s AdvisorSettings) resolved() AdvisorSettings {
+	if strings.TrimSpace(s.ReasoningEffort) == "" {
+		s.ReasoningEffort = DefaultReasoningEffort
+	}
+	return s
+}
+
+// forClient additionally turns the explicit omit choice into the empty string the
+// adapter reads as "leave the field out". Never persisted in this form, or the
+// choice would decay into the legacy value on the next restore.
+func (s AdvisorSettings) forClient() AdvisorSettings {
+	s = s.resolved()
+	if s.ReasoningEffort == ReasoningOmit {
+		s.ReasoningEffort = ""
+	}
+	return s
+}
+
 func (s AdvisorSettings) validate() error {
 	if s.Provider != ProviderOpenAICompatible {
 		return fmt.Errorf("不支持的 provider: %q", s.Provider)
@@ -76,7 +115,7 @@ func (s *Service) ConfigureAdvisor(settings AdvisorSettings, apiKey string) (Adv
 			key = existing
 		}
 	}
-	advisor, err := s.advisorFactory(settings, key)
+	advisor, err := s.advisorFactory(settings.forClient(), key)
 	if err != nil {
 		return AdvisorStatus{}, err
 	}
@@ -93,7 +132,7 @@ func (s *Service) ConfigureAdvisor(settings AdvisorSettings, apiKey string) (Adv
 		}
 	}
 	s.SetAdvisor(advisor)
-	return AdvisorStatus{Configured: true, HasKey: key != "", Description: advisor.Describe(), Settings: settings}, nil
+	return AdvisorStatus{Configured: true, HasKey: key != "", Description: advisor.Describe(), Settings: settings.resolved()}, nil
 }
 
 // RestoreAdvisor installs whatever was configured previously. Falling back to
@@ -135,7 +174,7 @@ func (s *Service) RestoreAdvisor() {
 		s.setAdvisorFault("没有保存的 API key，请重新填写。")
 		return
 	}
-	advisor, err := s.advisorFactory(settings, key)
+	advisor, err := s.advisorFactory(settings.forClient(), key)
 	if err != nil {
 		s.setAdvisorFault("无法按保存的配置建立连接：" + err.Error())
 		return
@@ -161,6 +200,10 @@ func (s *Service) GetAdvisorStatus() AdvisorStatus {
 	}
 	if raw, err := s.credentials.LoadCredential(advisorConfigAccount); err == nil {
 		_ = json.Unmarshal([]byte(raw), &status.Settings)
+		// Report what actually takes effect, not what is on disk. A config saved
+		// before this field existed carries nothing, and showing nothing let the
+		// settings sheet display one effort while the request used another.
+		status.Settings = status.Settings.resolved()
 	}
 	if key, err := s.credentials.LoadCredential(advisorKeyAccount); err == nil && strings.TrimSpace(key) != "" {
 		status.HasKey = true

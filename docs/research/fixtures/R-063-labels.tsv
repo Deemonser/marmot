@@ -20,13 +20,16 @@
 #
 # 自动评分按 **path** 对齐，不按 node_id：node_id 是每次扫描重新编号的，
 # 重扫一次同一个路径就是另一个 id，按它对齐的标注跨扫描全部失效。
-# 共 7 条，来自 1 次运行的去重合并。其余列不要改。
+# 共 10 条，来自 3 次运行的去重合并。其余列不要改。
 #
 label	node_id	bytes	recovery	risk	risk_runs	seen_runs	category	path	contents	what_breaks	how_to_restore
-	1497493	3.3GB	redownloadable	review	review×1	1/1	应用缓存	/Users/deemo/Library/Containers/com.soda.music/Data/Library/Application Support/SodaMusic/LunaCacheV2	1071 文件 / 1 目录；.bin 3.3GB，.db 4.4MB，.db-lock 36KB	音乐应用中已缓存的歌曲需重新下载，离线可用歌曲暂时缺失。	重新打开应用，缓存会按需重新生成；若是下载的歌曲需在应用内重新下载。
-	918	745.7MB	regenerable	safe	safe×1	1/1	应用日志数据库	/Users/deemo/.codex/logs_2.sqlite	1 文件 / 0 目录；.sqlite 745.7MB	丢失 Codex 的历史日志，可能影响后续问题排查。	Codex 运行时自动创建新的日志数据库。
-	737869	349.6MB	redownloadable	review	review×1	1/1	Flutter 工具链缓存	/Users/deemo/dev/flutter/bin/cache/dart-sdk/bin/snapshots	15 文件 / 1 目录；.snapshot 349.6MB	这是已安装工具链的内部目录。安装器只检查根目录和 stamp，不校验里面的文件，所以删掉之后不会自动重新下载——工具链会一直是坏的。真实恢复方式是删除整个缓存目录重新拉取。 删除后 Flutter 工具可能报错或无法运行；由于 stamp 文件仍存在，不会自动重新下载。	删除整个 Flutter bin/cache 目录，然后运行 flutter doctor 重新下载。
-	1027619	321MB	redownloadable	safe	safe×1	1/1	构建产物	/Users/deemo/AndroidStudioProjects/android/app/develop/release/luffa_release_v1.1.291.apk	1 文件 / 0 目录；.apk 321MB	丢失一个旧版本的 APK 安装包。	重新运行构建命令生成 APK，或从持续集成系统下载。
-	35803	290MB	redownloadable	safe	safe×1	1/1	应用更新缓存	/Users/deemo/Library/Application Support/QuarkCloudDrive/updates/555da29a1cc2805c287a85f000b1e435.dmg	1 文件 / 0 目录；.dmg 290MB	无实质影响，仅丢失一个旧更新包。	应用后续需要更新时会重新下载。
-	1873	280.5MB	regenerable	safe	safe×1	1/1	调试器缓存	/Users/deemo/.lldb/module_cache/remote-android/28271FDH300CVE	363 文件 / 41 目录；.so 264.3MB，.oat 13.9MB， 2.1MB	下次调试该 Android 设备时需重新下载符号，速度变慢。	使用 LLDB 调试时自动重建缓存。
-	412	274.1MB	regenerable	review	review×1	1/1	应用缓存	/Users/deemo/.cache/mole	67614 文件 / 1 目录；.cache 274.1MB， 16KB，.json 4KB	删除后运行 mole 相关功能时可能需要重新下载或重建缓存。	重新运行对应的工具，由程序自动重建。
+	489003	3.3GB	redownloadable	review	review×3	3/3	音乐应用缓存	/Users/deemo/Library/Containers/com.soda.music/Data/Library/Application Support/SodaMusic/LunaCacheV2	1071 文件 / 1 目录；.bin 3.3GB，.db 4.4MB，.db-lock 36KB	若包含离线下载的音乐，删除后本地将无法播放，需重新下载；若仅为缓存，应用可能自动重新缓存。	打开 SodaMusic 应用，让其重新下载或重新缓存内容；如应用不能自动恢复，可在应用内重新下载离线音乐。
+	891	745.7MB	regenerable	review	review×2	2/3	应用日志数据库	/Users/deemo/.codex/logs_2.sqlite	1 文件 / 0 目录；.sqlite 745.7MB	删除后旧的 Codex 本地日志/会话检索记录不可回查，不影响代码、会话 JSONL 或项目文件。	旧日志无法恢复；Codex 下次运行会自动重建 logs_2.sqlite。
+	1067161	413.7MB	regenerable	review	review×1	1/3	量化派生数据	/Users/deemo/PycharmProjects/AsTrade/data/clean/intraday_features_5min.parquet	1 文件 / 0 目录；.parquet 413.7MB	依赖该特征文件的回测/分析脚本会因文件缺失而报错。	重新运行 AsTrade 的特征生成/数据管线，从原始行情数据重建 intraday_features_5min.parquet。
+	1150895	349.6MB	redownloadable	review	review×2	2/3	Flutter/Dart SDK 缓存	/Users/deemo/dev/flutter/bin/cache/dart-sdk/bin/snapshots	15 文件 / 1 目录；.snapshot 349.6MB	这是已安装工具链的内部目录。安装器只检查根目录和 stamp，不校验里面的文件，所以删掉之后不会自动重新下载——工具链会一直是坏的。真实恢复方式是删除整个缓存目录重新拉取。 Flutter/Dart 命令会因缺少 dart-sdk snapshots 而报错，且 Flutter 只校验 stamp，不会自动补下载。	删除整个 dev/flutter/bin/cache 目录后运行 flutter --version 或 flutter doctor，重新下载 SDK 缓存。
+	134855	321MB	redownloadable	review	review×3	3/3	Android 构建输出	/Users/deemo/AndroidStudioProjects/android/app/develop/release/luffa_release_v1.1.291.apk	1 文件 / 0 目录；.apk 321MB	少一个旧 release APK；需要该版本分发时需重新构建。	在 android 项目用对应版本代码执行 Gradle assembleRelease 或对应 variant 构建。
+	438764	290MB	redownloadable	review	review×3	3/3	应用更新残留	/Users/deemo/Library/Application Support/QuarkCloudDrive/updates/555da29a1cc2805c287a85f000b1e435.dmg	1 文件 / 0 目录；.dmg 290MB	QuarkCloudDrive 少一个旧升级包；不影响当前版本，更新时重新下载。	从 QuarkCloudDrive 官网或应用内重新下载对应升级包。
+	266366	284.2MB	redownloadable	review	review×2	2/3	Codex 运行时依赖缓存	/Users/deemo/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/libreoffice-headless/libreoffice/LibreOfficeDev.app/Contents/Frameworks	208 文件 / 1 目录；.dylib 245.1MB，.78 37.1MB，.3 1.9MB	Codex 依赖的 LibreOffice/文档处理运行时缺失，相关功能用到时会重新下载。	删除后 Codex 按需重新下载 codex-runtimes dependencies；也可重装/更新 Codex CLI。
+	556	274.1MB	regenerable	review	review×2	2/3	应用缓存	/Users/deemo/.cache/mole	67614 文件 / 1 目录；.cache 274.1MB， 16KB，.json 4KB	mole 的本地缓存丢失，首次使用会重新生成/重新抓取，不影响业务数据。	重新运行 mole 应用，缓存会自动重建。
+	450068	255.3MB	redownloadable	review	review×1	1/3	聊天媒体缓存	/Users/deemo/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/appstore/account-4044089918578000457/postbox/media	20846 文件 / 7 目录； 217.4MB，.meta 33.7MB，.0-f0-m1true 4.1MB	Telegram 本地历史媒体离线不可见；打开消息时需从服务器重新下载，已过期/删除的远程媒体可能无法恢复。	在 Telegram 中打开对应消息，客户端会自动重新下载。
+	385354	235MB	redownloadable	review	review×1	1/3	构建产物	/Users/deemo/AndroidStudioProjects/luffa2/dex-baseline-artifacts/cd259935/mapping.txt	1 文件 / 0 目录；.txt 235MB	旧 release APK 的崩溃堆栈无法用该 mapping 反混淆；不影响新构建。	用相同源码和构建配置重新执行 release 构建，重新生成 mapping.txt。

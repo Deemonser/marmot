@@ -303,6 +303,7 @@ func readStream(ctx context.Context, body io.Reader) (recommendation.AdvisorResu
 	}
 	result.InputTokens = usage.PromptTokens
 	result.OutputTokens = usage.CompletionTokens
+	result.ReasoningTokens = usage.Details.ReasoningTokens
 	return result, nil
 }
 
