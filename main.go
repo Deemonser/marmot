@@ -15,7 +15,6 @@ import (
 	"example.com/marmot/internal/ports"
 	"example.com/marmot/internal/presentation/wails"
 	"github.com/wailsapp/wails/v3/pkg/application"
-	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed all:frontend/dist
@@ -80,7 +79,17 @@ func main() {
 			Handler: application.AssetFileServerFS(assets),
 		},
 		Mac: application.MacOptions{
-			ApplicationShouldTerminateAfterLastWindowClosed: false,
+			// Closing the window quits. It used to hide instead, with a reopen hook
+			// to bring it back, which kept the in-memory scan result alive across a
+			// close -- and there is nowhere else for it to live (ADR-0055).
+			//
+			// That trade is the wrong way round for this app. A 2.2M-node tree is
+			// hundreds of MB of resident memory, and hiding leaves a process holding
+			// it while the user believes they closed the program. A disk-space tool
+			// silently occupying that much after being dismissed is the exact
+			// complaint it exists to answer. ADR-0055 already accepts that a result
+			// does not survive the process, so nothing durable is lost by exiting.
+			ApplicationShouldTerminateAfterLastWindowClosed: true,
 		},
 	})
 	emit = func(name string, data any) {
@@ -91,7 +100,7 @@ func main() {
 		app.Event.Emit(name, data)
 	}
 
-	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
+	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:     "Marmot",
 		Width:     968,
 		Height:    151,
@@ -109,14 +118,6 @@ func main() {
 		BackgroundColour: application.NewRGB(43, 44, 49),
 		URL:              "/",
 	})
-	window.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-		window.Hide()
-		event.Cancel()
-	})
-	app.Event.OnApplicationEvent(events.Mac.ApplicationShouldHandleReopen, func(*application.ApplicationEvent) {
-		window.Show()
-	})
-
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}

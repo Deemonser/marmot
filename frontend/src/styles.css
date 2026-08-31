@@ -24,43 +24,37 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
 
 .app-shell { position: relative; min-height: 100vh; background: #2b2c31; color: #f1f1f3; }
 
-/* The page change is the window resize (R-066): the reference ramps its window
-   height linearly -- twelve frames of about 49.4pt at 60fps, Y fixed -- and does
-   not animate its content at all. The resize runs from a frame loop in App.tsx;
-   what is left here is a short opacity fade so content revealed by the growing
-   window does not pop in.
+/* The page change is a window resize plus a horizontal push of the content
+   (R-066). The reference ramps its window height linearly -- twelve frames of
+   about 49.4pt at 60fps, Y fixed -- and pushes the two pages sideways at the same
+   time: going back, the result page's wheel and list slide right off the edge
+   while the source row enters from the left. Forward is the mirror.
 
-   No scale. The window is changing height, and scaling what is inside at the same
-   time is two motions fighting -- which is what the first attempt did, and why no
-   transition worth the name was visible. */
-@keyframes page-enter { from { opacity: 0; } to { opacity: 1; } }
-@keyframes page-leave { from { opacity: 1; } to { opacity: 0; } }
-/* The outgoing page leaves the flow so the two overlap instead of stacking, and
-   stops taking clicks: it is a picture of where you were, not a live page. */
-.workspace.is-out {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  animation: page-leave 140ms linear both;
-}
-.app-shell-result .workspace.has-result:not(.is-out),
-.app-shell-source .workspace.has-source:not(.is-out) {
-  animation: page-enter 140ms linear both;
-}
-.app-shell.is-leaving .workspace.has-result { animation: page-leave 140ms linear both; }
-.app-shell.is-leaving .workspace.has-source { animation: page-enter 140ms linear both; }
-/* The corners belong to the result page, so they travel with it. */
-.app-shell.is-leaving .collector-dock,
-.app-shell.is-leaving .advice-corner { opacity: 0; transition: opacity 140ms linear; }
+   The resize runs from a frame loop in App.tsx. This is the push. No scale and no
+   crossfade: the window is changing height, and scaling or dissolving the content
+   while it does is a second motion competing with the first -- which is what the
+   first two attempts did, and why no transition worth the name was visible. */
+@keyframes push-in-from-right { from { transform: translateX(100%); } to { transform: none; } }
+@keyframes push-in-from-left { from { transform: translateX(-100%); } to { transform: none; } }
+@keyframes push-out-to-left { from { transform: none; } to { transform: translateX(-100%); } }
+@keyframes push-out-to-right { from { transform: none; } to { transform: translateX(100%); } }
+/* The outgoing page leaves the flow so the two travel side by side instead of
+   stacking, and stops taking clicks: it is a picture of where you were. */
+.workspace.is-out { position: absolute; inset: 0; pointer-events: none; }
+/* Neither page may spill a scrollbar or a sliver past the window while it moves. */
+.app-shell.is-leaving, .app-shell.is-advancing { overflow: hidden; }
+/* Back: result out to the right, source in from the left. */
+.app-shell.is-leaving .workspace.has-result { animation: push-out-to-right 200ms linear both; }
+.app-shell.is-leaving .workspace.has-source { animation: push-in-from-left 200ms linear both; }
+/* Forward: source out to the left, result in from the right. */
+.app-shell.is-advancing .workspace.has-source { animation: push-out-to-left 200ms linear both; }
+.app-shell.is-advancing .workspace.has-result { animation: push-in-from-right 200ms linear both; }
 @media (prefers-reduced-motion: reduce) {
-  .workspace.is-out,
-  .app-shell-result .workspace.has-result:not(.is-out),
-  .app-shell-source .workspace.has-source:not(.is-out),
   .app-shell.is-leaving .workspace.has-result,
-  .app-shell.is-leaving .workspace.has-source { animation: none; }
+  .app-shell.is-leaving .workspace.has-source,
+  .app-shell.is-advancing .workspace.has-source,
+  .app-shell.is-advancing .workspace.has-result { animation: none; }
   .workspace.is-out { display: none; }
-  .app-shell.is-leaving .collector-dock,
-  .app-shell.is-leaving .advice-corner { transition: none; }
 }
 .app-shell-source { overflow: auto; }
 .app-shell-result { height: 100vh; overflow: hidden; }

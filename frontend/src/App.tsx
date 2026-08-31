@@ -6,7 +6,7 @@ import type { HueBand } from "./sunburst";
 import { autoStageable, stageSummary } from "./advice";
 import { countdownDigit, countdownFraction, deleteFraction, ringOffset } from "./countdown";
 import { meterColor } from "./meter";
-import { contentFadeMs, frameMs, leaveDelay, prefersReducedMotion, resizeSteps } from "./pagefade";
+import { contentPushMs, frameMs, leaveDelay, prefersReducedMotion, resizeSteps } from "./pagefade";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
@@ -1529,7 +1529,7 @@ export default function App() {
       return;
     }
     setSourceFading(true);
-    const timer = window.setTimeout(() => setSourceFading(false), contentFadeMs);
+    const timer = window.setTimeout(() => setSourceFading(false), contentPushMs);
     return () => window.clearTimeout(timer);
   }, [showResult]);
   const currentPage = pages[pageIndex] ?? null;
@@ -2628,7 +2628,8 @@ export default function App() {
 
   return (
     <div className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source")
-      + (leavingResult ? " is-leaving" : "") + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
+      + (leavingResult ? " is-leaving" : "") + (sourceFading ? " is-advancing" : "")
+      + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
       {/* One chrome row, like the reference: window buttons, navigation and the
           breadcrumb trail. Everything else that used to live up here (title
           block, counters, history meta) is technical detail the reference never

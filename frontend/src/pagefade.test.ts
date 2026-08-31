@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { contentFadeMs, leaveDelay, measuredStepPt, resizeSteps, windowResizeMs } from "./pagefade.ts";
+import { contentPushMs, contentPushPercent, leaveDelay, measuredStepPt, resizeSteps, windowResizeMs } from "./pagefade.ts";
 
 // R-066 measured the reference: 152 -> 745 in 193ms in twelve uniform steps of
 // about 49.4pt. Ours must move at the same speed.
@@ -36,10 +36,15 @@ test("a shorter distance takes fewer frames, not smaller steps", () => {
   assert.deepEqual(resizeSteps(300, 300.4), []);
 });
 
-// The content fade must finish with the resize, not after it, or the window
-// settles and then the content is still catching up.
-test("the content fade is shorter than the resize", () => {
-  assert.ok(contentFadeMs < windowResizeMs);
+// The push and the window ramp are one movement: if they ran to different clocks
+// the window would settle while the content was still travelling.
+test("the content push runs on the window ramp's clock", () => {
+  assert.equal(contentPushMs, windowResizeMs);
+});
+
+// A partial push leaves a sliver of the old page parked at the edge.
+test("the outgoing page leaves completely", () => {
+  assert.equal(contentPushPercent, 100);
 });
 
 test("reduced motion removes the delay, not just the animation", () => {
