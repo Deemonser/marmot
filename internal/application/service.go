@@ -1158,6 +1158,13 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 	}
 	// Stamped where the bar stops moving: everything after this is roll-up and
 	// publish, which the user sees as the progress standing still.
+	//
+	// Note what `walk` therefore measures. enqueueBatch is bounded, so when the
+	// store writer falls behind the walk it blocks and the scanner runs at the
+	// writer's pace. Measured on this machine: the scanner alone over `/` is 13.8s
+	// with a no-op emitter, and the same walk inside the application is 29.4s with
+	// a 128ms tail. So `walk` is the walk AND the insert, and the insert is the
+	// scan's bottleneck -- not the filesystem (R-067).
 	walkEnded := time.Now()
 	close(events)
 	<-writerDone

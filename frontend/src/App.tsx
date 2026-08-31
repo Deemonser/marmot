@@ -1054,9 +1054,23 @@ function VolumeTile({
 	// walkable, so the counted total cannot reach it (ADR-0052 §5). There is no
 	// "fill to 100% on completion" branch because there is no frame to show it in —
 	// the row stops rendering the bar the moment the state leaves "running".
-	const scanFraction = scanDenominator > 0
-		? Math.max(0, Math.min(1, (scanStatus?.countedBytes ?? 0) / scanDenominator))
-		: null;
+	// Once the counted bytes pass the denominator there is nothing left to
+	// measure, and a bar pinned at 100% for the rest of the scan says "done" when
+	// it means "still going". Measured on this machine: counted reached 119% of the
+	// volume's used bytes and the bar sat full for roughly the last 40% of a 25s
+	// scan -- which is exactly what "进度都满了但还要等好一会儿" is.
+	//
+	// The overshoot is real and not a bug in the denominator: the walk sums
+	// allocated sizes, so an APFS clone is charged twice (R-065) and
+	// /System/Volumes/Update/mnt1, a snapshot of /, is counted again. The
+	// denominator comes from diskutil and is container-aware, so it is the honest
+	// number. When the numerator outruns it, the only truthful display is "working,
+	// amount unknown".
+	const rawFraction = scanDenominator > 0 ? (scanStatus?.countedBytes ?? 0) / scanDenominator : null;
+	const scanOvershot = rawFraction !== null && rawFraction >= 1;
+	const scanFraction = rawFraction === null || scanOvershot
+		? null
+		: Math.max(0, Math.min(1, rawFraction));
 	const scanProgressLabel = scanFraction === null
 		? scanLabel
 		: `${scanLabel}；已统计 ${formatBytes(scanStatus?.countedBytes ?? 0)}，占卷已用 ${formatBytes(scanDenominator)} 的 ${(scanFraction * 100).toFixed(0)}%`;
@@ -1077,6 +1091,7 @@ function VolumeTile({
 	    <div className="volume-meter">
 	      <div
 	        className={"meter-track" + (busy ? (scanning && scanFraction === null ? " is-scanning is-indeterminate" : " is-scanning") : "")}
+	        data-phase={scanning ? scanStatus?.phase : undefined}
 	        role={busy ? "progressbar" : undefined}
 	        aria-label={finishing ? "正在整理结果" : scanning ? scanProgressLabel : capacityLabel}
 	        aria-valuetext={busy ? (finishing ? "正在整理结果" : scanProgressLabel) : undefined}
@@ -1108,7 +1123,11 @@ function VolumeTile({
 	        )}
 	      </div>
 	      <div className={"meter-caption" + (busy ? " is-scanning" : "")}>
-	        {finishing ? <em>正在整理结果…</em> : scanning ? <em>扫描中…</em> : <b>{formatBytes(source.freeBytes)}</b>}
+	        {finishing
+	          ? <em>正在整理结果…</em>
+	          : scanning
+	            ? <em>{(scanStatus && phaseLabels[scanStatus.phase]) ?? "扫描中"}…</em>
+	            : <b>{formatBytes(source.freeBytes)}</b>}
 	      </div>
 	    </div>
 	    <div className="volume-action">
