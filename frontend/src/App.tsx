@@ -2300,14 +2300,31 @@ export default function App() {
       setPlan(await MarmotService.ConfirmCleanupPlan(planID, version));
       const applied = await MarmotService.ExecuteCleanupPlan(planID, version);
       setPlan(applied);
-      if (applied.state === "applied") {
-        setCollector([]);
-    setAdvice(null);
-    setAdviceOpen(false);
-    setAdviceDetail(null);
+      // Execution is per item: some move, some do not, and the plan state is one
+      // word for the lot. Reporting that word ("failed") threw away the per-item
+      // reasons that arrived in the same response -- so a run that moved 33 GB
+      // and skipped one busy cache read as a total failure with no explanation.
+      const results = applied.results ?? [];
+      const moved = results.filter((item) => item.state === "applied");
+      const stuck = results.filter((item) => item.state !== "applied");
+      // Whatever moved is gone, so it must leave the dock even when something
+      // else did not. Leaving it staged invites a retry that can only fail: the
+      // path is no longer there to delete.
+      if (moved.length > 0) {
+        const movedPaths = new Set(moved.map((item) => item.path));
+        setCollector((current) => current.filter((entry) => !movedPaths.has(entryNode(entry)?.path ?? "")));
+        setAdvice(null);
+        setAdviceOpen(false);
+        setAdviceDetail(null);
+      }
+      if (stuck.length === 0) {
         setNotice("已移入废纸篓，请重新扫描刷新结果");
       } else {
-        setNotice(applied.state);
+        setNotice(
+          `已移入废纸篓 ${moved.length} 项，${stuck.length} 项未执行：` +
+            stuck.slice(0, 3).map((item) => `${item.path.split("/").pop()}（${item.reason}）`).join("；") +
+            (stuck.length > 3 ? ` 等 ${stuck.length} 项` : ""),
+        );
       }
     } catch (error) {
       setNotice(String(error));

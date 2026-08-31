@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -216,7 +217,9 @@ func TestValidateCleanupPlanDetectsReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if validation.Valid || len(validation.Items) != 1 || validation.Items[0].Reason != "file identity changed" {
+	// The reason is shown to the user verbatim, so it is worded for them rather
+	// than for a log grep.
+	if validation.Valid || len(validation.Items) != 1 || !strings.Contains(validation.Items[0].Reason, "已被替换") {
 		t.Fatalf("expected identity mismatch, got %#v", validation)
 	}
 }

@@ -1408,6 +1408,7 @@ func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, er
 		// answer is advisory and travels through the frontend, this one is the
 		// gate. Pure policy, no I/O, so it runs before the store is touched.
 		if reason := cleanup.DeleteBlock(path); reason != "" {
+			log.Printf("cleanup: 拒绝建立计划，%s 受保护（%s）", path, reason)
 			return CleanupPlan{}, fmt.Errorf("该对象不允许删除 (%s): %s", reason, path)
 		}
 		seenPaths[path] = struct{}{}
@@ -1430,7 +1431,8 @@ func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, er
 			return CleanupPlan{}, err
 		}
 		if !matchesSnapshotNode(node, item) {
-			return CleanupPlan{}, fmt.Errorf("cleanup path changed since scan: %s", path)
+			log.Printf("cleanup: 拒绝建立计划，%s 在扫描之后发生了变化", path)
+			return CleanupPlan{}, fmt.Errorf("该对象在扫描之后发生了变化，重新扫描后再试: %s", path)
 		}
 		items = append(items, item)
 	}
@@ -1481,19 +1483,27 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 	}
 	plan.Results = plan.Results[:0]
 	failed := false
+	applied := 0
 	for _, item := range plan.items {
 		if valid, reason := s.validateCleanupItem(item); !valid {
 			failed = true
+			log.Printf("cleanup %s: 跳过 %s：%s", plan.ID, item.Path, reason)
 			plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "skipped", Reason: reason})
 			continue
 		}
 		if _, err := s.trash.Trash(item.Path); err != nil {
 			failed = true
+			log.Printf("cleanup %s: 失败 %s：%v", plan.ID, item.Path, err)
 			plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "failed", Reason: err.Error()})
 			continue
 		}
+		applied++
 		plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "applied", Reason: "moved to Trash"})
 	}
+	// Written whatever the outcome. This is the record that was missing when a
+	// run "failed" after moving 33 GB: the plan state is one word for a per-item
+	// outcome, and without the per-item lines nobody could tell which it was.
+	log.Printf("cleanup %s 完成：%d 项，成功 %d，未执行 %d", plan.ID, len(plan.items), applied, len(plan.items)-applied)
 	if failed {
 		plan.State = "failed"
 	} else {
@@ -1622,10 +1632,13 @@ func (s *Service) validateCleanupItem(item cleanup.Item) (bool, string) {
 		return false, err.Error()
 	}
 	if current.Device != item.Device || current.Inode != item.Inode {
-		return false, "file identity changed"
+		return false, "对象已被替换（不是扫描时的那一个）"
 	}
 	if current.Size != item.Size || current.Mode != item.Mode || !current.Modified.Equal(item.Modified) {
-		return false, "file metadata changed"
+		// The common case by far, and it is not an error: a cache directory that
+		// something is still writing to changes between the scan and the delete.
+		// Saying "metadata changed" left the user with nothing to do about it.
+		return false, "扫描之后内容有变化（多半是仍在被写入的缓存），重新扫描后再试"
 	}
 	return true, "ready"
 }

@@ -32,6 +32,14 @@ func main() {
 	store := memtree.OpenStore()
 	defer store.Close()
 
+	// Before anything else that could fail, so the failure is written down.
+	if logFile, logPath, logErr := platform.OpenLog(); logErr != nil {
+		log.Printf("无法写入日志文件，仅输出到 stderr: %v", logErr)
+	} else {
+		defer logFile.Close()
+		log.Printf("日志文件: %s", logPath)
+	}
+
 	adapter := platform.Adapter{}
 	var emit func(string, any)
 	legacyCacheDir, err := appCacheDir()
