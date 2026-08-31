@@ -150,6 +150,8 @@ export interface CleanupProgress {
     "done": number;
     "total": number;
     "current": string;
+    "doneBytes": number;
+    "totalBytes": number;
 }
 
 export interface CleanupValidation {

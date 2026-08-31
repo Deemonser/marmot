@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { countdownDigit, countdownFraction, ringOffset } from "./countdown.ts";
+import { countdownDigit, countdownFraction, deleteFraction, ringOffset } from "./countdown.ts";
 
 const total = 5000;
 
@@ -42,4 +42,40 @@ test("out-of-range time never draws an impossible ring", () => {
   assert.equal(countdownFraction(-500, total), 0);
   assert.equal(countdownFraction(total + 500, total), 1);
   assert.equal(countdownDigit(-500), 0);
+});
+
+// The two phases share one expression and must run in opposite directions: the
+// countdown's arc end retreats anticlockwise, the deletion's grows clockwise.
+// Both are checked through the offset, which is what actually reaches the DOM.
+test("the countdown drains and the deletion fills, on one formula", () => {
+  const circumference = 2 * Math.PI * 20;
+  // Countdown: full ring at the start, empty at zero.
+  assert.equal(ringOffset(countdownFraction(5000, 5000), 20), 0);
+  assert.equal(ringOffset(countdownFraction(0, 5000), 20), circumference);
+  // Deletion: empty at the start, full at the end.
+  assert.equal(ringOffset(deleteFraction(0, 33e9), 20), circumference);
+  assert.equal(ringOffset(deleteFraction(33e9, 33e9), 20), 0);
+  // And it is monotonic in between, or the ring would go backwards.
+  let previous = Infinity;
+  for (let done = 0; done <= 33e9; done += 1e9) {
+    const offset = ringOffset(deleteFraction(done, 33e9), 20);
+    assert.ok(offset <= previous + 1e-9, `offset rose from ${previous} to ${offset}`);
+    previous = offset;
+  }
+});
+
+// The case that made byte weighting necessary: one item holding most of the plan.
+// By item count this run reads 8% for almost all of its duration.
+test("progress follows bytes, not item count", () => {
+  const sizes = [18.5e9, ...Array(11).fill(1.3e9)];
+  const total = sizes.reduce((sum, size) => sum + size, 0);
+  // After the big one, most of the work really is done.
+  assert.ok(deleteFraction(18.5e9, total) > 0.55, "the largest item barely moved the ring");
+  // Whereas one item of twelve is 8%.
+  assert.ok(1 / 12 < 0.1);
+});
+
+test("a plan with no measurable bytes does not divide by zero", () => {
+  assert.equal(deleteFraction(0, 0), 0);
+  assert.equal(deleteFraction(5, 0), 0);
 });

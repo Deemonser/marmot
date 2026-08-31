@@ -4,7 +4,7 @@ import type { ArcGeom, MorphPlan } from "./morph";
 import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstHiddenSpace, sunburstEndAngle, previewDwellMs, previewLeaveMs } from "./sunburst";
 import type { HueBand } from "./sunburst";
 import { autoStageable, stageSummary } from "./advice";
-import { countdownDigit, countdownFraction, ringOffset } from "./countdown";
+import { countdownDigit, countdownFraction, deleteFraction, ringOffset } from "./countdown";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
@@ -1389,7 +1389,7 @@ export default function App() {
   // Where a deletion has got to. Moving to the trash was a rename and finished
   // before the UI could show anything; deleting unlinks every file, so a 18.5 GB
   // cache takes as long as it takes and silence reads as a hang.
-  const [cleanupAt, setCleanupAt] = useState<{ done: number; total: number; current: string } | null>(null);
+  const [cleanupAt, setCleanupAt] = useState<{ done: number; total: number; current: string; doneBytes: number; totalBytes: number } | null>(null);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
   const [notice, setNotice] = useState("");
@@ -1640,9 +1640,11 @@ export default function App() {
     });
     // The native row menu only reports which item was picked; the action itself
     // runs here, through the same calls the buttons use (ADR-0051 §4).
-    const offCleanup = Events.On("cleanup-progress", (event: { data: { done: number; total: number; current: string } }) => {
-      const { done, total, current } = event.data;
-      setCleanupAt(done >= total ? null : { done, total, current });
+    const offCleanup = Events.On("cleanup-progress", (event: {
+      data: { done: number; total: number; current: string; doneBytes: number; totalBytes: number };
+    }) => {
+      const { done, total, current, doneBytes, totalBytes } = event.data;
+      setCleanupAt(done >= total ? null : { done, total, current, doneBytes, totalBytes });
     });
     const offMenu = Events.On("volume-menu", (event: { data: { sourceId: string; action: string } }) => {
       void runVolumeMenuAction(event.data.sourceId, event.data.action);
@@ -2714,20 +2716,36 @@ export default function App() {
               })}
             </div>}
             <div className="collector-bar">
-              <span className={"collector-target is-filled" + (countdown !== null ? " is-counting" : "")} aria-hidden="true">
-                {countdown !== null && (
-                  <svg className="collector-ring" viewBox="0 0 44 44">
+              <span
+                className={"collector-target is-filled"
+                  + (countdown !== null ? " is-counting" : "")
+                  + (cleanupAt ? " is-deleting" : "")}
+                aria-hidden="true"
+              >
+                {/* One ring, two phases, one expression. offset = C * (1 - f)
+                    draws the first f of the path clockwise from twelve o'clock, so
+                    a falling fraction retreats the arc anticlockwise and a rising
+                    one grows it clockwise. Nothing to keep in sync between them. */}
+                {(countdown !== null || cleanupAt) && (
+                  <svg className={"collector-ring" + (cleanupAt ? " is-deleting" : "")} viewBox="0 0 44 44">
                     <circle
                       cx="22"
                       cy="22"
                       r="20"
                       strokeDasharray={2 * Math.PI * 20}
-                      strokeDashoffset={ringOffset(ringFraction, 20)}
+                      strokeDashoffset={ringOffset(
+                        cleanupAt ? deleteFraction(cleanupAt.doneBytes, cleanupAt.totalBytes) : ringFraction,
+                        20,
+                      )}
                     />
                   </svg>
                 )}
                 <span className="collector-count">
-                  {countdown !== null ? countdown : formatBytes(collectorBytes).split(" ")[0]}
+                  {cleanupAt
+                    ? Math.round(deleteFraction(cleanupAt.doneBytes, cleanupAt.totalBytes) * 100) + "%"
+                    : countdown !== null
+                      ? countdown
+                      : formatBytes(collectorBytes).split(" ")[0]}
                 </span>
               </span>
               <span className="collector-caption">

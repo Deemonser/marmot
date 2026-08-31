@@ -59,11 +59,13 @@ type ProjectedEntry struct {
 // the constant-time rename a move to the trash was, so the UI has to be able to
 // say where it is.
 type CleanupProgress struct {
-	PlanID  string `json:"planId"`
-	Version int64  `json:"version"`
-	Done    int    `json:"done"`
-	Total   int    `json:"total"`
-	Current string `json:"current"`
+	PlanID     string `json:"planId"`
+	Version    int64  `json:"version"`
+	Done       int    `json:"done"`
+	Total      int    `json:"total"`
+	Current    string `json:"current"`
+	DoneBytes  int64  `json:"doneBytes"`
+	TotalBytes int64  `json:"totalBytes"`
 }
 
 type ScanProgress struct {

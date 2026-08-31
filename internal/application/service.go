@@ -300,6 +300,10 @@ type CleanupProgress struct {
 	Done    int    `json:"done"`
 	Total   int    `json:"total"`
 	Current string `json:"current"`
+	// DoneBytes and TotalBytes are what the indicator should actually be drawn
+	// from. See cleanupPlan.weights for why item counts will not do.
+	DoneBytes  int64 `json:"doneBytes"`
+	TotalBytes int64 `json:"totalBytes"`
 }
 
 type CleanupItemResult struct {
@@ -325,6 +329,15 @@ type cleanupPlan struct {
 	mu sync.Mutex
 	CleanupPlan
 	items []cleanup.Item
+	// weights is each item's subtree size, taken from the snapshot node rather
+	// than from lstat: a directory's own Size is a dirent, not what it holds.
+	//
+	// Progress is reported by bytes, not by item index, because the items are
+	// nowhere near equal. A real plan here was twelve items of which one held 18.5
+	// GB and the rest a few hundred MB each; counting items would have parked the
+	// indicator at one twelfth for most of the run and then jumped it. An
+	// indicator that spends most of its time wrong is worse than none.
+	weights []int64
 }
 
 func NewService(deps Dependencies) *Service {
@@ -1440,6 +1453,7 @@ func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, er
 		return CleanupPlan{}, errors.New("parent and child cleanup items cannot overlap")
 	}
 	items := make([]cleanup.Item, 0, len(paths))
+	weights := make([]int64, 0, len(paths))
 	for _, path := range paths {
 		node, err := s.store.NodeByPath(request.SnapshotID, path)
 		if err != nil {
@@ -1452,13 +1466,14 @@ func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, er
 		if err != nil {
 			return CleanupPlan{}, err
 		}
+		weights = append(weights, node.OwnedAllocated)
 		if !matchesSnapshotNode(node, item) {
 			log.Printf("cleanup: 拒绝建立计划，%s 在扫描之后发生了变化", path)
 			return CleanupPlan{}, fmt.Errorf("该对象在扫描之后发生了变化，重新扫描后再试: %s", path)
 		}
 		items = append(items, item)
 	}
-	plan := &cleanupPlan{CleanupPlan: CleanupPlan{ID: fmt.Sprintf("plan-%d-%d", time.Now().UnixNano(), s.serial.Add(1)), SnapshotID: request.SnapshotID, Version: 1, State: "draft", Items: len(items), Results: make([]CleanupItemResult, 0, len(items))}, items: items}
+	plan := &cleanupPlan{CleanupPlan: CleanupPlan{ID: fmt.Sprintf("plan-%d-%d", time.Now().UnixNano(), s.serial.Add(1)), SnapshotID: request.SnapshotID, Version: 1, State: "draft", Items: len(items), Results: make([]CleanupItemResult, 0, len(items))}, items: items, weights: weights}
 	log.Printf("cleanup %s: 建立计划，%d 项", plan.ID, len(items))
 	s.mu.Lock()
 	s.plans[plan.ID] = plan
@@ -1513,11 +1528,24 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 	// it takes, and the call used to return only when all of it was done. With no
 	// progress that reads as a hang, on exactly the operation where a user most
 	// wants to know something is still happening.
+	var totalWeight, doneWeight int64
+	for _, weight := range plan.weights {
+		totalWeight += weight
+	}
 	for index, item := range plan.items {
 		s.emit("cleanup-progress", CleanupProgress{
 			PlanID: plan.ID, Version: plan.Version, Done: index, Total: len(plan.items),
-			Current: item.Path,
+			Current: item.Path, DoneBytes: doneWeight, TotalBytes: totalWeight,
 		})
+		// Credited immediately after its event, so every report says how many bytes
+		// were finished BEFORE the item it names. Done here rather than at the
+		// bottom of the loop because the skip and fail paths continue past it, and
+		// the item's turn is over either way -- an indicator that stalls on a
+		// skipped item is telling the user the wrong thing about a run that is
+		// still moving.
+		if index < len(plan.weights) {
+			doneWeight += plan.weights[index]
+		}
 		if valid, reason := s.validateCleanupItem(item); !valid {
 			failed = true
 			log.Printf("cleanup %s: 跳过 %s：%s", plan.ID, item.Path, reason)
@@ -1568,6 +1596,7 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 		plan.ID, len(plan.items), applied, len(plan.items)-applied, plan.Removed)
 	s.emit("cleanup-progress", CleanupProgress{
 		PlanID: plan.ID, Version: plan.Version, Done: len(plan.items), Total: len(plan.items),
+		DoneBytes: totalWeight, TotalBytes: totalWeight,
 	})
 	if failed {
 		plan.State = "failed"

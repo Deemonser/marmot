@@ -24,3 +24,18 @@ export function countdownFraction(remainingMs: number, totalMs: number): number 
 export function ringOffset(fraction: number, radius: number): number {
   return 2 * Math.PI * radius * (1 - fraction);
 }
+
+// deleteFraction is the same ring read the other way round. Given the same
+// expression -- offset = C * (1 - f) -- an SVG circle rotated -90deg draws the
+// first f of its path clockwise from twelve o'clock. So a fraction falling from 1
+// retreats the arc's end anticlockwise (the countdown) and a fraction rising from
+// 0 grows it clockwise (the deletion). One formula, two directions, and nothing
+// to keep in sync.
+//
+// By bytes, not by item. A measured plan was twelve items with one holding 18.5
+// GB of the 33 GB: by count the ring would have sat at 8% through most of the run
+// and then jumped, which is worse than no ring at all.
+export function deleteFraction(doneBytes: number, totalBytes: number): number {
+	if (totalBytes <= 0) return 0;
+	return Math.min(1, Math.max(0, doneBytes / totalBytes));
+}

@@ -458,6 +458,11 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    deadline. A 1s ease over a value that steps once a second is what made the ring
    lag the digit it is supposed to agree with. */
 .collector-ring circle { fill: none; stroke: #cf5b4f; stroke-width: 2.5; }
+/* Different phase, different colour: the red ring is a warning that something is
+   about to happen and can still be stopped; this one is work in progress that
+   cannot. */
+.collector-ring.is-deleting circle { stroke: #4c7cc4; transition: stroke-dashoffset 240ms linear; }
+.collector-target.is-deleting .collector-count { color: #9dc0ea; font-size: 12px; }
 .destructive-note { margin-left: 4px; color: #e2887c; font-weight: 400; }
 
 /* Colour dot by default, cross on hover. The name never shifts, because the two
