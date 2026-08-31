@@ -361,11 +361,66 @@ var Catalog = []Rule{
 		WhatBreaks:   "所有本地镜像、容器和卷会消失，包括未推送的镜像和容器内数据。",
 		HowToRestore: "镜像可重新拉取；卷里的数据无法恢复。建议改用 docker system prune。",
 	},
+	// ~/.gradle/caches was one 33.9 GB rule saying "safe, re-downloaded next
+	// build". That sentence was false about 31.7 GB of it. The parts do not cost
+	// the same thing to get back, and the difference is the whole decision:
+	//
+	//   transforms      19.7 GB  local CPU, no network
+	//   build-cache-1   12.0 GB  local CPU, no network
+	//   modules-2        2.8 GB  network -- and re-downloaded on the very next
+	//                            build of any project that uses those dependencies
+	//
+	// So the right advice is close to the opposite of what one blanket rule gave:
+	// take the 31.7 GB that costs a slower build, leave the 2.8 GB that costs a
+	// download you will immediately pay again. Splitting it is also why the folding
+	// in foldUnderSettledRules no longer swallows the inside of this directory --
+	// a safe rule absorbs its whole subtree, which is exactly what hid this.
 	{
-		Name: "Gradle 缓存", Category: "包管理器缓存",
-		Pattern: ".gradle/caches/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
-		WhatBreaks:   "下一次构建要重新下载依赖并重建转换产物，第一次会很慢。",
-		HowToRestore: "构建时自动重新下载。",
+		Name: "Gradle 转换产物", Category: "构建缓存",
+		Pattern: ".gradle/caches/*/transforms", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "不需要联网。下次构建重新执行 artifact transform（AAR 解包、dex 等），第一次明显变慢。",
+		HowToRestore: "构建时自动重建，输入来自已下载的依赖，不重新下载。",
+	},
+	{
+		Name: "Gradle 构建缓存", Category: "构建缓存",
+		Pattern: ".gradle/caches/build-cache-*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "不需要联网。命中过的任务要重新执行，下次构建变慢一次。",
+		HowToRestore: "构建时自动重建。Gradle 本身也会按默认 7 天回收其中不再使用的条目。",
+	},
+	{
+		Name: "Gradle 依赖下载", Category: "包管理器缓存",
+		// review, not safe, and this is the point of the split. These are the
+		// downloaded artifacts themselves: deleting them while you still build
+		// those projects buys space that the next build spends again, on the
+		// network. It is the one part of this directory where "删了立刻又下回来"
+		// is literally true.
+		Pattern: ".gradle/caches/modules-*", Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		WhatBreaks:   "要重新下载全部依赖。仍在构建的项目下次构建立刻把它们下回来，删了基本没有意义；只有确定不再构建这些项目才值得。",
+		HowToRestore: "构建时自动重新下载，需要联网且耗时。",
+	},
+	{
+		Name: "Gradle 编译分析缓存", Category: "构建缓存",
+		Pattern: ".gradle/caches/*/javaCompile", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "不需要联网。下次构建重新做编译回避分析，慢一次。",
+		HowToRestore: "构建时自动重建。",
+	},
+	{
+		Name: "Gradle 插桩 jar", Category: "构建缓存",
+		Pattern: ".gradle/caches/jars-*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "不需要联网。下次构建重新插桩，慢一次。",
+		HowToRestore: "构建时自动重建。",
+	},
+	{
+		Name: "Gradle 生成的 API jar", Category: "构建缓存",
+		Pattern: ".gradle/caches/*/generated-gradle-jars", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "不需要联网。下次构建重新生成 Gradle API jar。",
+		HowToRestore: "构建时自动重建。",
+	},
+	{
+		Name: "Gradle Kotlin DSL 缓存", Category: "构建缓存",
+		Pattern: ".gradle/caches/*/kotlin-dsl", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "不需要联网。下次构建重新编译 .gradle.kts 构建脚本与访问器。",
+		HowToRestore: "构建时自动重建。",
 	},
 	{
 		Name: "Maven 本地仓库", Category: "包管理器缓存",

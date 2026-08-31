@@ -303,3 +303,62 @@ func TestIDELocalHistoryIsProtected(t *testing.T) {
 		t.Fatalf("%s is a rebuildable index and must not be protected", index)
 	}
 }
+
+// ~/.gradle/caches was a single 33.9 GB "safe, re-downloaded next build" item.
+// That sentence was false about 31.7 GB of it, and the falsehood pointed the user
+// at the wrong bytes: the part that costs a download is the small part.
+func TestGradleCacheIsSplitByWhatItCostsToGetBack(t *testing.T) {
+	rule := func(path string) *Rule {
+		return Match(MatchContext{Path: path, ProjectIdleDays: NoProject})
+	}
+	// The two big ones cost CPU, not network, and say so.
+	for _, path := range []string{
+		"/Users/a/.gradle/caches/8.13/transforms",
+		"/Users/a/.gradle/caches/build-cache-1",
+	} {
+		hit := rule(path)
+		if hit == nil {
+			t.Fatalf("%s matched nothing", path)
+		}
+		if hit.Recovery != RecoveryRegenerable {
+			t.Errorf("%s is %q; it rebuilds from local inputs", hit.Name, hit.Recovery)
+		}
+		if hit.Risk != RiskSafe {
+			t.Errorf("%s is %q; a slower next build is not a decision to agonise over", hit.Name, hit.Risk)
+		}
+		if !strings.Contains(hit.WhatBreaks, "不需要联网") {
+			t.Errorf("%s does not say the recovery is offline: %q", hit.Name, hit.WhatBreaks)
+		}
+	}
+	// The downloaded artifacts are the opposite case, and the only part of this
+	// directory where "delete it and it comes straight back" is literally true.
+	downloads := rule("/Users/a/.gradle/caches/modules-2/files-2.1")
+	if downloads == nil || downloads.Name != "Gradle 依赖下载" {
+		t.Fatalf("the downloaded dependencies are not named separately: %#v", downloads)
+	}
+	if downloads.Recovery != RecoveryRedownloadable || downloads.Risk != RiskReview {
+		t.Errorf("downloads are %q/%q; they cost a download the next build pays again",
+			downloads.Recovery, downloads.Risk)
+	}
+	// Version numbering moves. build-cache-2 and modules-3 must not silently stop
+	// matching and reappear as an unexplained multi-GB blob.
+	for _, path := range []string{
+		"/Users/a/.gradle/caches/build-cache-2",
+		"/Users/a/.gradle/caches/modules-3/files-3.0",
+		"/Users/a/.gradle/caches/jars-11",
+		"/Users/a/.gradle/caches/9.6.1/transforms",
+	} {
+		if rule(path) == nil {
+			t.Errorf("%s matched nothing; a version bump must not blind the catalog", path)
+		}
+	}
+}
+
+// The blanket rule was safe, and a safe rule absorbs its whole subtree in
+// foldUnderSettledRules. That is what hid the split in the first place, so no
+// rule may claim the directory as a whole again.
+func TestNoRuleClaimsTheWholeGradleCacheDirectory(t *testing.T) {
+	if hit := Match(MatchContext{Path: "/Users/a/.gradle/caches", ProjectIdleDays: NoProject}); hit != nil {
+		t.Fatalf("~/.gradle/caches is claimed whole by %q, which folds its parts away again", hit.Name)
+	}
+}

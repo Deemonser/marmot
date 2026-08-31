@@ -271,10 +271,12 @@ func TestEvidencePackFoldsBelowSafeRules(t *testing.T) {
 		Root: "/Users/alice", FloorBytes: 1 << 20,
 		Nodes: []recommendation.EvidenceNode{
 			evidenceNode(1, 0, "/Users/alice", "alice", "directory", 10*gb, 1*gb),
-			// Gradle cache: safe + redownloadable, one decision for the lot.
-			evidenceNode(2, 1, "/Users/alice/.gradle/caches", "caches", "directory", 6*gb, 1*gb),
-			evidenceNode(3, 2, "/Users/alice/.gradle/caches/transforms", "transforms", "directory", 5*gb, 2*gb),
-			evidenceNode(4, 3, "/Users/alice/.gradle/caches/transforms/abc", "abc", "directory", 3*gb, 3*gb),
+			// Gradle's build cache: safe + regenerable, one decision for the lot.
+			// (~/.gradle/caches itself is deliberately no longer claimed whole --
+			// its parts do not cost the same thing to get back.)
+			evidenceNode(2, 1, "/Users/alice/.gradle/caches/build-cache-1", "build-cache-1", "directory", 6*gb, 1*gb),
+			evidenceNode(3, 2, "/Users/alice/.gradle/caches/build-cache-1/ab", "ab", "directory", 5*gb, 2*gb),
+			evidenceNode(4, 3, "/Users/alice/.gradle/caches/build-cache-1/ab/cd", "cd", "directory", 3*gb, 3*gb),
 			// User cache: review, so a person may keep one app and drop another.
 			evidenceNode(5, 1, "/Users/alice/Library/Caches", "Caches", "directory", 3*gb, 1*gb),
 			evidenceNode(6, 5, "/Users/alice/Library/Caches/com.example", "com.example", "directory", 2*gb, 2*gb),
@@ -531,41 +533,30 @@ func TestAGenerationOutranksARuleFiringInsideIt(t *testing.T) {
 	}
 }
 
-// The other direction. A rule on an ancestor offers a superset, so a generation
-// inside it must not take the claim: ~/.gradle/caches is one 33.9 GB offer on the
-// reference machine, and trading it for a single version directory inside would
-// lose most of the reclaimable space on the disk.
-func TestAnAncestorRuleKeepsItsClaimOverAGeneration(t *testing.T) {
-	aged := func(id, parent int64, path, name string, bytes int64, days int) recommendation.EvidenceNode {
-		node := evidenceNode(id, parent, path, name, "directory", bytes, bytes)
-		node.NewestModified = time.Now().Add(-time.Duration(days) * 24 * time.Hour)
-		return node
+// The other direction: a rule on an ancestor offers a superset, so a generation
+// inside it must not take the claim.
+//
+// This used to be an end-to-end test over ~/.gradle/caches, which claimed 33.9 GB
+// whole while holding version directories inside it. Splitting that cache by what
+// each part costs to get back removed the blanket rule, and with it the last
+// ancestor/generation pair in the catalog -- so there is no honest fixture left to
+// build the integration case from, and faking one would only test the fake.
+//
+// The ordering still has to hold: the next rule added could recreate the pair. So
+// it is tested on the mechanism, including the boundary case the old fixture never
+// reached -- a sibling whose path merely starts with the same characters.
+func TestAnAncestorClaimOutranksAGeneration(t *testing.T) {
+	claimed := []string{"/Users/alice/.gradle/caches"}
+	if !hasAncestorIn(claimed, "/Users/alice/.gradle/caches/8.13") {
+		t.Error("a generation inside a claimed directory was not seen as covered")
 	}
-	service, _ := serviceWithEvidence(recommendation.EvidenceResult{
-		Root: "/Users/alice", FloorBytes: 1 << 20,
-		Nodes: []recommendation.EvidenceNode{
-			evidenceNode(1, 0, "/Users/alice", "alice", "directory", 34*gb, 0),
-			aged(2, 1, "/Users/alice/.gradle/caches", "caches", 34*gb, 0),
-			aged(3, 2, "/Users/alice/.gradle/caches/9.6.1", "9.6.1", 20*gb, 0),
-			aged(4, 2, "/Users/alice/.gradle/caches/8.13", "8.13", 8*gb, 400),
-		},
-	})
-	pack, err := service.BuildEvidencePack(1)
-	if err != nil {
-		t.Fatal(err)
+	if hasAncestorIn(claimed, "/Users/alice/.gradle/caches") {
+		t.Error("a path was treated as its own ancestor, which would drop the claim itself")
 	}
-	findings := pack.RuleFindings()
-	if len(findings) == 0 {
-		t.Fatal("nothing was offered under a rule-covered cache")
+	if hasAncestorIn(claimed, "/Users/alice/.gradle/caches-old/8.13") {
+		t.Error("a sibling sharing a name prefix was treated as being inside")
 	}
-	if findings[0].Path != "/Users/alice/.gradle/caches" {
-		t.Fatalf("the whole cache lost its claim to something inside it: %s", findings[0].Path)
-	}
-	var total int64
-	for _, item := range findings {
-		total += item.ReclaimableBytes
-	}
-	if total > 34*gb {
-		t.Fatalf("the same bytes were offered twice: %s over a 34GB cache", formatBytes(total))
+	if hasAncestorIn(nil, "/Users/alice/.rustup/toolchains/1.89.0-aarch64-apple-darwin") {
+		t.Error("a generation with nothing claimed above it was still refused")
 	}
 }
