@@ -1,44 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { contentPushMs, contentPushPercent, leaveDelay, measuredStepPt, resizeSteps, windowResizeMs } from "./pagefade.ts";
+import { contentPushMs, contentPushPercent, leaveDelay, measuredStepPt, windowResizeMs } from "./pagefade.ts";
 
-// R-066 measured the reference: 152 -> 745 in 193ms in twelve uniform steps of
-// about 49.4pt. Ours must move at the same speed.
-test("the ramp matches the reference's measured step size", () => {
-  const steps = resizeSteps(152, 745);
-  assert.equal(steps.length, 12, `expected 12 frames, got ${steps.length}`);
-  assert.equal(steps[steps.length - 1], 745, "the last frame must land exactly on target");
-  const deltas = steps.map((height, index) => height - (index === 0 ? 152 : steps[index - 1]));
-  for (const delta of deltas) {
-    assert.ok(Math.abs(delta - measuredStepPt) < 2, `step of ${delta} is not the measured ${measuredStepPt}`);
-  }
+// The reference's step size stays recorded even though the ramp is not reproduced
+// (R-066 §4.1): it is the target if the simultaneous version is attempted again.
+test("the reference's measured step size is kept on record", () => {
+  assert.ok(measuredStepPt > 49 && measuredStepPt < 50);
+  assert.equal(Math.round(593 / measuredStepPt), 12, "593pt at 49.4pt per frame is the twelve frames measured");
 });
 
-// Linear, not eased: the reference's steps were uniform, so the first and last
-// must be the same size. An ease would make them differ by several times.
-test("the ramp is linear", () => {
-  const steps = resizeSteps(200, 715);
-  const first = steps[0] - 200;
-  const last = steps[steps.length - 1] - steps[steps.length - 2];
-  assert.ok(Math.abs(first - last) < 2, `first step ${first} against last ${last} is not linear`);
-});
-
-test("the ramp runs the same both ways", () => {
-  assert.equal(resizeSteps(745, 152).length, resizeSteps(152, 745).length);
-  assert.equal(resizeSteps(745, 152).at(-1), 152);
-});
-
-// Deriving the count from the step size keeps the speed constant. A fixed frame
-// count would make a taller window resize faster.
-test("a shorter distance takes fewer frames, not smaller steps", () => {
-  assert.ok(resizeSteps(200, 400).length < resizeSteps(200, 715).length);
-  assert.deepEqual(resizeSteps(300, 300), []);
-  assert.deepEqual(resizeSteps(300, 300.4), []);
-});
-
-// The push and the window ramp are one movement: if they ran to different clocks
-// the window would settle while the content was still travelling.
-test("the content push runs on the window ramp's clock", () => {
+// The push is the only motion now, so its duration is the transition's duration.
+test("the push runs for the transition's whole duration", () => {
   assert.equal(contentPushMs, windowResizeMs);
 });
 

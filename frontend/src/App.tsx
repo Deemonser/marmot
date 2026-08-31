@@ -6,7 +6,7 @@ import type { HueBand } from "./sunburst";
 import { autoStageable, stageSummary } from "./advice";
 import { countdownDigit, countdownFraction, deleteFraction, ringOffset } from "./countdown";
 import { meterColor } from "./meter";
-import { contentPushMs, frameMs, leaveDelay, prefersReducedMotion, resizeSteps } from "./pagefade";
+import { contentPushMs, leaveDelay, prefersReducedMotion } from "./pagefade";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
@@ -1760,55 +1760,37 @@ export default function App() {
 
   const sourceRows = Math.max(1, storageSources.length);
   const sourceAlert = Boolean(permission && permission.state !== "available");
-  // The window resize IS the page transition (R-066). The reference ramps its
-  // window height linearly -- twelve frames of about 49.4pt at 60fps, Y fixed --
-  // and this used to be one instant SetSize, which is why nothing about the page
-  // change looked smooth however the content was animated.
+  // The window is resized in ONE step, and as soon as the result is PENDING --
+  // before the map arrives and the page swaps -- so the content push runs against a
+  // viewport that is already its final size.
   //
-  // A row count or alert appearing is not a page change and stays instant: only
-  // crossing between source and result is ramped.
+  // The reference ramps its window height linearly and pushes the content at the
+  // same time (R-066). Reproducing both at once did not work here and the reason is
+  // structural: a webview lays out against its viewport, so ramping the window
+  // re-lays-out the result page at every step. Pinning the page's height stopped
+  // the squashing but then the document's own scroll offset, left over from the
+  // previous overflow, put the page halfway down; pinning the shell to the viewport
+  // improved it and still left an offset. Four verified attempts, each revealing
+  // another coupling between the resize and the layout.
+  //
+  // So the two motions are separated instead: the window changes size at the moment
+  // when the least is on screen, and the push -- the motion actually asked for --
+  // gets a stable viewport for its whole duration. R-066 §4.1 records that this
+  // trades away the reference's simultaneous ramp.
   const appliedHeight = useRef<number | null>(null);
-  const resizeFrame = useRef<number | null>(null);
   useEffect(() => {
-    const height = showResult
+    const wantsResultSize = showResult || resultPending;
+    const height = wantsResultSize
       ? resultWindowSize.height
       : sourceWindowSize.height + (sourceRows - 1) * sourceRowHeight + (sourceAlert ? 34 : 0);
-    const from = appliedHeight.current;
-    const apply = (next: number) => {
-      try {
-        void Window.SetSize(resultWindowSize.width, next).catch(() => undefined);
-      } catch {
-        // The ordinary browser preview does not expose the Wails window bridge.
-      }
-    };
-    if (resizeFrame.current !== null) {
-      window.clearTimeout(resizeFrame.current);
-      resizeFrame.current = null;
-    }
+    if (appliedHeight.current === height) return;
     appliedHeight.current = height;
-    const steps = from === null || prefersReducedMotion() ? [] : resizeSteps(from, height);
-    if (steps.length < 2) {
-      apply(height);
-      return;
+    try {
+      void Window.SetSize(resultWindowSize.width, height).catch(() => undefined);
+    } catch {
+      // The ordinary browser preview does not expose the Wails window bridge.
     }
-    let index = 0;
-    const tick = () => {
-      apply(steps[index]);
-      index += 1;
-      if (index < steps.length) {
-        resizeFrame.current = window.setTimeout(tick, frameMs);
-      } else {
-        resizeFrame.current = null;
-      }
-    };
-    tick();
-    return () => {
-      if (resizeFrame.current !== null) {
-        window.clearTimeout(resizeFrame.current);
-        resizeFrame.current = null;
-      }
-    };
-  }, [showResult, sourceRows, sourceAlert]);
+  }, [showResult, resultPending, sourceRows, sourceAlert]);
 
   async function startScan(nextRoot = root) {
     setBusy(true);
@@ -2634,9 +2616,11 @@ export default function App() {
   });
 
   return (
-    <div className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source")
-      + (leavingResult ? " is-leaving" : "") + (advancing ? " is-advancing" : "")
-      + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
+    <div
+      className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source")
+        + (leavingResult ? " is-leaving" : "") + (advancing ? " is-advancing" : "")
+        + (drag ? " is-dragging" : "")}
+      onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
       {/* One chrome row, like the reference: window buttons, navigation and the
           breadcrumb trail. Everything else that used to live up here (title
           block, counters, history meta) is technical detail the reference never

@@ -47,28 +47,13 @@ export function prefersReducedMotion(): boolean {
   }
 }
 
-// resizeSteps is the sequence of heights to apply, linear from `from` to `to`,
-// ending exactly on `to`. Measured step size is ~49.4pt per frame; deriving the
-// count from it keeps our speed the same as the reference's whatever the distance,
-// rather than fixing a duration and going faster on a taller window.
+// The reference's measured ramp -- 49.4pt per frame at 60fps -- is NOT reproduced.
+// R-066 §4.1: ramping the window while the content moves fought the webview's
+// viewport-driven layout through four verified attempts, so the window now changes
+// size in one step at the moment when the least is on screen, and the push gets a
+// stable viewport. The measurement stays in R-066 because it is still the target if
+// this is revisited.
 export const measuredStepPt = 49.4;
-
-export function resizeSteps(from: number, to: number): number[] {
-  const distance = Math.abs(to - from);
-  if (distance < 1) return [];
-  const count = Math.max(1, Math.round(distance / measuredStepPt));
-  const steps: number[] = [];
-  for (let index = 1; index <= count; index++) {
-    steps.push(Math.round(from + ((to - from) * index) / count));
-  }
-  // Exactly on target, never a pixel short: the last frame is the one that
-  // decides whether the window looks settled.
-  steps[steps.length - 1] = to;
-  return steps;
-}
-
-// frameMs at 60fps. The reference's steps arrive about every 16ms.
-export const frameMs = 1000 / 60;
 
 export function leaveDelay(): number {
   return prefersReducedMotion() ? 0 : windowResizeMs;

@@ -24,29 +24,29 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
 
 .app-shell { position: relative; min-height: 100vh; background: #2b2c31; color: #f1f1f3; }
 
-/* The page change is a window resize plus a horizontal push of the content
-   (R-066). The reference ramps its window height linearly -- twelve frames of
-   about 49.4pt at 60fps, Y fixed -- and pushes the two pages sideways at the same
-   time: going back, the result page's wheel and list slide right off the edge
-   while the source row enters from the left. Forward is the mirror.
+/* The page change is a horizontal push of the content (R-066 §3.4): going back,
+   the result page's wheel and list slide right off the edge while the source row
+   enters from the left; forward is the mirror. The two pages travel together.
 
-   The resize runs from a frame loop in App.tsx. This is the push. No scale and no
-   crossfade: the window is changing height, and scaling or dissolving the content
-   while it does is a second motion competing with the first -- which is what the
-   first two attempts did, and why no transition worth the name was visible. */
+   The window is resized in one step BEFORE the push (see App.tsx), so the viewport
+   is stable for the push's whole duration. This block was once wrapped in
+   compensations for resizing and pushing at once -- pinning the page's height,
+   fixing the shell to the viewport, disabling document scroll, resetting the scroll
+   offset -- every one of which treated the coupling instead of removing it. With a
+   stable viewport none of them are needed. */
 @keyframes push-in-from-right { from { transform: translateX(100%); } to { transform: none; } }
 @keyframes push-in-from-left { from { transform: translateX(-100%); } to { transform: none; } }
 @keyframes push-out-to-left { from { transform: none; } to { transform: translateX(-100%); } }
 @keyframes push-out-to-right { from { transform: none; } to { transform: translateX(100%); } }
 /* The outgoing page leaves the flow so the two travel side by side instead of
-   stacking, and stops taking clicks: it is a picture of where you were. */
-.workspace.is-out { position: absolute; inset: 0; pointer-events: none; }
-/* Neither page may spill a scrollbar or a sliver past the window while it moves. */
+   stacking, and stops taking clicks: it is a picture of where you were. Below the
+   chrome, so the breadcrumbs stay put and visible while the pages move. */
+.workspace.is-out { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.topbar { position: relative; z-index: 1; }
+/* Neither page may spill past the window while it travels. */
 .app-shell.is-leaving, .app-shell.is-advancing { overflow: hidden; }
-/* Back: result out to the right, source in from the left. */
 .app-shell.is-leaving .workspace.has-result { animation: push-out-to-right 200ms linear both; }
 .app-shell.is-leaving .workspace.has-source { animation: push-in-from-left 200ms linear both; }
-/* Forward: source out to the left, result in from the right. */
 .app-shell.is-advancing .workspace.has-source { animation: push-out-to-left 200ms linear both; }
 .app-shell.is-advancing .workspace.has-result { animation: push-in-from-right 200ms linear both; }
 @media (prefers-reduced-motion: reduce) {
