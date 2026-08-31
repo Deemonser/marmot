@@ -895,3 +895,67 @@ func TestMachineIntegrityGuardStillRefuses(t *testing.T) {
 		}
 	}
 }
+
+// The volume list of a real Mac carries mounts nested inside other mounts:
+// /System/Volumes/Update/mnt1 is the unsealed system volume staged under the
+// update mount — the same bytes the walk already counts at / — and
+// /System/Volumes/Update/SFR/mnt1 is the recovery system from another
+// container. The walk never crosses into /System/Volumes/Update, so attach can
+// never place them; pre-counting them put 19.4 GB of phantom bytes in the
+// progress numerator, and the bar sat pinned at 100% for the last seconds of
+// the walk (R-067 §2.3).
+func TestGroupVolumesInRootExcludesMountsNestedInOtherVolumes(t *testing.T) {
+	service := NewService(Dependencies{})
+	items := []ports.Volume{
+		{ID: "root", Path: "/", Kind: "system_root", UsedBytes: 17e9},
+		{ID: "data", Path: "/System/Volumes/Data", Kind: "data", UsedBytes: 149e9},
+		{ID: "preboot", Path: "/System/Volumes/Preboot", Kind: "system_auxiliary", UsedBytes: 18e9},
+		{ID: "update", Path: "/System/Volumes/Update", Kind: "system_auxiliary", UsedBytes: 770e6},
+		{ID: "vm", Path: "/System/Volumes/VM", Kind: "system_auxiliary", UsedBytes: 10e9},
+		{ID: "staged-system", Path: "/System/Volumes/Update/mnt1", Kind: "system_auxiliary", UsedBytes: 17e9},
+		{ID: "recovery", Path: "/System/Volumes/Update/SFR/mnt1", Kind: "system_auxiliary", UsedBytes: 2e9},
+	}
+
+	volumes, watched := service.groupVolumesInRoot("/", items)
+
+	got := map[string]bool{}
+	var preCounted int64
+	for _, volume := range volumes {
+		got[volume.id] = true
+		preCounted += volume.usedBytes
+	}
+	for _, id := range []string{"preboot", "update", "vm"} {
+		if !got[id] {
+			t.Errorf("volume %s should be pre-counted and attachable", id)
+		}
+	}
+	for _, id := range []string{"staged-system", "recovery"} {
+		if got[id] {
+			t.Errorf("volume %s is nested inside another mount: the walk can never reach its parent, so it must not be pre-counted", id)
+		}
+	}
+	if want := int64(18e9 + 770e6 + 10e9); preCounted != want {
+		t.Errorf("preCounted = %d, want %d", preCounted, want)
+	}
+	if watched == nil {
+		t.Fatal("watched paths missing")
+	}
+	if _, ok := watched["/System/Volumes"]; !ok {
+		t.Error("the attach parent /System/Volumes should be watched")
+	}
+}
+
+// A volume nested in another mount is still pre-counted when the scan root IS
+// the outer mount: from inside /System/Volumes/Update the walk does reach
+// mnt1's parent.
+func TestGroupVolumesInRootKeepsNestedMountWhenRootIsTheOuterVolume(t *testing.T) {
+	service := NewService(Dependencies{})
+	items := []ports.Volume{
+		{ID: "update", Path: "/System/Volumes/Update", Kind: "system_auxiliary", UsedBytes: 770e6},
+		{ID: "staged-system", Path: "/System/Volumes/Update/mnt1", Kind: "system_auxiliary", UsedBytes: 17e9},
+	}
+	volumes, _ := service.groupVolumesInRoot("/System/Volumes/Update", items)
+	if len(volumes) != 1 || volumes[0].id != "staged-system" {
+		t.Fatalf("scanning the outer mount itself should keep the nested volume, got %+v", volumes)
+	}
+}

@@ -73,9 +73,22 @@ func TestScanProgressCurve(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, volume := range catalog {
-		if volume.Kind == "system_auxiliary" && volume.Path != root && strings.HasPrefix(volume.Path, root) {
-			preCounted += int64(volume.UsedBytes)
+		if volume.Kind != "system_auxiliary" || volume.Path == root || !strings.HasPrefix(volume.Path, root) {
+			continue
 		}
+		// Same rule as the service: a mount nested inside another volume's mount
+		// (e.g. /System/Volumes/Update/mnt1) is unreachable by the walk and is
+		// not pre-counted.
+		nested := false
+		for _, other := range catalog {
+			if other.Path != root && other.Path != volume.Path && strings.HasPrefix(volume.Path, other.Path+"/") {
+				nested = true
+			}
+		}
+		if nested {
+			continue
+		}
+		preCounted += int64(volume.UsedBytes)
 	}
 
 	status, err := service.StartScan(marmotapp.ScanOptions{Root: root})
@@ -104,6 +117,29 @@ func TestScanProgressCurve(t *testing.T) {
 		// The terminal sample already carries the auxiliary volumes, so the bar's
 		// ceiling is final.Bytes over used — not final plus the pre-count.
 		t.Logf("PROBE final_bytes/used=%.4f  bar_ceiling=%.4f", float64(final.Bytes)/float64(used), float64(final.Bytes)/float64(used))
+	}
+
+	// The complaint this measures: the bar reads 100% while the walk is still
+	// running, so everything after the crossing is a silent wait. Where exactly
+	// is the crossing, and how much wall clock lies beyond it?
+	crossed := map[float64]time.Duration{}
+	for _, s := range samples {
+		if s.volume == 0 {
+			continue
+		}
+		frac := float64(s.counted) / float64(s.volume)
+		for _, mark := range []float64{0.95, 0.99, 1.0} {
+			if _, seen := crossed[mark]; !seen && frac >= mark {
+				crossed[mark] = s.at
+			}
+		}
+	}
+	for _, mark := range []float64{0.95, 0.99, 1.0} {
+		if at, seen := crossed[mark]; seen {
+			t.Logf("PROBE ui_crossing mark=%.2f at_s=%.2f remaining_s=%.2f", mark, at.Seconds(), (visible - at).Seconds())
+		} else {
+			t.Logf("PROBE ui_crossing mark=%.2f never reached", mark)
+		}
 	}
 
 	// Where the curve is at each tenth of the wall clock: this is what decides

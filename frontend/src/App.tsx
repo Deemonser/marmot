@@ -1061,15 +1061,18 @@ function VolumeTile({
 	// that filled and then started sweeping says "no idea", where full says "nearly
 	// there".
 	//
-	// The fallback stays, with room above it. preCounted still sums every group
-	// volume while attach skips those whose parent the walk never reached, so a
-	// small overshoot remains possible; a large one would mean the accounting broke
-	// again, and then "working, amount unknown" is the only true thing to show.
+	// The fallback stays, with room above it. The numerator (lstat allocated)
+	// and denominator (statfs used) measure different things, so a small
+	// overshoot remains possible on clone-heavy volumes; a large one would mean
+	// the accounting broke again, and then "working, amount unknown" is the
+	// only true thing to show. Capped at 99% either way: only the terminal
+	// event may fill the bar — a bar reading 100% while the walk still has
+	// seconds to run is a lie the user notices (R-067 §2.3).
 	const rawFraction = scanDenominator > 0 ? (scanStatus?.countedBytes ?? 0) / scanDenominator : null;
 	const scanOvershot = rawFraction !== null && rawFraction > 1.05;
 	const scanFraction = rawFraction === null || scanOvershot
 		? null
-		: Math.max(0, Math.min(1, rawFraction));
+		: Math.max(0, Math.min(0.99, rawFraction));
 	const scanProgressLabel = scanFraction === null
 		? scanLabel
 		: `${scanLabel}；已统计 ${formatBytes(scanStatus?.countedBytes ?? 0)}，占卷已用 ${formatBytes(scanDenominator)} 的 ${(scanFraction * 100).toFixed(0)}%`;

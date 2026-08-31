@@ -566,6 +566,17 @@ func (s *Service) groupVolumesInRoot(root string, items []ports.Volume) ([]group
 		if item.Kind != "system_auxiliary" || item.UsedBytes == 0 || path == root || !pathWithinRoot(root, path) {
 			continue
 		}
+		// A volume mounted inside another volume's mount point — e.g.
+		// /System/Volumes/Update/mnt1, the unsealed system volume staged under
+		// the update mount, whose bytes are the same bytes the walk already
+		// counts at / — is unreachable by the walk (it never crosses into the
+		// outer volume), so attachGroupVolumes can never place it. Pre-counting
+		// it puts phantom bytes in the numerator from t=0 that fall out again
+		// at the terminal state: measured 19.4 GB and the bar pinned at 100%
+		// for the last seconds of the walk (R-067 §2.3).
+		if nestedInAnotherVolume(root, path, items) {
+			continue
+		}
 		volumes = append(volumes, groupVolume{id: item.ID, path: path, name: filepath.Base(path), usedBytes: int64(item.UsedBytes)})
 		for ancestor := filepath.Dir(path); ; ancestor = filepath.Dir(ancestor) {
 			watched[ancestor] = 0
@@ -578,6 +589,21 @@ func (s *Service) groupVolumesInRoot(root string, items []ports.Volume) ([]group
 		return nil, nil
 	}
 	return volumes, watched
+}
+
+// nestedInAnotherVolume reports whether path sits inside some OTHER volume's
+// mount point (the scan root itself does not count as "another volume").
+func nestedInAnotherVolume(root, path string, items []ports.Volume) bool {
+	for _, other := range items {
+		otherPath := filepath.Clean(other.Path)
+		if otherPath == path || otherPath == root {
+			continue
+		}
+		if pathWithinRoot(otherPath, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func pathWithinRoot(root, path string) bool {
@@ -1220,11 +1246,11 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 			// gap between the two is a window where both are counted: measured, the
 			// numerator jumped to 118% of the denominator in it.
 			//
-			// Subtracted rather than zeroed, and floored at zero: preCounted sums
-			// every group volume while attach skips any whose parent the walk never
-			// reached (parentID == 0 above), so the two differ -- 46.7 GB against
-			// 36.1 GB here. What attach did not add is still un-walked and still
-			// belongs in the numerator.
+			// Subtracted rather than zeroed, and floored at zero: attach can still
+			// skip a volume whose parent directory the walk failed to reach (a
+			// permission hole, a race with an unmount), and what it did not add
+			// stays in the numerator. Since nested mounts are excluded up front
+			// (nestedInAnotherVolume), the two normally now agree to the byte.
 			task.preCounted -= attachedBytes
 			if task.preCounted < 0 {
 				task.preCounted = 0
