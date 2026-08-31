@@ -454,7 +454,10 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .collector-bar .collector-target.is-counting { border-color: #4a4b51; }
 .collector-bar .collector-count { position: relative; z-index: 1; color: #e9eaee; font-size: 15px; font-weight: 400; }
 .collector-ring { position: absolute; inset: -2px; width: calc(100% + 4px); height: calc(100% + 4px); transform: rotate(-90deg); }
-.collector-ring circle { fill: none; stroke: #cf5b4f; stroke-width: 2.5; transition: stroke-dashoffset 1s linear; }
+/* No transition: the offset is driven per frame from the countdown's own
+   deadline. A 1s ease over a value that steps once a second is what made the ring
+   lag the digit it is supposed to agree with. */
+.collector-ring circle { fill: none; stroke: #cf5b4f; stroke-width: 2.5; }
 .destructive-note { margin-left: 4px; color: #e2887c; font-weight: 400; }
 
 /* Colour dot by default, cross on hover. The name never shifts, because the two

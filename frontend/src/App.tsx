@@ -4,6 +4,7 @@ import type { ArcGeom, MorphPlan } from "./morph";
 import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstHiddenSpace, sunburstEndAngle, previewDwellMs, previewLeaveMs } from "./sunburst";
 import type { HueBand } from "./sunburst";
 import { autoStageable, stageSummary } from "./advice";
+import { countdownDigit, countdownFraction, ringOffset } from "./countdown";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
@@ -1430,6 +1431,14 @@ export default function App() {
   // end of the countdown, and the items go to the Trash, never deleted outright.
   const [countdown, setCountdown] = useState<number | null>(null);
   const countdownTimer = useRef<number | null>(null);
+  // The fraction of the countdown still to run, 1 down to 0. Kept beside the
+  // digit rather than derived from it: the ring used to be drawn from the integer
+  // and smoothed by a 1s CSS transition, so it was always animating towards the
+  // value the digit had already reached -- a full second behind it -- and it
+  // unmounted at 20% because the digit stopped at 1 and never showed 0. Both now
+  // come off the same clock.
+  const countdownLeft = useRef(1);
+  const [ringFraction, setRingFraction] = useState(1);
   const collectorRef = useRef<HTMLElement | null>(null);
   const mapRequest = useRef(0);
   const refreshTimer = useRef<number | undefined>(undefined);
@@ -2279,26 +2288,35 @@ export default function App() {
 
   function stopCountdown() {
     if (countdownTimer.current !== null) {
-      window.clearInterval(countdownTimer.current);
+      window.cancelAnimationFrame(countdownTimer.current);
       countdownTimer.current = null;
     }
     setCountdown(null);
+    setRingFraction(1);
+    countdownLeft.current = 1;
   }
 
   // The countdown is the confirmation: letting it finish confirms this exact
   // plan version, then the plan is re-validated and executed.
   function startCountdown(planID: string, version: number) {
     stopCountdown();
+    const deadline = Date.now() + countdownSeconds * 1000;
     setCountdown(countdownSeconds);
-    countdownTimer.current = window.setInterval(() => {
-      setCountdown((current) => {
-        if (current === null) return null;
-        if (current > 1) return current - 1;
+    setRingFraction(1);
+    countdownLeft.current = 1;
+    const tick = () => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
         stopCountdown();
         void runCleanup(planID, version);
-        return null;
-      });
-    }, 1000);
+        return;
+      }
+      setCountdown(countdownDigit(remaining));
+      countdownLeft.current = countdownFraction(remaining, countdownSeconds * 1000);
+      setRingFraction(countdownLeft.current);
+      countdownTimer.current = window.requestAnimationFrame(tick);
+    };
+    countdownTimer.current = window.requestAnimationFrame(tick);
   }
 
   async function runCleanup(planID: string, version: number) {
@@ -2704,7 +2722,7 @@ export default function App() {
                       cy="22"
                       r="20"
                       strokeDasharray={2 * Math.PI * 20}
-                      strokeDashoffset={2 * Math.PI * 20 * (1 - countdown / countdownSeconds)}
+                      strokeDashoffset={ringOffset(ringFraction, 20)}
                     />
                   </svg>
                 )}
