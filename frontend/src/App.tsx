@@ -1443,9 +1443,18 @@ export default function App() {
   // direction and animated in the other, which reads as a glitch rather than a
   // choice.
   const [leavingResult, setLeavingResult] = useState(false);
-  // Whether the forward push is running. Set during render rather than from an
-  // effect -- see below for why the effect version was visibly wrong.
-  const [advancing, setAdvancing] = useState(false);
+  // The forward push, in two phases. "armed" paints the start position, "running"
+  // moves to the end. A CSS keyframe applied to a freshly mounted element skips its
+  // own beginning: the animation's clock starts when the style is computed, and the
+  // result page's first paint costs a big SVG (thousands of arcs for a 2.2M-node
+  // tree), so by the time anything appeared the 200ms was most of the way through.
+  // Captured: 90ms after the click the page was already only 25% out instead of
+  // 100%, which is why it read as "starts near the middle, drifts left".
+  //
+  // Painting the start state first and moving on the NEXT frame makes the start
+  // observable, which is the whole point of an enter transition.
+  const [pushPhase, setPushPhase] = useState<"armed" | "running" | null>(null);
+  const advancing = pushPhase !== null;
   const [cleanupAt, setCleanupAt] = useState<{ done: number; total: number; current: string; doneBytes: number; totalBytes: number } | null>(null);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
@@ -1532,13 +1541,25 @@ export default function App() {
   const wasShowingResult = useRef(showResult);
   if (showResult !== wasShowingResult.current) {
     wasShowingResult.current = showResult;
-    setAdvancing(showResult && !prefersReducedMotion());
+    setPushPhase(showResult && !prefersReducedMotion() ? "armed" : null);
   }
   useEffect(() => {
-    if (!advancing) return;
-    const timer = window.setTimeout(() => setAdvancing(false), contentPushMs);
+    if (pushPhase !== "armed") return;
+    // Two frames, not one: the first is where the start position gets painted.
+    let second = 0;
+    const first = window.requestAnimationFrame(() => {
+      second = window.requestAnimationFrame(() => setPushPhase("running"));
+    });
+    return () => {
+      window.cancelAnimationFrame(first);
+      if (second) window.cancelAnimationFrame(second);
+    };
+  }, [pushPhase]);
+  useEffect(() => {
+    if (pushPhase !== "running") return;
+    const timer = window.setTimeout(() => setPushPhase(null), contentPushMs);
     return () => window.clearTimeout(timer);
-  }, [advancing]);
+  }, [pushPhase]);
   const currentPage = pages[pageIndex] ?? null;
   const currentParent = map?.parent ?? null;
   const entries = useMemo(
@@ -2618,7 +2639,8 @@ export default function App() {
   return (
     <div
       className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source")
-        + (leavingResult ? " is-leaving" : "") + (advancing ? " is-advancing" : "")
+        + (leavingResult ? " is-leaving" : "")
+        + (advancing ? " is-advancing" : "") + (pushPhase === "armed" ? " is-armed" : "")
         + (drag ? " is-dragging" : "")}
       onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
       {/* One chrome row, like the reference: window buttons, navigation and the

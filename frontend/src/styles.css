@@ -45,15 +45,25 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
 .topbar { position: relative; z-index: 1; }
 /* Neither page may spill past the window while it travels. */
 .app-shell.is-leaving, .app-shell.is-advancing { overflow: hidden; }
+/* Back: the outgoing page is already on screen, so a keyframe is safe there. */
 .app-shell.is-leaving .workspace.has-result { animation: push-out-to-right 200ms linear both; }
 .app-shell.is-leaving .workspace.has-source { animation: push-in-from-left 200ms linear both; }
-.app-shell.is-advancing .workspace.has-source { animation: push-out-to-left 200ms linear both; }
-.app-shell.is-advancing .workspace.has-result { animation: push-in-from-right 200ms linear both; }
+/* Forward: a transition in two phases instead of a keyframe. `is-armed` paints the
+   start position with no transition; the next frame drops it and the transition
+   runs. A keyframe on a freshly mounted element starts its clock at style
+   computation, and the result page's first paint is a large SVG -- measured, the
+   page was already 75% of the way in before anything was visible. */
+.app-shell.is-advancing .workspace.has-result,
+.app-shell.is-advancing .workspace.has-source { transition: transform 200ms linear; }
+.app-shell.is-advancing.is-armed .workspace.has-result { transform: translateX(100%); transition: none; }
+.app-shell.is-advancing.is-armed .workspace.has-source { transform: none; transition: none; }
+.app-shell.is-advancing:not(.is-armed) .workspace.has-result { transform: none; }
+.app-shell.is-advancing:not(.is-armed) .workspace.has-source { transform: translateX(-100%); }
 @media (prefers-reduced-motion: reduce) {
   .app-shell.is-leaving .workspace.has-result,
-  .app-shell.is-leaving .workspace.has-source,
-  .app-shell.is-advancing .workspace.has-source,
-  .app-shell.is-advancing .workspace.has-result { animation: none; }
+  .app-shell.is-leaving .workspace.has-source { animation: none; }
+  .app-shell.is-advancing .workspace.has-result,
+  .app-shell.is-advancing .workspace.has-source { transition: none; transform: none; }
   .workspace.is-out { display: none; }
 }
 .app-shell-source { overflow: auto; }
