@@ -23,6 +23,46 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
 }
 
 .app-shell { position: relative; min-height: 100vh; background: #2b2c31; color: #f1f1f3; }
+
+/* Source page and result page used to replace each other on one frame, and the
+   swap is the one moment where the whole window changes at once -- without a
+   transition it reads as a different app appearing rather than this one going
+   somewhere. Timings and scales live in pagefade.ts with their reasoning.
+
+   The entering page animates from wherever its data landed, so arriving costs no
+   extra latency. Leaving is held behind `is-leaving` for the length of the exit,
+   because back is a deliberate press and deserves to look like one movement. */
+@keyframes page-enter {
+  from { opacity: 0; transform: scale(.965); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes page-leave {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: scale(.985); }
+}
+.workspace { transform-origin: 50% 42%; }
+.app-shell-result .workspace.has-result,
+.app-shell-source .workspace.has-source {
+  animation: page-enter 260ms cubic-bezier(.32, 0, .24, 1) both;
+}
+/* The exit wins over the entry animation: the same element is mid-enter if the
+   user presses back immediately after a scan. */
+.app-shell.is-leaving .workspace.has-result {
+  animation: page-leave 180ms cubic-bezier(.4, 0, 1, 1) both;
+}
+/* The corners belong to the result page, so they travel with it rather than
+   sitting still while the page underneath moves. */
+.app-shell.is-leaving .collector-dock,
+.app-shell.is-leaving .advice-corner { opacity: 0; transition: opacity 180ms linear; }
+@media (prefers-reduced-motion: reduce) {
+  /* The state change is already immediate in this case (pagefade.leaveDelay), so
+     there is nothing to hold; the animations just go. */
+  .app-shell-result .workspace.has-result,
+  .app-shell-source .workspace.has-source,
+  .app-shell.is-leaving .workspace.has-result { animation: none; }
+  .app-shell.is-leaving .collector-dock,
+  .app-shell.is-leaving .advice-corner { transition: none; }
+}
 .app-shell-source { overflow: auto; }
 .app-shell-result { height: 100vh; overflow: hidden; }
 

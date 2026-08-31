@@ -6,6 +6,7 @@ import type { HueBand } from "./sunburst";
 import { autoStageable, stageSummary } from "./advice";
 import { countdownDigit, countdownFraction, deleteFraction, ringOffset } from "./countdown";
 import { meterColor } from "./meter";
+import { leaveDelay } from "./pagefade";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
@@ -1408,6 +1409,11 @@ export default function App() {
   // Where a deletion has got to. Moving to the trash was a rename and finished
   // before the UI could show anything; deleting unlinks every file, so a 18.5 GB
   // cache takes as long as it takes and silence reads as a hang.
+  // Set while the result page plays its exit, so the state change that unmounts
+  // it waits for the animation. Without holding it, back is instantaneous in one
+  // direction and animated in the other, which reads as a glitch rather than a
+  // choice.
+  const [leavingResult, setLeavingResult] = useState(false);
   const [cleanupAt, setCleanupAt] = useState<{ done: number; total: number; current: string; doneBytes: number; totalBytes: number } | null>(null);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
@@ -2195,6 +2201,22 @@ export default function App() {
     }
   }
 
+  // leaveResult plays the result page out, then commits. Reduced motion commits
+  // immediately: the preference is about motion, not about waiting.
+  function leaveResult(commit: () => void) {
+    const delay = leaveDelay();
+    if (delay === 0) {
+      commit();
+      return;
+    }
+    if (leavingResult) return;
+    setLeavingResult(true);
+    window.setTimeout(() => {
+      commit();
+      setLeavingResult(false);
+    }, delay);
+  }
+
   function forgetResult() {
     window.localStorage.removeItem("marmot.scanTaskId");
     setStatus(null);
@@ -2217,16 +2239,19 @@ export default function App() {
 
   function returnToSource() {
     if (!status || status.snapshotId <= 0 || scanActive) return;
-    setCachedStatus(status);
-    setStatus(null);
-    setMap(null);
-    setPages([]);
-    setPageIndex(-1);
-    setHoveredEntry(null);
-    setFocusedEntry(null);
-    setSelectedEntry(null);
-    setStaleEntry(null);
-    setCollectorOpen(false);
+    const leaving = status;
+    leaveResult(() => {
+      setCachedStatus(leaving);
+      setStatus(null);
+      setMap(null);
+      setPages([]);
+      setPageIndex(-1);
+      setHoveredEntry(null);
+      setFocusedEntry(null);
+      setSelectedEntry(null);
+      setStaleEntry(null);
+      setCollectorOpen(false);
+    });
   }
 
   function markStale(entry: MapEntry) {
@@ -2517,7 +2542,8 @@ export default function App() {
   });
 
   return (
-    <div className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source") + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
+    <div className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source")
+      + (leavingResult ? " is-leaving" : "") + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
       {/* One chrome row, like the reference: window buttons, navigation and the
           breadcrumb trail. Everything else that used to live up here (title
           block, counters, history meta) is technical detail the reference never
