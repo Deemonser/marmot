@@ -2331,7 +2331,9 @@ export default function App() {
       }
       setCleanupAt(null);
       if (stuck.length === 0) {
-        setNotice("已删除，空间已释放，正在重新扫描…");
+        setNotice(applied.removed > 0
+          ? "已删除，空间已释放"
+          : "已删除，空间已释放，正在重新扫描…");
       } else {
         setNotice(
           `已处理 ${moved.length} 项，${stuck.length} 项未执行：` +
@@ -2339,13 +2341,19 @@ export default function App() {
             (stuck.length > 3 ? ` 等 ${stuck.length} 项` : ""),
         );
       }
-      // ADR-0009 forbids writing a cleanup result back as a scan fact, and it is
-      // right to: subtracting the deleted nodes would give a map that agrees with
-      // nothing, least of all with a disk other processes are writing to at the
-      // same time. Re-scanning is the sanctioned way back into step, and doing it
-      // automatically is the difference between "the map is stale, go fix it" and
-      // the view simply catching up.
-      if (moved.length > 0) void startScan(statusRef.current?.root || root);
+      // The backend took the deleted subtrees out of the result in place, so the
+      // view only has to redraw -- no re-scan, and no waiting nine seconds to be
+      // told something already known exactly (ADR-0064). A store that could not
+      // do it reports removed === 0, and then a re-scan is the only honest way
+      // back into step.
+      if (moved.length > 0) {
+        const page = pageRef.current;
+        if (applied.removed > 0 && page && loadMapRef.current) {
+          void loadMapRef.current(page, "replace", undefined, false);
+        } else {
+          void startScan(statusRef.current?.root || root);
+        }
+      }
     } catch (error) {
       setCleanupAt(null);
       setNotice(String(error));

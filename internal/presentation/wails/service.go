@@ -216,6 +216,7 @@ type CleanupPlan struct {
 	Version    int64               `json:"version"`
 	State      string              `json:"state"`
 	Items      int                 `json:"items"`
+	Removed    int                 `json:"removed"`
 	Results    []CleanupItemResult `json:"results"`
 }
 
@@ -652,7 +653,7 @@ func cleanupPlan(plan application.CleanupPlan) CleanupPlan {
 	for _, item := range plan.Results {
 		results = append(results, CleanupItemResult{Path: item.Path, State: item.State, Reason: item.Reason})
 	}
-	return CleanupPlan{ID: plan.ID, SnapshotID: plan.SnapshotID, Version: plan.Version, State: plan.State, Items: plan.Items, Results: results}
+	return CleanupPlan{ID: plan.ID, SnapshotID: plan.SnapshotID, Version: plan.Version, State: plan.State, Items: plan.Items, Removed: plan.Removed, Results: results}
 }
 
 func mapEntry(entry application.MapEntry) MapEntry {

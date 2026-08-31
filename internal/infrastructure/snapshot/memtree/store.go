@@ -115,6 +115,33 @@ func (s *Store) SetSnapshotVolume(snapshotID int64, total, used, free uint64) er
 	return nil
 }
 
+// RemoveSubtree takes one deleted path out of the result and rolls what it held
+// out of its ancestors, bumping the snapshot version so the map redraws.
+//
+// The alternative was a full re-scan after every deletion, 9.5 seconds on this
+// machine, to establish something already known exactly. See tree.removeSubtree
+// for what it costs instead.
+func (s *Store) RemoveSubtree(snapshotID int64, path string) (scan.SubtreeRemoval, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, err := s.treeFor(snapshotID)
+	if err != nil {
+		return scan.SubtreeRemoval{}, err
+	}
+	id, ok := result.nodeIDByPath(path)
+	if !ok {
+		return scan.SubtreeRemoval{}, ErrNodeNotFound
+	}
+	gone, removed := result.removeSubtree(id)
+	if !removed {
+		return scan.SubtreeRemoval{}, ErrNodeNotFound
+	}
+	return scan.SubtreeRemoval{
+		Nodes: gone.nodes, Files: gone.files, Directories: gone.directories,
+		AllocatedBytes: gone.allocated, Version: result.version,
+	}, nil
+}
+
 // FinishScan makes the result queryable. It replaces the old two-step
 // publish-then-persist: with nothing to persist, the visible terminal state is
 // the only terminal state (ADR-0055).

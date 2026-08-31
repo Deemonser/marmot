@@ -130,6 +130,7 @@ export interface CleanupPlan {
     "version": number;
     "state": string;
     "items": number;
+    "removed": number;
     "results": CleanupItemResult[] | null;
 }
 

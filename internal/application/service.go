@@ -284,10 +284,11 @@ type CleanupPlan struct {
 	Version    int64  `json:"version"`
 	State      string `json:"state"`
 	Items      int    `json:"items"`
-	// Permanent is echoed back so the confirmation and the result can say which
-	// of the two things is about to happen, and which one did.
-	Permanent bool                `json:"permanent"`
-	Results   []CleanupItemResult `json:"results"`
+	// Removed is how many applied items were also taken out of the in-memory
+	// result, so the client knows whether the view is already in step or still
+	// needs a re-scan.
+	Removed int                 `json:"removed"`
+	Results []CleanupItemResult `json:"results"`
 }
 
 // CleanupProgress is emitted before each item and once at the end. Deleting is
@@ -474,6 +475,13 @@ func (s *Service) recordSnapshotVolume(snapshotID int64, root string, items []po
 // and recording the volume state the space map balances against (ADR-0052 §4).
 type snapshotIssueStore interface {
 	InsertIssues(int64, []scan.Issue) error
+}
+
+// subtreeRemovingStore lets a deletion be taken out of the result in place. An
+// optional capability like the two above: a store that cannot do it leaves the
+// result stale, and the user is told to re-scan rather than shown a wrong map.
+type subtreeRemovingStore interface {
+	RemoveSubtree(int64, string) (scan.SubtreeRemoval, error)
 }
 
 type snapshotVolumeStore interface {
@@ -1547,7 +1555,17 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 	// Written whatever the outcome. This is the record that was missing when a
 	// run "failed" after moving 33 GB: the plan state is one word for a per-item
 	// outcome, and without the per-item lines nobody could tell which it was.
-	log.Printf("cleanup %s 完成：%d 项，成功 %d，未执行 %d", plan.ID, len(plan.items), applied, len(plan.items)-applied)
+	// Take the deleted subtrees out of the result rather than re-scanning the
+	// disk to discover something already known exactly. A full re-scan here was
+	// 9.5s on 1.8M nodes; this is O(depth + siblings) per item (ADR-0064).
+	//
+	// ADR-0009 forbade writing a cleanup result back as a scan fact, and it was
+	// right while cleanup meant the trash: the bytes were still on the volume, so
+	// subtracting them would have understated what the disk held. Deletion is
+	// real now, and the subtraction is the accurate statement.
+	plan.Removed = s.applyRemovalsToSnapshot(plan.SnapshotID, plan.Results)
+	log.Printf("cleanup %s 完成：%d 项，成功 %d，未执行 %d，快照已就地更新 %d 项",
+		plan.ID, len(plan.items), applied, len(plan.items)-applied, plan.Removed)
 	s.emit("cleanup-progress", CleanupProgress{
 		PlanID: plan.ID, Version: plan.Version, Done: len(plan.items), Total: len(plan.items),
 	})
@@ -1664,6 +1682,60 @@ func projectedEntries(entries []scan.ProjectedEntry) []ProjectedEntry {
 		})
 	}
 	return out
+}
+
+// applyRemovalsToSnapshot subtracts every applied item from the in-memory result
+// and refreshes the volume figures from the OS. Returns how many were applied.
+//
+// The two numbers come from different places on purpose. The tree roll-ups are
+// arithmetic on what the scan measured, so they are as good as the scan was; the
+// volume total, used and free come from statfs, so the headline free space is
+// exact whatever the roll-ups do.
+func (s *Service) applyRemovalsToSnapshot(snapshotID int64, results []CleanupItemResult) int {
+	remover, ok := s.store.(subtreeRemovingStore)
+	if !ok {
+		return 0
+	}
+	removed := 0
+	for _, result := range results {
+		if result.State != "applied" {
+			continue
+		}
+		gone, err := remover.RemoveSubtree(snapshotID, result.Path)
+		if err != nil {
+			// Not fatal and not silent: the deletion happened, only the view is
+			// behind, and a re-scan fixes it.
+			log.Printf("cleanup: 快照未能就地移除 %s：%v", result.Path, err)
+			continue
+		}
+		removed++
+		log.Printf("cleanup: 快照移除 %s（%d 节点 / %d 字节），版本 %d",
+			result.Path, gone.Nodes, gone.AllocatedBytes, gone.Version)
+	}
+	if removed > 0 && s.volumes != nil {
+		if items, err := s.volumes.ListVolumes(); err == nil {
+			s.refreshSnapshotVolume(snapshotID, items)
+		}
+	}
+	return removed
+}
+
+// refreshSnapshotVolume re-reads the volume behind a finished result. Space freed
+// by a deletion shows up here immediately, and from the OS rather than from
+// arithmetic.
+func (s *Service) refreshSnapshotVolume(snapshotID int64, items []ports.Volume) {
+	volumeStore, ok := s.store.(snapshotVolumeStore)
+	if !ok {
+		return
+	}
+	for _, source := range projectStorageSources(items) {
+		node, err := s.store.NodeByPath(snapshotID, filepath.Clean(source.Path))
+		if err != nil || node.ParentID != 0 {
+			continue
+		}
+		_ = volumeStore.SetSnapshotVolume(snapshotID, source.TotalBytes, source.UsedBytes, source.FreeBytes)
+		return
+	}
 }
 
 func matchesSnapshotNode(node scan.Node, item cleanup.Item) bool {

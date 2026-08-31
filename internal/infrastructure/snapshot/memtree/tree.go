@@ -369,3 +369,95 @@ func (t *tree) coverage() (int, int) {
 	}
 	return total, total
 }
+
+// removal is what came out of the tree, so the caller can report it and the
+// counters can be corrected by the same numbers that left.
+type removal struct {
+	nodes       int64
+	files       int64
+	directories int64
+	allocated   int64
+	logical     int64
+}
+
+// removeSubtree detaches one node and rolls the space it held out of its
+// ancestors, in place.
+//
+// This exists because the alternative was a full re-scan after every deletion --
+// 9.5 seconds on a 1.8M-node disk to learn something already known exactly: that
+// one subtree is gone. The work here is O(depth + siblings of the parent +
+// size of the removed subtree), and the last term is only a counter walk.
+//
+// Detaching is done in two places on purpose. The child index is patched so
+// queries stop seeing it immediately, AND the record's parentID is cleared so a
+// later regroup -- group() rebuilds the index from parentID alone -- cannot
+// resurrect it. Patching only the index would work until the next insert
+// invalidated the grouping, which is the kind of bug that reappears months later
+// looking like corruption.
+//
+// Descendants keep pointing at the detached node and are left alone: nothing
+// reaches them from the root any more, and rewriting half a million parent
+// pointers to prove it would be work for its own sake.
+func (t *tree) removeSubtree(id int64) (removal, bool) {
+	t.ensureGrouped()
+	if id <= 0 || id >= t.records.len() || id == t.rootNodeID {
+		return removal{}, false
+	}
+	entry := t.records.at(id)
+	parent := entry.parentID
+	if parent <= 0 || parent >= t.records.len() {
+		return removal{}, false
+	}
+
+	gone := removal{allocated: entry.ownedAllocated, logical: entry.logicalSize}
+	stack := []int64{id}
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		gone.nodes++
+		if t.kinds.value(t.records.at(current).kind) == "directory" {
+			gone.directories++
+		} else {
+			gone.files++
+		}
+		for _, child := range t.children(current) {
+			stack = append(stack, int64(child))
+		}
+	}
+
+	// Out of the parent's group. The groups are contiguous and sorted by size
+	// descending, so closing the gap by shifting left keeps that order.
+	start := t.childStart[parent]
+	count := t.childCount[parent]
+	group := t.childIDs[start : start+count]
+	for index, child := range group {
+		if int64(child) != id {
+			continue
+		}
+		copy(group[index:], group[index+1:])
+		t.childCount[parent] = count - 1
+		break
+	}
+	if t.childCount[parent] == 0 {
+		record := t.records.at(parent)
+		record.flags &^= flagHasChildren
+	}
+	t.records.at(id).parentID = 0
+
+	for ancestor := parent; ancestor > 0 && ancestor < t.records.len(); {
+		record := t.records.at(ancestor)
+		record.ownedAllocated -= gone.allocated
+		record.logicalSize -= gone.logical
+		if ancestor == t.rootNodeID {
+			break
+		}
+		ancestor = record.parentID
+	}
+
+	t.nodeCount -= gone.nodes
+	t.fileCount -= gone.files
+	t.directoryCount -= gone.directories
+	t.bytes -= gone.allocated
+	t.version++
+	return gone, true
+}

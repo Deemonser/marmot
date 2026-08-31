@@ -201,3 +201,15 @@ const (
 	JobInterrupted         = "interrupted"
 	JobFailed              = "failed"
 )
+
+// SubtreeRemoval is what leaving the tree cost, reported so the caller can log it
+// and the UI can say what changed without another scan.
+type SubtreeRemoval struct {
+	Nodes          int64
+	Files          int64
+	Directories    int64
+	AllocatedBytes int64
+	// Version is the snapshot version after the removal, so a client can tell
+	// this apart from the state it last drew.
+	Version int64
+}

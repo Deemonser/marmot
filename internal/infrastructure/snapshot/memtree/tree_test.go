@@ -167,3 +167,107 @@ func TestArenaRefusesToExceedItsOffsetSpace(t *testing.T) {
 		t.Fatal("the arena accepted a write past its 4 GiB offset space")
 	}
 }
+
+// Taking a deleted subtree out in place, instead of re-scanning the disk to learn
+// something already known exactly. On the reference machine a full re-scan was
+// 9.5s for 1.8M nodes.
+func TestRemoveSubtreeRollsSpaceOutOfAncestors(t *testing.T) {
+	store := OpenStore()
+	defer store.Close()
+	snapshotID := buildRemovalFixture(t, store)
+
+	before, err := store.NodeByPath(snapshotID, "/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	removal, err := store.RemoveSubtree(snapshotID, "/r/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removal.Nodes != 3 || removal.Files != 2 || removal.Directories != 1 {
+		t.Fatalf("counted %#v leaving the tree", removal)
+	}
+	if removal.AllocatedBytes != 300 {
+		t.Fatalf("subtracted %d bytes, expected 300", removal.AllocatedBytes)
+	}
+	after, err := store.NodeByPath(snapshotID, "/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.OwnedAllocated != before.OwnedAllocated-300 {
+		t.Fatalf("the root still holds %d, was %d", after.OwnedAllocated, before.OwnedAllocated)
+	}
+	// Gone from the tree, so the path no longer resolves -- which is also what
+	// stops it being staged for deletion a second time.
+	if _, err := store.NodeByPath(snapshotID, "/r/a"); err == nil {
+		t.Fatal("the removed path still resolves")
+	}
+	if _, err := store.NodeByPath(snapshotID, "/r/a/x"); err == nil {
+		t.Fatal("a descendant of the removed node is still reachable")
+	}
+	// The sibling is untouched, and still reachable.
+	if node, err := store.NodeByPath(snapshotID, "/r/b"); err != nil || node.OwnedAllocated != 50 {
+		t.Fatalf("the sibling was disturbed: %#v err=%v", node, err)
+	}
+	// The version has to move, or a client cannot tell this from what it drew.
+	if version, _ := store.SnapshotVersion(snapshotID); version != removal.Version {
+		t.Fatalf("version %d does not match the removal's %d", version, removal.Version)
+	}
+}
+
+// group() rebuilds the child index from parentID alone. Patching the index
+// without clearing the pointer would work until the next thing invalidated the
+// grouping, and then the deleted subtree would reappear -- months later, looking
+// like corruption.
+func TestARemovedSubtreeSurvivesARegroup(t *testing.T) {
+	store := OpenStore()
+	defer store.Close()
+	snapshotID := buildRemovalFixture(t, store)
+	if _, err := store.RemoveSubtree(snapshotID, "/r/a"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	result, err := store.treeFor(snapshotID)
+	if err != nil {
+		store.mu.Unlock()
+		t.Fatal(err)
+	}
+	result.grouped = false
+	result.group()
+	store.mu.Unlock()
+	if _, err := store.NodeByPath(snapshotID, "/r/a"); err == nil {
+		t.Fatal("the removed subtree came back after the index was rebuilt")
+	}
+}
+
+func TestRemoveSubtreeRefusesTheRoot(t *testing.T) {
+	store := OpenStore()
+	defer store.Close()
+	snapshotID := buildRemovalFixture(t, store)
+	if _, err := store.RemoveSubtree(snapshotID, "/r"); err == nil {
+		t.Fatal("the scan root was removed from its own result")
+	}
+}
+
+// /r (350) -> a (300, dir, two files 200+100), b (50, file)
+func buildRemovalFixture(t *testing.T, store *Store) int64 {
+	t.Helper()
+	snapshotID, err := store.CreateSnapshot("task-removal", "/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := []scan.Node{
+		{ID: 1, ParentID: 0, Path: "/r", Name: "r", Kind: "directory", OwnedAllocated: 350, LogicalSize: 350},
+		{ID: 2, ParentID: 1, Path: "/r/a", Name: "a", Kind: "directory", OwnedAllocated: 300, LogicalSize: 300},
+		{ID: 3, ParentID: 2, Path: "/r/a/x", Name: "x", Kind: "file", OwnedAllocated: 200, LogicalSize: 200},
+		{ID: 4, ParentID: 2, Path: "/r/a/y", Name: "y", Kind: "file", OwnedAllocated: 100, LogicalSize: 100},
+		{ID: 5, ParentID: 1, Path: "/r/b", Name: "b", Kind: "file", OwnedAllocated: 50, LogicalSize: 50},
+	}
+	if err := store.InsertNodes(snapshotID, nodes); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishScan(snapshotID, "completed", "", 5, 3, 2, 350, 0); err != nil {
+		t.Fatal(err)
+	}
+	return snapshotID
+}
