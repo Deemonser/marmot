@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"example.com/marmot/internal/domain/recommendation"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -276,15 +277,22 @@ type ChildrenResult struct {
 type CleanupPlanRequest struct {
 	SnapshotID int64    `json:"snapshotId"`
 	Paths      []string `json:"paths"`
+	// Permanent removes without a trash step. Opt-in per plan, never a stored
+	// preference: an irreversible action should be chosen each time it happens,
+	// not once and then forgotten about (ADR-0063).
+	Permanent bool `json:"permanent"`
 }
 
 type CleanupPlan struct {
-	ID         string              `json:"id"`
-	SnapshotID int64               `json:"snapshotId"`
-	Version    int64               `json:"version"`
-	State      string              `json:"state"`
-	Items      int                 `json:"items"`
-	Results    []CleanupItemResult `json:"results"`
+	ID         string `json:"id"`
+	SnapshotID int64  `json:"snapshotId"`
+	Version    int64  `json:"version"`
+	State      string `json:"state"`
+	Items      int    `json:"items"`
+	// Permanent is echoed back so the confirmation and the result can say which
+	// of the two things is about to happen, and which one did.
+	Permanent bool                `json:"permanent"`
+	Results   []CleanupItemResult `json:"results"`
 }
 
 type CleanupItemResult struct {
@@ -1417,6 +1425,18 @@ func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, er
 	if cleanup.HasOverlappingPaths(paths) {
 		return CleanupPlan{}, errors.New("parent and child cleanup items cannot overlap")
 	}
+	// The one extra rule permanent deletion carries. The trash makes the
+	// irreplaceable guard advisory -- a mistake is a restore away -- and this mode
+	// removes that. So the guard stops being advice and becomes a refusal: nothing
+	// that cannot be recreated is ever deleted outright, whoever asked.
+	if request.Permanent {
+		for _, path := range paths {
+			if reason := recommendation.IrreplaceableReason(path); reason != "" {
+				log.Printf("cleanup: 拒绝永久删除 %s：%s", path, reason)
+				return CleanupPlan{}, fmt.Errorf("不能直接删除（删了无法恢复，只能移入废纸篓）：%s：%s", reason, path)
+			}
+		}
+	}
 	items := make([]cleanup.Item, 0, len(paths))
 	for _, path := range paths {
 		node, err := s.store.NodeByPath(request.SnapshotID, path)
@@ -1436,7 +1456,12 @@ func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, er
 		}
 		items = append(items, item)
 	}
-	plan := &cleanupPlan{CleanupPlan: CleanupPlan{ID: fmt.Sprintf("plan-%d-%d", time.Now().UnixNano(), s.serial.Add(1)), SnapshotID: request.SnapshotID, Version: 1, State: "draft", Items: len(items), Results: make([]CleanupItemResult, 0, len(items))}, items: items}
+	plan := &cleanupPlan{CleanupPlan: CleanupPlan{ID: fmt.Sprintf("plan-%d-%d", time.Now().UnixNano(), s.serial.Add(1)), SnapshotID: request.SnapshotID, Version: 1, State: "draft", Items: len(items), Permanent: request.Permanent, Results: make([]CleanupItemResult, 0, len(items))}, items: items}
+	mode := "移入废纸篓"
+	if request.Permanent {
+		mode = "直接删除"
+	}
+	log.Printf("cleanup %s: 建立计划，%d 项，方式 %s", plan.ID, len(items), mode)
 	s.mu.Lock()
 	s.plans[plan.ID] = plan
 	s.mu.Unlock()
@@ -1491,14 +1516,23 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 			plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "skipped", Reason: reason})
 			continue
 		}
-		if _, err := s.trash.Trash(item.Path); err != nil {
+		outcome := "已移入废纸篓"
+		var err error
+		if plan.Permanent {
+			outcome = "已直接删除"
+			err = s.trash.RemovePermanently(item.Path)
+		} else {
+			_, err = s.trash.Trash(item.Path)
+		}
+		if err != nil {
 			failed = true
 			log.Printf("cleanup %s: 失败 %s：%v", plan.ID, item.Path, err)
 			plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "failed", Reason: err.Error()})
 			continue
 		}
 		applied++
-		plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "applied", Reason: "moved to Trash"})
+		log.Printf("cleanup %s: %s %s", plan.ID, outcome, item.Path)
+		plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "applied", Reason: outcome})
 	}
 	// Written whatever the outcome. This is the record that was missing when a
 	// run "failed" after moving 33 GB: the plan state is one word for a per-item

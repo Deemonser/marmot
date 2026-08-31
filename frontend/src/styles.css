@@ -544,6 +544,11 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Between the header and the list: what was staged for you, and one button for
    everything that deliberately was not. */
 .advice-stage { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; border-bottom: 1px solid #35363d; color: #96979e; font-size: 9px; line-height: 1.6; }
+/* Visibly not the same button as the reversible one. */
+.danger-button.is-permanent { border-color: #c2503f; background: #6d2b21; color: #ffdcd4; }
+.collector-permanent { display: flex; align-items: center; gap: 6px; padding: 6px 12px 9px; color: #96979e; font-size: 9px; line-height: 1.5; cursor: pointer; }
+.collector-permanent input { margin: 0; accent-color: #c2503f; }
+
 .advice-stage span { min-width: 0; }
 .advice-waiting { color: #85868d; }
 .advice-stage .quiet-button { flex: none; }

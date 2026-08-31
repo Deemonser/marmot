@@ -83,11 +83,26 @@ func TestCreateCleanupPlanRejectsParentChildOverlap(t *testing.T) {
 
 type recordingTrash struct {
 	paths []string
+	// removed is kept apart from paths so a test can tell which of the two
+	// irreversibly different things happened.
+	removed []string
+	failOn  map[string]error
 }
 
 func (t *recordingTrash) Trash(path string) (string, error) {
+	if err := t.failOn[path]; err != nil {
+		return "", err
+	}
 	t.paths = append(t.paths, path)
 	return path, nil
+}
+
+func (t *recordingTrash) RemovePermanently(path string) error {
+	if err := t.failOn[path]; err != nil {
+		return err
+	}
+	t.removed = append(t.removed, path)
+	return nil
 }
 
 type blockingScanner struct {
@@ -770,5 +785,122 @@ func TestProtectedPathsAreNotCollectableAndCannotBeStaged(t *testing.T) {
 	service := testService(t)
 	if _, err := service.CreateCleanupPlan(CleanupPlanRequest{SnapshotID: 1, Paths: []string{"/Users"}}); err == nil {
 		t.Fatal("plan creation must refuse a protected path even when asked directly")
+	}
+}
+
+// runPlan drives one plan from creation to execution and returns the outcome.
+func runPlan(t *testing.T, service *Service, snapshotID int64, paths []string, permanent bool) CleanupPlan {
+	t.Helper()
+	plan, err := service.CreateCleanupPlan(CleanupPlanRequest{SnapshotID: snapshotID, Paths: paths, Permanent: permanent})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	if _, err := service.ConfirmCleanupPlan(plan.ID, plan.Version); err != nil {
+		t.Fatalf("confirm plan: %v", err)
+	}
+	applied, err := service.ExecuteCleanupPlan(plan.ID, plan.Version)
+	if err != nil {
+		t.Fatalf("execute plan: %v", err)
+	}
+	return applied
+}
+
+// scanned builds a snapshot over a temp dir and returns its id.
+func scanned(t *testing.T, service *Service, root string) int64 {
+	t.Helper()
+	started, err := service.StartScan(ScanOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := started
+	for i := 0; i < 400 && status.State == "running"; i++ {
+		time.Sleep(5 * time.Millisecond)
+		if status, err = service.GetScanStatus(started.TaskID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status.State != "completed" {
+		t.Fatalf("scan did not complete: %#v", status)
+	}
+	return status.SnapshotID
+}
+
+// Moving to the trash frees nothing: same volume, so it is a rename. A permanent
+// plan has to actually take the other path, not quietly do the safe thing.
+func TestPermanentPlanRemovesInsteadOfTrashing(t *testing.T) {
+	trash := &recordingTrash{}
+	service := testServiceWithTrash(t, trash)
+	root := t.TempDir()
+	path := filepath.Join(root, "candidate.txt")
+	if err := os.WriteFile(path, []byte("candidate"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	applied := runPlan(t, service, scanned(t, service, root), []string{path}, true)
+	if applied.State != "applied" || !applied.Permanent {
+		t.Fatalf("permanent plan came back as %#v", applied)
+	}
+	if len(trash.removed) != 1 || trash.removed[0] != path {
+		t.Fatalf("nothing was removed outright: removed=%#v trashed=%#v", trash.removed, trash.paths)
+	}
+	if len(trash.paths) != 0 {
+		t.Fatalf("a permanent plan used the trash anyway: %#v", trash.paths)
+	}
+	// The result line has to say which of the two happened; they are not
+	// interchangeable and only one of them can be undone.
+	if applied.Results[0].Reason != "已直接删除" {
+		t.Fatalf("the result does not distinguish the two: %q", applied.Results[0].Reason)
+	}
+}
+
+// The trash makes the irreplaceable guard advisory -- a mistake is a restore
+// away. Permanent deletion removes that, so the guard stops being advice.
+func TestPermanentDeletionIsRefusedForWhatCannotComeBack(t *testing.T) {
+	trash := &recordingTrash{}
+	service := testServiceWithTrash(t, trash)
+	root := t.TempDir()
+	repo := filepath.Join(root, "project", ".git")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "HEAD"), []byte("ref: refs/heads/main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshotID := scanned(t, service, root)
+
+	_, err := service.CreateCleanupPlan(CleanupPlanRequest{SnapshotID: snapshotID, Paths: []string{repo}, Permanent: true})
+	if err == nil {
+		t.Fatal("a repository was accepted for permanent deletion")
+	}
+	if !strings.Contains(err.Error(), "无法恢复") {
+		t.Fatalf("the refusal does not say why: %v", err)
+	}
+	// And the reversible path is still open: the guard is a refusal only where
+	// there is no way back.
+	if _, err := service.CreateCleanupPlan(CleanupPlanRequest{SnapshotID: snapshotID, Paths: []string{repo}}); err != nil {
+		t.Fatalf("the same path was refused for the trash too: %v", err)
+	}
+}
+
+// Permanence is chosen per plan and never inherited. A plan built without the
+// flag must not remove anything outright, however the previous one was built.
+func TestPermanenceIsNotStickyBetweenPlans(t *testing.T) {
+	trash := &recordingTrash{}
+	service := testServiceWithTrash(t, trash)
+	root := t.TempDir()
+	first := filepath.Join(root, "first.txt")
+	second := filepath.Join(root, "second.txt")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshotID := scanned(t, service, root)
+	runPlan(t, service, snapshotID, []string{first}, true)
+	applied := runPlan(t, service, snapshotID, []string{second}, false)
+	if applied.Permanent {
+		t.Fatal("the second plan inherited permanence")
+	}
+	if len(trash.paths) != 1 || trash.paths[0] != second {
+		t.Fatalf("the second plan did not use the trash: %#v", trash.paths)
 	}
 }

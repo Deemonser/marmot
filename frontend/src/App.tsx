@@ -1385,6 +1385,10 @@ export default function App() {
   // rather than discarding a result that still gets paid for.
   const adviceCall = useRef<{ cancel: () => void } | null>(null);
   const [collectorOpen, setCollectorOpen] = useState(false);
+  // Chosen per deletion, never remembered. An irreversible action should be
+  // picked each time it happens rather than switched on once and forgotten
+  // (ADR-0063), so this resets after every run.
+  const [permanent, setPermanent] = useState(false);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
   const [notice, setNotice] = useState("");
@@ -2251,7 +2255,11 @@ export default function App() {
   async function createPlan() {
     if (!status || collector.length === 0) return;
     try {
-      const next = await MarmotService.CreateCleanupPlan({ snapshotId: status.snapshotId, paths: collector.map((item) => entryNode(item)?.path ?? "") });
+      const next = await MarmotService.CreateCleanupPlan({
+        snapshotId: status.snapshotId,
+        paths: collector.map((item) => entryNode(item)?.path ?? ""),
+        permanent,
+      });
       const nextValidation = await MarmotService.ValidateCleanupPlan(next.id, next.version);
       setPlan(nextValidation.valid ? { ...next, state: "validated" } : next);
       setValidation(nextValidation);
@@ -2317,11 +2325,15 @@ export default function App() {
         setAdviceOpen(false);
         setAdviceDetail(null);
       }
+      // Reset every time: the next deletion has to be chosen, not inherited.
+      setPermanent(false);
       if (stuck.length === 0) {
-        setNotice("已移入废纸篓，请重新扫描刷新结果");
+        setNotice(applied.permanent
+          ? "已直接删除，空间已释放，请重新扫描刷新结果"
+          : "已移入废纸篓（空间要清空废纸篓后才释放），请重新扫描刷新结果");
       } else {
         setNotice(
-          `已移入废纸篓 ${moved.length} 项，${stuck.length} 项未执行：` +
+          `${applied.permanent ? "已删除" : "已移入废纸篓"} ${moved.length} 项，${stuck.length} 项未执行：` +
             stuck.slice(0, 3).map((item) => `${item.path.split("/").pop()}（${item.reason}）`).join("；") +
             (stuck.length > 3 ? ` 等 ${stuck.length} 项` : ""),
         );
@@ -2695,9 +2707,27 @@ export default function App() {
                         : formatBytes(collectorBytes).split(" ")[1] + " 已收集"}
               </span>
               {countdown === null
-                ? <button className="danger-button compact" onClick={() => void createPlan()}>删除</button>
+                ? <button
+                    className={"danger-button compact" + (permanent ? " is-permanent" : "")}
+                    onClick={() => void createPlan()}
+                  >
+                    {permanent ? "直接删除" : "删除"}
+                  </button>
                 : <button className="quiet-button" onClick={stopCountdown}>停止</button>}
             </div>
+            {/* Moving to the trash frees no space -- same volume, so it is a
+                rename -- which is why this exists at all. It is a checkbox rather
+                than a second button: two destructive buttons side by side is how
+                the wrong one gets pressed. */}
+            <label className="collector-permanent">
+              <input
+                type="checkbox"
+                checked={permanent}
+                disabled={countdown !== null}
+                onChange={(event) => setPermanent(event.target.checked)}
+              />
+              <span>直接删除，不进废纸篓（立刻释放空间，无法撤销）</span>
+            </label>
           </div>
         )}
       </section>}

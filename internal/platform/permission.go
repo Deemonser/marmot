@@ -72,6 +72,10 @@ func (Adapter) Trash(path string) (string, error) {
 	return Trash(path)
 }
 
+func (Adapter) RemovePermanently(path string) error {
+	return RemovePermanently(path)
+}
+
 func ProbePermissions() PermissionReport {
 	report := PermissionReport{Platform: runtime.GOOS, State: "partial", Message: "权限状态需要在签名应用身份下确认"}
 	if runtime.GOOS != "darwin" {

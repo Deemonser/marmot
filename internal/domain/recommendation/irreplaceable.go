@@ -99,16 +99,28 @@ var homeRelativeIrreplaceable = []struct{ pattern, reason string }{
 	{"Library/Photos", IrreplaceableUserContent},
 	{"Library/Containers/com.docker.docker/Data/vms", IrreplaceableVirtualDisk},
 
-	{"**/.git", IrreplaceableRepository},
 	// Site-local data, not cache: drafts, offline documents and application state
 	// that exists nowhere else. One path segment away from the caches beside it.
+	// IntelliJ's local file history sits inside a directory called Caches and is
+	// not a cache: it is how uncommitted work is recovered. One segment from the
+	// index that genuinely is disposable.
+}
+
+// anywhereIrreplaceable are the patterns whose whole point is that location does
+// not matter. They were sitting in the home-relative list, checked only after
+// homeRelative() succeeded -- so a repository at /Volumes/Work/app/.git, an .ssh
+// on an external disk, or anything under /Users/Shared was not protected at all.
+// A "match this at any depth" pattern that only matches inside one home folder is
+// not the guard it looks like.
+//
+// Matched against the full path, minus the leading slash so `**/` can anchor
+// anywhere in it.
+var anywhereIrreplaceable = []struct{ pattern, reason string }{
+	{"**/.git", IrreplaceableRepository},
 	{"**/Local Storage", IrreplaceableUserData},
 	{"**/IndexedDB", IrreplaceableUserData},
 	{"**/File System", IrreplaceableUserData},
 	{"**/Local Extension Settings", IrreplaceableUserData},
-	// IntelliJ's local file history sits inside a directory called Caches and is
-	// not a cache: it is how uncommitted work is recovered. One segment from the
-	// index that genuinely is disposable.
 	{"**/LocalHistory", IrreplaceableUserData},
 	{"**/.ssh", IrreplaceableCredentials},
 	{"**/.gnupg", IrreplaceableCredentials},
@@ -162,6 +174,11 @@ func IrreplaceableReason(absolutePath string) string {
 	lowered := strings.ToLower(clean)
 	for _, entry := range suffixIrreplaceable {
 		if strings.HasSuffix(lowered, entry.suffix) || strings.Contains(lowered, entry.suffix+"/") {
+			return entry.reason
+		}
+	}
+	for _, entry := range anywhereIrreplaceable {
+		if matchPattern(entry.pattern, strings.TrimPrefix(clean, "/")) {
 			return entry.reason
 		}
 	}

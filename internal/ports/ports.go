@@ -137,6 +137,11 @@ type CredentialStore interface {
 
 type Trash interface {
 	Trash(string) (string, error)
+	// RemovePermanently deletes without a trash step, and without any way back.
+	// Offered because a move to the trash frees no space: same volume, so it is a
+	// rename. What may be removed this way is decided in the application layer,
+	// never here.
+	RemovePermanently(string) error
 }
 
 type PreviewPort interface {
