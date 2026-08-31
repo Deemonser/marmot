@@ -1054,20 +1054,20 @@ function VolumeTile({
 	// walkable, so the counted total cannot reach it (ADR-0052 §5). There is no
 	// "fill to 100% on completion" branch because there is no frame to show it in —
 	// the row stops rendering the bar the moment the state leaves "running".
-	// Once the counted bytes pass the denominator there is nothing left to
-	// measure, and a bar pinned at 100% for the rest of the scan says "done" when
-	// it means "still going". Measured on this machine: counted reached 119% of the
-	// volume's used bytes and the bar sat full for roughly the last 40% of a 25s
-	// scan -- which is exactly what "进度都满了但还要等好一会儿" is.
+	// The numerator's own double count is fixed at source now: the pre-counted
+	// auxiliary volumes gave way the moment their bytes landed in the walked total,
+	// instead of at the terminal state (R-067 §2.1). So a definite bar is honest
+	// again, and going indeterminate the moment it touched the end -- which is what
+	// the first attempt did -- traded a lie for something that reads worse: a bar
+	// that filled and then started sweeping says "no idea", where full says "nearly
+	// there".
 	//
-	// The overshoot is real and not a bug in the denominator: the walk sums
-	// allocated sizes, so an APFS clone is charged twice (R-065) and
-	// /System/Volumes/Update/mnt1, a snapshot of /, is counted again. The
-	// denominator comes from diskutil and is container-aware, so it is the honest
-	// number. When the numerator outruns it, the only truthful display is "working,
-	// amount unknown".
+	// The fallback stays, with room above it. preCounted still sums every group
+	// volume while attach skips those whose parent the walk never reached, so a
+	// small overshoot remains possible; a large one would mean the accounting broke
+	// again, and then "working, amount unknown" is the only true thing to show.
 	const rawFraction = scanDenominator > 0 ? (scanStatus?.countedBytes ?? 0) / scanDenominator : null;
-	const scanOvershot = rawFraction !== null && rawFraction >= 1;
+	const scanOvershot = rawFraction !== null && rawFraction > 1.05;
 	const scanFraction = rawFraction === null || scanOvershot
 		? null
 		: Math.max(0, Math.min(1, rawFraction));

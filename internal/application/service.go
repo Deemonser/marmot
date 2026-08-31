@@ -58,6 +58,10 @@ type Service struct {
 	// batchSize and maxParallel shape the triage round; zero means the default.
 	batchSize   int
 	maxParallel int
+	// firstMap holds the snapshot whose first root map has not been logged yet, so
+	// the one line that answers "what happened between the scan finishing and the
+	// result appearing" is always written, however fast it was.
+	firstMap atomic.Int64
 }
 
 type Dependencies struct {
@@ -1210,6 +1214,21 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 			task.mu.Lock()
 			task.nodes += attachedNodes
 			task.bytes += attachedBytes
+			// These bytes are now inside task.bytes, so the pre-count of the same
+			// volumes has to give way here rather than at the terminal state.
+			// countedBytesLocked only dropped it when the state changed, and the
+			// gap between the two is a window where both are counted: measured, the
+			// numerator jumped to 118% of the denominator in it.
+			//
+			// Subtracted rather than zeroed, and floored at zero: preCounted sums
+			// every group volume while attach skips any whose parent the walk never
+			// reached (parentID == 0 above), so the two differ -- 46.7 GB against
+			// 36.1 GB here. What attach did not add is still un-walked and still
+			// belongs in the numerator.
+			task.preCounted -= attachedBytes
+			if task.preCounted < 0 {
+				task.preCounted = 0
+			}
 			task.mu.Unlock()
 		}
 	}
@@ -1267,6 +1286,9 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 	// line came from. Reachable with:
 	//   ./bin/marmot.app/Contents/MacOS/marmot
 	// stderr from a bundle launched by Finder or `open` goes nowhere.
+	// Arm the one map line that matters: the first root map for this snapshot,
+	// whose timestamp minus this one is the wait the user sees after the bar stops.
+	s.firstMap.Store(task.snapshotID)
 	log.Printf("scan %s finished: state=%s elapsed=%s walk=%s tail=%s nodes=%d files=%d dirs=%d bytes=%d issues=%d",
 		task.taskID, finalState, time.Since(scanStarted).Round(time.Millisecond),
 		walkEnded.Sub(scanStarted).Round(time.Millisecond),
@@ -1328,6 +1350,10 @@ func (s *Service) GetChildren(query ChildrenQuery) (ChildrenResult, error) {
 	return ChildrenResult{Limit: query.Limit, Offset: query.Offset, Nodes: nodes}, nil
 }
 
+// Logged because this is the gap nobody could account for: the scan's own line
+// lands when the walk ends, and then the result page appears some time later with
+// nothing written down in between. Twice that question could only be answered by
+// re-running things under a probe.
 func (s *Service) GetMap(query MapQuery) (MapResult, error) {
 	if err := s.waitForRecovery(); err != nil {
 		return MapResult{}, err
@@ -1367,9 +1393,20 @@ func (s *Service) GetMap(query MapQuery) (MapResult, error) {
 	if query.ProjectionLimit > 2000 {
 		query.ProjectionLimit = 2000
 	}
+	started := time.Now()
 	result, err := s.store.Map(scan.MapQuery{SnapshotID: query.SnapshotID, ParentID: query.ParentID, Limit: query.Limit, Offset: query.Offset, Measure: query.Measure, Depth: query.Depth, ProjectionLimit: query.ProjectionLimit, MinSweeps: query.MinSweeps})
 	if err != nil {
+		log.Printf("map snapshot=%d parent=%d 失败: %v", query.SnapshotID, query.ParentID, err)
 		return MapResult{}, err
+	}
+	// Only the root of a snapshot, and only when it is slow or the first one:
+	// logging every drill-down would bury the line that matters. The line that
+	// matters is the first root map after a scan, because the wait between "scan
+	// finished" and the result appearing had no record at all.
+	elapsed := time.Since(started)
+	if query.Offset == 0 && (elapsed > 50*time.Millisecond || s.firstMap.CompareAndSwap(query.SnapshotID, 0)) {
+		log.Printf("map snapshot=%d parent=%d 用时 %.0fms，%d 条目",
+			query.SnapshotID, query.ParentID, float64(elapsed.Microseconds())/1000, len(result.Entries))
 	}
 	return mapResult(result), nil
 }
