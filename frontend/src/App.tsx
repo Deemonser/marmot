@@ -5,6 +5,7 @@ import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstHiddenS
 import type { HueBand } from "./sunburst";
 import { autoStageable, stageSummary } from "./advice";
 import { countdownDigit, countdownFraction, deleteFraction, ringOffset } from "./countdown";
+import { meterColor } from "./meter";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
@@ -993,6 +994,7 @@ function VolumeTile({
   source,
   hasResult,
   scanning,
+  finishing,
   scanStatus,
   scanLocked,
   onScan,
@@ -1003,6 +1005,11 @@ function VolumeTile({
   source: StorageSourceOverview;
   hasResult: boolean;
   scanning: boolean;
+  // The walk is over but the result cannot be drawn yet: assembling the map from
+  // a 2.2M-node snapshot takes long enough to see. Without this the row dropped
+  // straight back to its idle capacity bar for the length of that load and then
+  // the page jumped -- the scan appeared to undo itself before the result came.
+  finishing: boolean;
   scanStatus: ScanStatus | null;
   scanLocked: boolean;
   onScan: (path: string) => void;
@@ -1011,7 +1018,8 @@ function VolumeTile({
   onForget: () => void;
 }) {
 	const members = source.members ?? [];
-	const disabled = !source.scannable || (scanLocked && !scanning);
+	const busy = scanning || finishing;
+	const disabled = !source.scannable || (scanLocked && !busy);
 	const sourceTotal = source.totalBytes;
 	const sourceUsed = source.usedBytes;
 	const ratio = sourceTotal ? Math.min(100, (sourceUsed / sourceTotal) * 100) : 0;
@@ -1067,10 +1075,10 @@ function VolumeTile({
 	    </div>
 	    <div className="volume-meter">
 	      <div
-	        className={"meter-track" + (scanning ? (scanFraction === null ? " is-scanning is-indeterminate" : " is-scanning") : "")}
-	        role={scanning ? "progressbar" : undefined}
-	        aria-label={scanning ? scanProgressLabel : capacityLabel}
-	        aria-valuetext={scanning ? scanProgressLabel : undefined}
+	        className={"meter-track" + (busy ? (scanning && scanFraction === null ? " is-scanning is-indeterminate" : " is-scanning") : "")}
+	        role={busy ? "progressbar" : undefined}
+	        aria-label={finishing ? "正在整理结果" : scanning ? scanProgressLabel : capacityLabel}
+	        aria-valuetext={busy ? (finishing ? "正在整理结果" : scanProgressLabel) : undefined}
 	        aria-valuemin={scanning && scanFraction !== null ? 0 : undefined}
 	        aria-valuemax={scanning && scanFraction !== null ? scanDenominator : undefined}
 	        aria-valuenow={scanning && scanFraction !== null ? (scanStatus?.countedBytes ?? 0) : undefined}
@@ -1082,22 +1090,33 @@ function VolumeTile({
 	            capacity fill underneath the progress just read as a stray band, and
 	            scaling the progress to the capacity extent so the two lined up made
 	            the bar stop short of the track's end, which reads as stalling. */}
-	        {scanning ? (
+	        {busy ? (
+	          // Full while finishing: the walk really is done, and this is the
+	          // frame the comment above says there is no room for. There is now.
 	          <span
 	            className="meter-scan"
-	            style={scanFraction === null ? undefined : { width: (scanFraction * 100).toFixed(2) + "%" }}
+	            style={finishing
+	              ? { width: "100%" }
+	              : scanFraction === null ? undefined : { width: (scanFraction * 100).toFixed(2) + "%" }}
 	          />
 	        ) : (
-	          <span className="meter-used" style={{ width: ratio + "%" }} />
+	          <span
+            className="meter-used"
+            style={{ width: ratio + "%", background: meterColor(source.usedBytes, source.totalBytes) }}
+          />
 	        )}
 	      </div>
-	      <div className={"meter-caption" + (scanning ? " is-scanning" : "")}>
-	        {scanning ? <em>扫描中…</em> : <b>{formatBytes(source.freeBytes)}</b>}
+	      <div className={"meter-caption" + (busy ? " is-scanning" : "")}>
+	        {finishing ? <em>正在整理结果…</em> : scanning ? <em>扫描中…</em> : <b>{formatBytes(source.freeBytes)}</b>}
 	      </div>
 	    </div>
 	    <div className="volume-action">
-	      <button className="volume-action-main" onClick={scanning ? onCancel : hasResult ? onView : () => onScan(source.path)} disabled={disabled}>
-	        {scanning ? "取消" : hasResult ? "查看" : "扫描"}
+	      <button
+	        className="volume-action-main"
+	        onClick={scanning ? onCancel : hasResult ? onView : () => onScan(source.path)}
+	        disabled={disabled || finishing}
+	      >
+	        {busy ? "取消" : hasResult ? "查看" : "扫描"}
 	      </button>
 	      {!scanning && (
 	        <button
@@ -1451,6 +1470,12 @@ export default function App() {
   const loadMapRef = useRef<((target: Page, mode?: NavigationMode, targetIndex?: number, compact?: boolean) => Promise<boolean>) | null>(null);
 
   const scanActive = status?.state === "running";
+  // Terminal state, but the map for that snapshot has not arrived. showResult
+  // requires both, so this was the window in which neither the scanning row nor
+  // the result page was showing and the source list reverted to its idle look.
+  const resultPending = Boolean(
+    status?.snapshotId && status.state && browsableScanStates.has(status.state) && !map,
+  );
   // No snapshot is written any more, so there is no second terminal state to wait
   // for and nothing to warn about (ADR-0055). The flip side is that the result
   // exists only while this process does.
@@ -2607,8 +2632,9 @@ export default function App() {
                   source={source}
                   hasResult={Boolean(cachedStatus && cachedStatus.snapshotId > 0 && cachedStatus.root === source.path)}
                   scanning={Boolean(scanActive && status?.root === source.path)}
+                  finishing={Boolean(resultPending && status?.root === source.path)}
                   scanStatus={scanActive && status?.root === source.path ? status : null}
-                  scanLocked={scanActive}
+                  scanLocked={scanActive || resultPending}
                   onScan={(path) => { setRoot(path); void startScan(path); }}
                   onView={viewCachedResult}
                   onCancel={() => void cancelScan()}

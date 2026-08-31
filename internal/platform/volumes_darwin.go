@@ -87,9 +87,21 @@ func (Adapter) ListVolumes() ([]ports.Volume, error) {
 	// startup each. Serially that was 754ms of the 761ms this call costs, and the
 	// scan path waits on it before the walk can start. The calls are independent,
 	// so they run together.
+	//
+	// Running them together was not enough: ten concurrent process spawns still
+	// cost 390ms, which is the pause before the disk list appears at launch. And
+	// eight of those ten are system auxiliaries -- Preboot, VM, xarts, the Update
+	// mounts -- which are shown as a capacity summary and cannot be scanned. The
+	// precise APFS split of volume-own versus container-shared space only matters
+	// where a scan can be started, so only those pay for diskutil; the rest take
+	// their numbers from the statfs record already in hand, at no cost.
 	errs := make([]error, len(volumes))
 	var wait sync.WaitGroup
 	for index := range volumes {
+		if !volumes[index].Scannable {
+			errs[index] = populateFromStatfs(&volumes[index], kept[index].stat)
+			continue
+		}
 		wait.Add(1)
 		go func(index int) {
 			defer wait.Done()
