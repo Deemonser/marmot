@@ -63,6 +63,8 @@ export interface AdviceItem {
     "evidence": string[] | null;
     "whatBreaks": string;
     "howToRestore": string;
+    "manual": boolean;
+    "command": string;
 }
 
 export interface AdviceRejection {

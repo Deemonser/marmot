@@ -2000,7 +2000,10 @@ export default function App() {
   // and pre-filling the cart with items that say "look at me".
   async function stageRemainingAdvice() {
     if (!advice) return;
-    const staged = await stageAdviceItems((advice.items ?? []).filter((item) => !isCollected(item)), advice.snapshotId);
+    const staged = await stageAdviceItems(
+      (advice.items ?? []).filter((item) => !item.manual && !isCollected(item)),
+      advice.snapshotId,
+    );
     setNotice(staged.added > 0
       ? "已加入 " + staged.added + " 项 · " + formatBytes(staged.bytes)
       : "没有可加入的项。");
@@ -2808,7 +2811,7 @@ export default function App() {
                     {stageSummary(
                       adviceStaged.added,
                       formatBytes(adviceStaged.bytes),
-                      (advice.items ?? []).filter((item) => !isCollected(item)).length,
+                      (advice.items ?? []).filter((item) => !item.manual && !isCollected(item)).length,
                     )}
                     {advisorBusy && (
                       <><br /><span className="advice-waiting">
@@ -2817,9 +2820,9 @@ export default function App() {
                     )}
                     {!advisorBusy && advisorFault && <><br /><span className="advice-fault">AI 未完成：{advisorFault}</span></>}
                   </span>
-                  {(advice.items ?? []).some((item) => !isCollected(item)) && (
+                  {(advice.items ?? []).some((item) => !item.manual && !isCollected(item)) && (
                     <button className="quiet-button" onClick={() => void stageRemainingAdvice()}>
-                      加入其余 {(advice.items ?? []).filter((item) => !isCollected(item)).length} 项
+                      加入其余 {(advice.items ?? []).filter((item) => !item.manual && !isCollected(item)).length} 项
                     </button>
                   )}
                 </div>
@@ -2859,13 +2862,15 @@ export default function App() {
                           {recoveryLabels[item.recovery] ?? item.recovery}
                         </span>
                         <span className="advice-tag">{riskLabels[item.risk] ?? item.risk}</span>
-                        <button
-                          className="advice-collect"
-                          disabled={collected}
-                          onClick={() => void collectAdviceItem(item)}
-                        >
-                          {collected ? "已收集" : "加入收集区"}
-                        </button>
+                        {item.manual
+                          ? <span className="advice-manual">需要管理员权限，本工具不执行</span>
+                          : <button
+                              className="advice-collect"
+                              disabled={collected}
+                              onClick={() => void collectAdviceItem(item)}
+                            >
+                              {collected ? "已收集" : "加入收集区"}
+                            </button>}
                       </div>
                       {open && (
                         <dl className="advice-detail">
@@ -2875,6 +2880,14 @@ export default function App() {
                           <dd>{item.whatBreaks}</dd>
                           <dt>如何恢复</dt>
                           <dd>{item.howToRestore}</dd>
+                          {item.manual && <>
+                            <dt>手动执行</dt>
+                            {/* The command, verbatim and selectable. This app will
+                                not ask for admin rights to delete files: the blast
+                                radius of a cleanup tool running as root is in a
+                                different league (ADR-0065). */}
+                            <dd><code className="advice-command">{item.command}</code></dd>
+                          </>}
                         </dl>
                       )}
                     </article>

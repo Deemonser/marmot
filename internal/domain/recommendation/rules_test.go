@@ -48,16 +48,44 @@ func TestMatchFindsMultiSegmentPatternAtAnyDepth(t *testing.T) {
 	}
 }
 
-func TestMatchIgnoresPathsOutsideAHomeFolder(t *testing.T) {
+// A home-relative pattern must never fire on a path outside a home folder --
+// `Library/Caches` must not answer for /System/Library/Caches.
+//
+// This test used to assert that NOTHING outside a home folder matched, which was
+// the reach bug written down as an invariant: /Library/Developer/CoreSimulator/
+// Caches/dyld is 3.6 GB of regenerable cache and the tool had nothing to say
+// about it. Paths outside a home folder may now match, but only from
+// AbsoluteCatalog, which is checked explicitly.
+func TestHomeRelativeRulesNeverFireOutsideAHomeFolder(t *testing.T) {
+	fromAbsolute := func(rule *Rule) bool {
+		for index := range AbsoluteCatalog {
+			if &AbsoluteCatalog[index] == rule {
+				return true
+			}
+		}
+		return false
+	}
+	// Covered on purpose, and only by an absolute rule.
+	for _, path := range []string{"/Library/Caches/com.example.app", "/Library/Updates"} {
+		rule := Match(MatchContext{Path: path})
+		if rule == nil {
+			t.Fatalf("%s matched nothing", path)
+		}
+		if !fromAbsolute(rule) {
+			t.Fatalf("%s matched %q from the home-relative catalog", path, rule.Name)
+		}
+	}
+	// Must still match nothing at all. /System/Library/Caches is the one that
+	// matters: answering for it with a `Library/Caches` rule would offer to delete
+	// part of a sealed, read-only OS.
 	for _, path := range []string{
-		"/Library/Caches/com.example.app",
 		"/System/Library/Caches",
 		"/Users",
 		"/Users/Shared/Library/Caches",
 		"/var/folders/xx/T",
 	} {
 		if rule := Match(MatchContext{Path: path}); rule != nil {
-			t.Fatalf("%s matched %q but the catalog is home-relative", path, rule.Name)
+			t.Fatalf("%s matched %q and should match nothing", path, rule.Name)
 		}
 	}
 }
@@ -360,5 +388,48 @@ func TestGradleCacheIsSplitByWhatItCostsToGetBack(t *testing.T) {
 func TestNoRuleClaimsTheWholeGradleCacheDirectory(t *testing.T) {
 	if hit := Match(MatchContext{Path: "/Users/a/.gradle/caches", ProjectIdleDays: NoProject}); hit != nil {
 		t.Fatalf("~/.gradle/caches is claimed whole by %q, which folds its parts away again", hit.Name)
+	}
+}
+
+// Every rule in Catalog goes through homeRelative, which only recognises
+// /Users/<account>/..., so on a whole-disk scan the tool knew nothing outside the
+// user's home folder. Measured: /Library/Developer/CoreSimulator/Caches/dyld is
+// 3.6 GB of cache the simulator rebuilds on demand, and it matched nothing.
+func TestAbsoluteRulesReachOutsideAnyHomeFolder(t *testing.T) {
+	hit := func(path string) *Rule {
+		return Match(MatchContext{Path: path, AgeDays: 400, ProjectIdleDays: NoProject})
+	}
+	for _, path := range []string{
+		"/Library/Developer/CoreSimulator/Caches/dyld",
+		"/Library/Updates/140-17812",
+		"/Library/Caches",
+		"/Library/Logs/DiagnosticReports",
+	} {
+		rule := hit(path)
+		if rule == nil {
+			t.Fatalf("%s matched nothing", path)
+		}
+		// All of these are root-owned, so the tool must not try to act on them.
+		if !rule.Manual || rule.Command == "" {
+			t.Errorf("%s matched %q, which is not marked manual with a command", path, rule.Name)
+		}
+	}
+	// And the home-relative catalog still works, i.e. the absolute patterns did
+	// not shadow it. /Library/Caches must not swallow ~/Library/Caches.
+	if rule := hit("/Users/alice/Library/Caches/Google/Chrome"); rule == nil || rule.Manual {
+		t.Fatalf("a home-relative cache matched %#v", rule)
+	}
+}
+
+// A manual rule with no command is a finding the user cannot act on, which is the
+// only thing worse than not making it.
+func TestEveryManualRuleCarriesItsCommand(t *testing.T) {
+	for _, rule := range AbsoluteCatalog {
+		if rule.Manual && strings.TrimSpace(rule.Command) == "" {
+			t.Errorf("%s is manual with no command", rule.Name)
+		}
+		if rule.WhatBreaks == "" || rule.HowToRestore == "" {
+			t.Errorf("%s does not say what it costs", rule.Name)
+		}
 	}
 }

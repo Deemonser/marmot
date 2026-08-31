@@ -33,6 +33,13 @@ typedef struct {
 	uint32_t link_count;
 	int64_t alloc_size;
 	int64_t data_length;
+	// private_size is ATTR_CMNEXT_PRIVATESIZE: the bytes this file shares with
+	// nothing else, which on APFS is what deleting it would actually give back. A
+	// clone's allocated size counts blocks it shares with its twin, so du and
+	// lstat both attribute the same bytes to both copies. Measured on this
+	// machine: a 342 MB file in the Preboot cryptex has a private size of zero.
+	int64_t private_size;
+	int has_private;
 	int64_t mod_seconds;
 	int64_t mod_nanoseconds;
 	uint32_t mount_status;
@@ -306,6 +313,9 @@ static void marmot_native_request(struct attrlist *request) {
 		ATTR_CMN_OBJTYPE | ATTR_CMN_MODTIME | ATTR_CMN_FILEID;
 	request->dirattr = ATTR_DIR_MOUNTSTATUS;
 	request->fileattr = ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE | ATTR_FILE_DATALENGTH;
+	// Extended attributes ride the same bulk call, so the reclaimable size costs
+	// no extra syscall. Requires FSOPT_ATTR_CMN_EXTENDED at the call site.
+	request->forkattr = ATTR_CMNEXT_PRIVATESIZE;
 }
 
 static int marmot_native_read_u32(const char *base, size_t offset, size_t length, uint32_t *value) {
@@ -326,6 +336,7 @@ static int marmot_native_read_record(const char *record, size_t length, marmot_n
 	const uint32_t common = returned->commonattr;
 	const uint32_t dir = returned->dirattr;
 	const uint32_t file = returned->fileattr;
+	const uint32_t fork = returned->forkattr;
 	size_t offset = 24;
 	memset(out, 0, sizeof(*out));
 	out->link_count = 1;
@@ -377,7 +388,17 @@ static int marmot_native_read_record(const char *record, size_t length, marmot_n
 		if (!marmot_native_read_i64(record, offset, length, &out->alloc_size)) return 0;
 		offset += sizeof(int64_t);
 	}
-	if ((file & ATTR_FILE_DATALENGTH) != 0 && !marmot_native_read_i64(record, offset, length, &out->data_length)) return 0;
+	if ((file & ATTR_FILE_DATALENGTH) != 0) {
+		if (!marmot_native_read_i64(record, offset, length, &out->data_length)) return 0;
+		offset += sizeof(int64_t);
+	}
+	// Fields arrive in bitmap order, so the extended group is last. A filesystem
+	// that does not report it simply leaves the bit clear, and the caller falls
+	// back to the allocated size.
+	if ((fork & ATTR_CMNEXT_PRIVATESIZE) != 0) {
+		if (!marmot_native_read_i64(record, offset, length, &out->private_size)) return 0;
+		out->has_private = 1;
+	}
 	return 1;
 }
 
@@ -455,7 +476,7 @@ static void marmot_native_process_task(marmot_native_state *state, marmot_native
 	for (;;) {
 		if (state->queue.cancelled) break;
 		errno = 0;
-		int count = getattrlistbulk(fd, &request, buffer, MARMOT_NATIVE_BUFFER_SIZE, 0);
+		int count = getattrlistbulk(fd, &request, buffer, MARMOT_NATIVE_BUFFER_SIZE, FSOPT_ATTR_CMN_EXTENDED);
 		if (count < 0) {
 			char message[128];
 			snprintf(message, sizeof(message), "getattrlistbulk: errno %d", errno);
@@ -997,6 +1018,23 @@ func (native *nativeScanContext) addNodes(raw []C.marmot_native_entry, includesR
 		if allocatedSize < 0 {
 			allocatedSize = 0
 		}
+		// NOT substituted for allocatedSize, though the bulk call now asks for it.
+		// See R-065: private size answers "what would deleting this one file give
+		// back", which is a different question from "how much space does this
+		// occupy", and the map asks the second. Substituting one for the other
+		// turned a 2.5x overcount of /System/Volumes/Preboot into a 4.5x
+		// undercount, and on the sealed system volume every file's private size is
+		// zero -- it is all shared with the snapshot underneath -- so the whole OS
+		// would have rendered as 0 GB had the attribute been returned there. It
+		// was not, which meant the same tree got measured two different ways
+		// depending on which volume a subdirectory sat on.
+		//
+		// The attribute stays requested because it costs no syscall and because
+		// the reclaimable figure is the right input for the advice layer, which is
+		// where the question it answers is actually asked. Wiring it there needs
+		// the two-number model, and that is a decision, not a patch.
+		_ = entry.has_private
+
 		confidence := "exact"
 		if uint32(entry.common_attrs)&(bulkCommonDevid|bulkCommonFileID|bulkCommonModtime) != (bulkCommonDevid | bulkCommonFileID | bulkCommonModtime) {
 			confidence = "partial"

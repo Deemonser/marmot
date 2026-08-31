@@ -2,6 +2,7 @@ package recommendation
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -22,6 +23,16 @@ import (
 // cannot evaluate is not a suggestion, and "what happens if I say yes" is the
 // question every rule-based cleaner leaves unanswered.
 type Rule struct {
+	// Manual marks a finding this tool must not act on itself. The paths are
+	// root-owned, so os.RemoveAll would fail, and an app that asks for admin
+	// rights to delete files has a blast radius in a different league from one
+	// that does not (ADR-0065). The finding is still worth making -- the user
+	// cannot act on what they were never told about -- so it is shown with the
+	// exact command and cannot be staged.
+	Manual bool
+	// Command is what to run in a terminal. Required when Manual is set.
+	Command string
+
 	Name     string
 	Category string
 	// Pattern is matched against the home-relative path. A leading "**/" matches
@@ -533,6 +544,22 @@ const NoProject = int64(-1)
 // scan happened to walk. cleanup.DeleteBlock handles the same pair for the same
 // reason.
 func Match(context MatchContext) *Rule {
+	// Absolute patterns first, and they are checked whatever the path looks like.
+	// Everything in Catalog goes through homeRelative, which only recognises
+	// /Users/<account>/..., so on a whole-disk scan the tool knew nothing outside
+	// the user's home folder: /Library/Developer/CoreSimulator/Caches/dyld is 3.6
+	// GB of regenerable cache and matched nothing at all. Same root cause as the
+	// `**/` guard hole, which I fixed on the guard side only.
+	clean := strings.TrimSuffix(filepath.Clean(context.Path), "/")
+	for index := range AbsoluteCatalog {
+		rule := &AbsoluteCatalog[index]
+		if !rule.conditionsMet(context) {
+			continue
+		}
+		if matchPattern(strings.TrimPrefix(rule.Pattern, "/"), strings.TrimPrefix(clean, "/")) {
+			return rule
+		}
+	}
 	relative, ok := homeRelative(context.Path)
 	if !ok {
 		return nil
@@ -547,6 +574,44 @@ func Match(context MatchContext) *Rule {
 		}
 	}
 	return nil
+}
+
+// AbsoluteCatalog is matched against the whole path rather than a home-relative
+// one. Everything here is root-owned, so it is reported and never staged: see
+// Rule.Manual.
+var AbsoluteCatalog = []Rule{
+	{
+		Name: "模拟器 dyld 缓存", Category: "构建缓存",
+		Pattern: "/Library/Developer/CoreSimulator/Caches/dyld",
+		Manual:  true, Command: "sudo rm -rf /Library/Developer/CoreSimulator/Caches/dyld",
+		Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "不需要联网。模拟器下次启动会重建共享缓存，第一次启动明显变慢。",
+		HowToRestore: "模拟器自动重建。",
+	},
+	{
+		Name: "系统更新包残留", Category: "更新器残留",
+		Pattern: "/Library/Updates",
+		Manual:  true, Command: "sudo rm -rf /Library/Updates/*",
+		Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		WhatBreaks:   "没有影响。这是已下载的系统与 Rosetta 更新包，需要时会重新下载。",
+		HowToRestore: "系统更新时自动重新下载。",
+	},
+	{
+		Name: "根级用户缓存", Category: "应用缓存",
+		Pattern: "/Library/Caches",
+		Manual:  true, Command: "sudo rm -rf /Library/Caches/*",
+		Recovery: RecoveryRegenerable, Risk: RiskReview,
+		WhatBreaks:   "系统级共享缓存消失，相关服务首次使用时重建。个别项可能包含许可或激活信息。",
+		HowToRestore: "多数自动重建。",
+	},
+	{
+		Name: "根级日志", Category: "日志",
+		Pattern: "/Library/Logs", MinAgeDays: 30,
+		Manual: true, Command: "sudo rm -rf /Library/Logs/*",
+		Recovery: RecoveryIrreplaceable, Risk: RiskReview,
+		WhatBreaks:   "历史诊断日志消失。排查旧问题时会缺少记录，功能不受影响。",
+		HowToRestore: "无法恢复，但新日志会继续写入。",
+	},
 }
 
 // Specificity is how many literal segments a pattern pins down. It decides which

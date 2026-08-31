@@ -38,3 +38,11 @@ test("the summary says what was withheld, not only what was taken", () => {
   assert.match(stageSummary(0, "", 9), /都需要你确认/);
   assert.doesNotMatch(stageSummary(12, "33.9 GB", 0), /需要你确认/);
 });
+
+// Root-owned paths are reported with a command, never staged. Staging one puts an
+// item in the dock that can only fail with a permission error after the user has
+// already committed to a deletion.
+test("a manual finding never stages itself, however safe", () => {
+  assert.equal(autoStageable(item({ manual: true })), false);
+  assert.equal(autoStageable(item({ manual: true, risk: "safe", recovery: "regenerable" })), false);
+});

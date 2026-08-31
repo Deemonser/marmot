@@ -74,6 +74,11 @@ type Recommendation struct {
 	// you, and the reason to trust a suggestion enough to act on it.
 	WhatBreaks   string
 	HowToRestore string
+	// Manual marks a finding the tool must not act on itself: the path is
+	// root-owned, so it is reported with the command and never staged (ADR-0065).
+	Manual bool `json:"manual"`
+	// Command is what to run in a terminal. Only set when Manual is.
+	Command string `json:"command"`
 }
 
 // Rejection is a suggestion that did not survive validation. Kept rather than

@@ -447,6 +447,8 @@ func (p EvidencePack) RuleFindings() []AdviceItem {
 				Evidence:         nodeEvidence(node, p.GeneratedAt),
 				WhatBreaks:       whatBreaks,
 				HowToRestore:     rule.HowToRestore,
+				Manual:           rule.Manual,
+				Command:          rule.Command,
 			},
 			Name: node.Name,
 			Path: node.Path,

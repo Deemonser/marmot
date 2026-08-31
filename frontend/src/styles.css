@@ -558,6 +558,8 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 
 .advice-stage span { min-width: 0; }
 .advice-waiting { color: #85868d; }
+.advice-manual { margin-left: auto; color: #96979e; font-size: 9px; }
+.advice-command { display: block; padding: 5px 7px; border-radius: 4px; background: #23242a; color: #cfd2d8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; overflow-x: auto; white-space: pre; user-select: all; }
 .advice-stage .quiet-button { flex: none; }
 .advice-list { min-height: 0; flex: 1; padding: 4px 6px; overflow-y: auto; }
 .advice-empty { margin: 0; padding: 18px 8px; color: #96979e; font-size: 10px; text-align: center; }

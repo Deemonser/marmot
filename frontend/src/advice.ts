@@ -28,9 +28,14 @@ export type StageableItem = {
   source: string;
   risk: string;
   recovery: string;
+  // manual findings are root-owned paths this app cannot delete. Staging one
+  // would put an item in the dock that is guaranteed to fail, which is worse than
+  // not offering it: the user acts, waits, and gets a permission error.
+  manual?: boolean;
 };
 
 export function autoStageable(item: StageableItem): boolean {
+  if (item.manual) return false;
   return item.source === "rule" && item.risk === "safe" && item.recovery !== "irreplaceable";
 }
 

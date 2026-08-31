@@ -258,6 +258,8 @@ type AdviceItem struct {
 	Evidence         []string `json:"evidence"`
 	WhatBreaks       string   `json:"whatBreaks"`
 	HowToRestore     string   `json:"howToRestore"`
+	Manual           bool     `json:"manual"`
+	Command          string   `json:"command"`
 }
 
 type Advice struct {
@@ -389,6 +391,7 @@ func adviceView(advice application.Advice) Advice {
 			Recovery:         string(item.Recovery), Risk: string(item.Risk),
 			Confidence: item.Confidence, Evidence: append([]string{}, item.Evidence...),
 			WhatBreaks: item.WhatBreaks, HowToRestore: item.HowToRestore,
+			Manual: item.Manual, Command: item.Command,
 		})
 	}
 	rejected := make([]AdviceRejection, 0, len(advice.Rejected))
