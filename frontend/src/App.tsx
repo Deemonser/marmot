@@ -1443,11 +1443,9 @@ export default function App() {
   // direction and animated in the other, which reads as a glitch rather than a
   // choice.
   const [leavingResult, setLeavingResult] = useState(false);
-  // The source page is kept mounted for the length of the incoming animation so
-  // the two actually cross. A one-sided fade -- the old page vanishing on a frame
-  // while the new one eases in -- still reads as a cut, which is what the
-  // transition was supposed to stop.
-  const [sourceFading, setSourceFading] = useState(false);
+  // Whether the forward push is running. Set during render rather than from an
+  // effect -- see below for why the effect version was visibly wrong.
+  const [advancing, setAdvancing] = useState(false);
   const [cleanupAt, setCleanupAt] = useState<{ done: number; total: number; current: string; doneBytes: number; totalBytes: number } | null>(null);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
@@ -1520,18 +1518,27 @@ export default function App() {
   // for and nothing to warn about (ADR-0055). The flip side is that the result
   // exists only while this process does.
   const showResult = Boolean(status?.snapshotId && status.state && browsableScanStates.has(status.state) && map);
+  // The forward push has to be armed in the SAME render that first shows the
+  // result page. An effect cannot do it: an effect runs after the browser has
+  // painted, so the incoming page was drawn once at its final position and only
+  // then got the animation class -- it appeared, jumped off to the right, and slid
+  // back in. The back direction never had this because leavingResult is set before
+  // the state change it animates, so the class is there from the first frame.
+  //
+  // Setting state during render is the supported way to adjust state when a value
+  // it derives from changes: React re-renders immediately, before painting, so
+  // nothing is shown in the un-animated position. (The file already updates
+  // mapRef during render for the same kind of reason.)
   const wasShowingResult = useRef(showResult);
-  useEffect(() => {
-    if (showResult === wasShowingResult.current) return;
+  if (showResult !== wasShowingResult.current) {
     wasShowingResult.current = showResult;
-    if (!showResult || prefersReducedMotion()) {
-      setSourceFading(false);
-      return;
-    }
-    setSourceFading(true);
-    const timer = window.setTimeout(() => setSourceFading(false), contentPushMs);
+    setAdvancing(showResult && !prefersReducedMotion());
+  }
+  useEffect(() => {
+    if (!advancing) return;
+    const timer = window.setTimeout(() => setAdvancing(false), contentPushMs);
     return () => window.clearTimeout(timer);
-  }, [showResult]);
+  }, [advancing]);
   const currentPage = pages[pageIndex] ?? null;
   const currentParent = map?.parent ?? null;
   const entries = useMemo(
@@ -2628,7 +2635,7 @@ export default function App() {
 
   return (
     <div className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source")
-      + (leavingResult ? " is-leaving" : "") + (sourceFading ? " is-advancing" : "")
+      + (leavingResult ? " is-leaving" : "") + (advancing ? " is-advancing" : "")
       + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
       {/* One chrome row, like the reference: window buttons, navigation and the
           breadcrumb trail. Everything else that used to live up here (title
@@ -2735,7 +2742,7 @@ export default function App() {
           </section>
         </main>
       )}
-      {(!showResult || sourceFading || leavingResult) && (
+      {(!showResult || advancing || leavingResult) && (
         <main
           className={"workspace has-source" + (showResult && !leavingResult ? " is-out" : "")}
           data-testid="source-view"
