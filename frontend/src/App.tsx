@@ -6,7 +6,6 @@ import type { HueBand } from "./sunburst";
 import { autoStageable, stageSummary } from "./advice";
 import { countdownDigit, countdownFraction, deleteFraction, ringOffset } from "./countdown";
 import { meterColor } from "./meter";
-import { contentPushMs, leaveDelay, prefersReducedMotion } from "./pagefade";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
@@ -437,7 +436,6 @@ function staleDisplayEntry(entry: MapEntry | null, staleKey: string | null): Map
 }
 
 function Sunburst({
-  arcsHidden,
   map,
   hoveredKey,
   focusedKey,
@@ -459,10 +457,6 @@ function Sunburst({
   collectedKeys,
   draggingKey,
 }: {
-  // Skip the arcs entirely. Used for the length of a page push: their cost is what
-  // made the entering page's first paint slow enough to swallow the start of its
-  // own animation.
-  arcsHidden: boolean;
   map: MapResult | null;
   hoveredKey: string | null;
   focusedKey: string | null;
@@ -874,7 +868,7 @@ function Sunburst({
       >
         <g transform="translate(300 300)">
           {/* Departing arcs: drawn under the live ones, never interactive. */}
-          {!arcsHidden && ghosts.length > 0 && (
+          {ghosts.length > 0 && (
             <g
               className="sunburst-ghosts"
               aria-hidden="true"
@@ -895,7 +889,7 @@ function Sunburst({
               ))}
             </g>
           )}
-          {arcsHidden ? null : slices.map(({ entry, key, renderKey, depth, path, aggregate, stale, nodeId, geom, preview, color, id, protection, name, size, collected, dragging, trail }) => {
+          {slices.map(({ entry, key, renderKey, depth, path, aggregate, stale, nodeId, geom, preview, color, id, protection, name, size, collected, dragging, trail }) => {
             // Only current-level arcs are interactive: a projected descendant
             // carries no path, so it can neither be activated nor collected
             // (ADR-0048, ADR-0017 §2).
@@ -1443,16 +1437,6 @@ export default function App() {
   // Where a deletion has got to. Moving to the trash was a rename and finished
   // before the UI could show anything; deleting unlinks every file, so a 18.5 GB
   // cache takes as long as it takes and silence reads as a hang.
-  // Set while the result page plays its exit, so the state change that unmounts
-  // it waits for the animation. Without holding it, back is instantaneous in one
-  // direction and animated in the other, which reads as a glitch rather than a
-  // choice.
-  const [leavingResult, setLeavingResult] = useState(false);
-  // Whether the forward push is running. One boolean and one keyframe, the same
-  // shape as the back direction: the two-phase arming that used to be here existed
-  // only because the entering page's first paint was slow, and the arcs are now
-  // skipped for the push instead.
-  const [advancing, setAdvancing] = useState(false);
   const [cleanupAt, setCleanupAt] = useState<{ done: number; total: number; current: string; doneBytes: number; totalBytes: number } | null>(null);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
@@ -1525,27 +1509,6 @@ export default function App() {
   // for and nothing to warn about (ADR-0055). The flip side is that the result
   // exists only while this process does.
   const showResult = Boolean(status?.snapshotId && status.state && browsableScanStates.has(status.state) && map);
-  // The forward push has to be armed in the SAME render that first shows the
-  // result page. An effect cannot do it: an effect runs after the browser has
-  // painted, so the incoming page was drawn once at its final position and only
-  // then got the animation class -- it appeared, jumped off to the right, and slid
-  // back in. The back direction never had this because leavingResult is set before
-  // the state change it animates, so the class is there from the first frame.
-  //
-  // Setting state during render is the supported way to adjust state when a value
-  // it derives from changes: React re-renders immediately, before painting, so
-  // nothing is shown in the un-animated position. (The file already updates
-  // mapRef during render for the same kind of reason.)
-  const wasShowingResult = useRef(showResult);
-  if (showResult !== wasShowingResult.current) {
-    wasShowingResult.current = showResult;
-    setAdvancing(showResult && !prefersReducedMotion());
-  }
-  useEffect(() => {
-    if (!advancing) return;
-    const timer = window.setTimeout(() => setAdvancing(false), contentPushMs);
-    return () => window.clearTimeout(timer);
-  }, [advancing]);
   const currentPage = pages[pageIndex] ?? null;
   const currentParent = map?.parent ?? null;
   const entries = useMemo(
@@ -1767,37 +1730,16 @@ export default function App() {
 
   const sourceRows = Math.max(1, storageSources.length);
   const sourceAlert = Boolean(permission && permission.state !== "available");
-  // The window is resized in ONE step, and as soon as the result is PENDING --
-  // before the map arrives and the page swaps -- so the content push runs against a
-  // viewport that is already its final size.
-  //
-  // The reference ramps its window height linearly and pushes the content at the
-  // same time (R-066). Reproducing both at once did not work here and the reason is
-  // structural: a webview lays out against its viewport, so ramping the window
-  // re-lays-out the result page at every step. Pinning the page's height stopped
-  // the squashing but then the document's own scroll offset, left over from the
-  // previous overflow, put the page halfway down; pinning the shell to the viewport
-  // improved it and still left an offset. Four verified attempts, each revealing
-  // another coupling between the resize and the layout.
-  //
-  // So the two motions are separated instead: the window changes size at the moment
-  // when the least is on screen, and the push -- the motion actually asked for --
-  // gets a stable viewport for its whole duration. R-066 §4.1 records that this
-  // trades away the reference's simultaneous ramp.
-  const appliedHeight = useRef<number | null>(null);
   useEffect(() => {
-    const wantsResultSize = showResult || resultPending;
-    const height = wantsResultSize
+    const height = showResult
       ? resultWindowSize.height
       : sourceWindowSize.height + (sourceRows - 1) * sourceRowHeight + (sourceAlert ? 34 : 0);
-    if (appliedHeight.current === height) return;
-    appliedHeight.current = height;
     try {
       void Window.SetSize(resultWindowSize.width, height).catch(() => undefined);
     } catch {
       // The ordinary browser preview does not expose the Wails window bridge.
     }
-  }, [showResult, resultPending, sourceRows, sourceAlert]);
+  }, [showResult, sourceRows, sourceAlert]);
 
   async function startScan(nextRoot = root) {
     setBusy(true);
@@ -2282,22 +2224,6 @@ export default function App() {
     }
   }
 
-  // leaveResult plays the result page out, then commits. Reduced motion commits
-  // immediately: the preference is about motion, not about waiting.
-  function leaveResult(commit: () => void) {
-    const delay = leaveDelay();
-    if (delay === 0) {
-      commit();
-      return;
-    }
-    if (leavingResult) return;
-    setLeavingResult(true);
-    window.setTimeout(() => {
-      commit();
-      setLeavingResult(false);
-    }, delay);
-  }
-
   function forgetResult() {
     window.localStorage.removeItem("marmot.scanTaskId");
     setStatus(null);
@@ -2320,19 +2246,16 @@ export default function App() {
 
   function returnToSource() {
     if (!status || status.snapshotId <= 0 || scanActive) return;
-    const leaving = status;
-    leaveResult(() => {
-      setCachedStatus(leaving);
-      setStatus(null);
-      setMap(null);
-      setPages([]);
-      setPageIndex(-1);
-      setHoveredEntry(null);
-      setFocusedEntry(null);
-      setSelectedEntry(null);
-      setStaleEntry(null);
-      setCollectorOpen(false);
-    });
+    setCachedStatus(status);
+    setStatus(null);
+    setMap(null);
+    setPages([]);
+    setPageIndex(-1);
+    setHoveredEntry(null);
+    setFocusedEntry(null);
+    setSelectedEntry(null);
+    setStaleEntry(null);
+    setCollectorOpen(false);
   }
 
   function markStale(entry: MapEntry) {
@@ -2623,12 +2546,7 @@ export default function App() {
   });
 
   return (
-    <div
-      className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source")
-        + (leavingResult ? " is-leaving" : "")
-        + (advancing ? " is-advancing" : "")
-        + (drag ? " is-dragging" : "")}
-      onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
+    <div className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source") + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
       {/* One chrome row, like the reference: window buttons, navigation and the
           breadcrumb trail. Everything else that used to live up here (title
           block, counters, history meta) is technical detail the reference never
@@ -2658,11 +2576,8 @@ export default function App() {
         )}
       </header>
 
-      {(showResult || leavingResult) && (
-        <main
-          className={"workspace has-result" + (leavingResult ? " is-out" : "")}
-          data-testid="result-view"
-        >
+      {showResult ? (
+        <main className="workspace has-result" data-testid="result-view">
           <section className="workbench" data-testid="workbench">
             <div className="map-panel">
               <div className="map-heading">
@@ -2677,12 +2592,6 @@ export default function App() {
               </div>
               <div className="map-stage">
                 <Sunburst
-                  // Thousands of arcs are the reason the entering page's first
-                  // paint was slow enough for its own animation to start without
-                  // it. Skipping them for the length of the push makes that paint
-                  // cheap, which fixes the cause instead of timing around it -- the
-                  // user's suggestion, and better than what was here.
-                  arcsHidden={advancing}
                   onDragEntry={beginEntryDrag}
                   collectedKeys={collectedKeys}
                   draggingKey={draggingKey}
@@ -2739,12 +2648,8 @@ export default function App() {
             />
           </section>
         </main>
-      )}
-      {(!showResult || advancing || leavingResult) && (
-        <main
-          className={"workspace has-source" + (showResult && !leavingResult ? " is-out" : "")}
-          data-testid="source-view"
-        >
+      ) : (
+        <main className="workspace has-source" data-testid="source-view">
           {permission && permission.state !== "available" && (
             <div className="source-alert" role="status">{permission.message || "需要完整磁盘访问权限才能扫描系统目录"}</div>
           )}
