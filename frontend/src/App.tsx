@@ -1091,7 +1091,6 @@ function VolumeTile({
 	    <div className="volume-meter">
 	      <div
 	        className={"meter-track" + (busy ? (scanning && scanFraction === null ? " is-scanning is-indeterminate" : " is-scanning") : "")}
-	        data-phase={scanning ? scanStatus?.phase : undefined}
 	        role={busy ? "progressbar" : undefined}
 	        aria-label={finishing ? "正在整理结果" : scanning ? scanProgressLabel : capacityLabel}
 	        aria-valuetext={busy ? (finishing ? "正在整理结果" : scanProgressLabel) : undefined}
@@ -1106,10 +1105,18 @@ function VolumeTile({
 	            capacity fill underneath the progress just read as a stray band, and
 	            scaling the progress to the capacity extent so the two lined up made
 	            the bar stop short of the track's end, which reads as stalling. */}
+	        {/* The keys are load-bearing. Two elements were chosen so the capacity
+	            fill could not animate into the scan progress, but both are <span> in
+	            the same slot, so React reconciles them as ONE element and only swaps
+	            className and style -- and .meter-scan carries `transition: width
+	            .3s`, so pressing scan slid the bar from the disk's fill level down to
+	            zero. Distinct keys make it a real unmount and mount, which is what
+	            the two-element design assumed all along. */}
 	        {busy ? (
 	          // Full while finishing: the walk really is done, and this is the
 	          // frame the comment above says there is no room for. There is now.
 	          <span
+	            key="scan"
 	            className="meter-scan"
 	            style={finishing
 	              ? { width: "100%" }
@@ -1117,17 +1124,20 @@ function VolumeTile({
 	          />
 	        ) : (
 	          <span
-            className="meter-used"
-            style={{ width: ratio + "%", background: meterColor(source.usedBytes, source.totalBytes) }}
-          />
+	            key="used"
+	            className="meter-used"
+	            style={{ width: ratio + "%", background: meterColor(source.usedBytes, source.totalBytes) }}
+	          />
 	        )}
 	      </div>
 	      <div className={"meter-caption" + (busy ? " is-scanning" : "")}>
-	        {finishing
-	          ? <em>正在整理结果…</em>
-	          : scanning
-	            ? <em>{(scanStatus && phaseLabels[scanStatus.phase]) ?? "扫描中"}…</em>
-	            : <b>{formatBytes(source.freeBytes)}</b>}
+	        {/* Not the phase. ADR-0050 §2: phase, counts, bytes and elapsed time are
+	            not visible chrome, because the reference shows none of them; they
+	            live in the accessible label. Putting "深度扫描" here broke that, and it
+	            was redundant anyway -- a marching bar already says a scan is running.
+	            "正在整理结果" stays: that is not a phase but the state after the walk
+	            ends, when the bar is full and nothing else explains the wait. */}
+	        {finishing ? <em>正在整理结果…</em> : scanning ? <em>扫描中…</em> : <b>{formatBytes(source.freeBytes)}</b>}
 	      </div>
 	    </div>
 	    <div className="volume-action">
