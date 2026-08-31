@@ -18,6 +18,7 @@ export type {
     CleanupItemValidation,
     CleanupPlan,
     CleanupPlanRequest,
+    CleanupProgress,
     CleanupValidation,
     EvidencePreview,
     MapEntry,

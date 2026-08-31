@@ -1385,6 +1385,10 @@ export default function App() {
   // rather than discarding a result that still gets paid for.
   const adviceCall = useRef<{ cancel: () => void } | null>(null);
   const [collectorOpen, setCollectorOpen] = useState(false);
+  // Where a deletion has got to. Moving to the trash was a rename and finished
+  // before the UI could show anything; deleting unlinks every file, so a 18.5 GB
+  // cache takes as long as it takes and silence reads as a hang.
+  const [cleanupAt, setCleanupAt] = useState<{ done: number; total: number; current: string } | null>(null);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
   const [notice, setNotice] = useState("");
@@ -1627,11 +1631,16 @@ export default function App() {
     });
     // The native row menu only reports which item was picked; the action itself
     // runs here, through the same calls the buttons use (ADR-0051 §4).
+    const offCleanup = Events.On("cleanup-progress", (event: { data: { done: number; total: number; current: string } }) => {
+      const { done, total, current } = event.data;
+      setCleanupAt(done >= total ? null : { done, total, current });
+    });
     const offMenu = Events.On("volume-menu", (event: { data: { sourceId: string; action: string } }) => {
       void runVolumeMenuAction(event.data.sourceId, event.data.action);
     });
     return () => {
       off();
+      offCleanup();
       offMenu();
       if (refreshTimer.current !== undefined) window.clearTimeout(refreshTimer.current);
     };
@@ -2320,8 +2329,9 @@ export default function App() {
         setAdviceOpen(false);
         setAdviceDetail(null);
       }
+      setCleanupAt(null);
       if (stuck.length === 0) {
-        setNotice("已删除，空间已释放，请重新扫描刷新结果");
+        setNotice("已删除，空间已释放，正在重新扫描…");
       } else {
         setNotice(
           `已处理 ${moved.length} 项，${stuck.length} 项未执行：` +
@@ -2329,7 +2339,15 @@ export default function App() {
             (stuck.length > 3 ? ` 等 ${stuck.length} 项` : ""),
         );
       }
+      // ADR-0009 forbids writing a cleanup result back as a scan fact, and it is
+      // right to: subtracting the deleted nodes would give a map that agrees with
+      // nothing, least of all with a disk other processes are writing to at the
+      // same time. Re-scanning is the sanctioned way back into step, and doing it
+      // automatically is the difference between "the map is stale, go fix it" and
+      // the view simply catching up.
+      if (moved.length > 0) void startScan(statusRef.current?.root || root);
     } catch (error) {
+      setCleanupAt(null);
       setNotice(String(error));
     }
   }
@@ -2690,12 +2708,14 @@ export default function App() {
                 {drag?.blocked
                   ? drag.blocked
                   : countdown !== null
-                    ? <>秒后开始。选中的文件将<strong className="destructive-note">移入废纸篓</strong></>
-                    : plan?.state === "confirmed"
-                      ? "正在移入废纸篓…"
-                      : validation && !validation.valid
-                        ? "校验未通过，不能执行"
-                        : formatBytes(collectorBytes).split(" ")[1] + " 已收集"}
+                    ? <>秒后开始。选中的文件将被<strong className="destructive-note">直接删除，无法撤销</strong></>
+                    : cleanupAt
+                      ? `正在删除 ${cleanupAt.done + 1}/${cleanupAt.total}：${cleanupAt.current.split("/").pop()}`
+                      : plan?.state === "confirmed"
+                        ? "正在删除…（大目录要逐个文件删除，可能要几分钟）"
+                        : validation && !validation.valid
+                          ? "校验未通过，不能执行"
+                          : formatBytes(collectorBytes).split(" ")[1] + " 已收集"}
               </span>
               {/* One action, and it deletes outright -- the trash is on the same
                   volume, so moving there reclaims nothing. Nothing is rerouted and

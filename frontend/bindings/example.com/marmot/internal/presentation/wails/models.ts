@@ -138,6 +138,19 @@ export interface CleanupPlanRequest {
     "paths": string[] | null;
 }
 
+/**
+ * CleanupProgress mirrors the application event. Deleting is O(files) rather than
+ * the constant-time rename a move to the trash was, so the UI has to be able to
+ * say where it is.
+ */
+export interface CleanupProgress {
+    "planId": string;
+    "version": number;
+    "done": number;
+    "total": number;
+    "current": string;
+}
+
 export interface CleanupValidation {
     "planId": string;
     "version": number;

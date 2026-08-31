@@ -290,6 +290,17 @@ type CleanupPlan struct {
 	Results   []CleanupItemResult `json:"results"`
 }
 
+// CleanupProgress is emitted before each item and once at the end. Deleting is
+// O(files), not O(1) like a move to the trash, so a plan can take minutes and
+// needs to say so while it does.
+type CleanupProgress struct {
+	PlanID  string `json:"planId"`
+	Version int64  `json:"version"`
+	Done    int    `json:"done"`
+	Total   int    `json:"total"`
+	Current string `json:"current"`
+}
+
 type CleanupItemResult struct {
 	Path   string `json:"path"`
 	State  string `json:"state"`
@@ -1488,7 +1499,17 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 	plan.Results = plan.Results[:0]
 	failed := false
 	applied := 0
-	for _, item := range plan.items {
+	// Deleting is not what moving to the trash was. The trash is a rename inside
+	// one volume -- constant time, whatever the size. Deleting unlinks every file,
+	// so a 18.5 GB cache of hundreds of thousands of small files takes as long as
+	// it takes, and the call used to return only when all of it was done. With no
+	// progress that reads as a hang, on exactly the operation where a user most
+	// wants to know something is still happening.
+	for index, item := range plan.items {
+		s.emit("cleanup-progress", CleanupProgress{
+			PlanID: plan.ID, Version: plan.Version, Done: index, Total: len(plan.items),
+			Current: item.Path,
+		})
 		if valid, reason := s.validateCleanupItem(item); !valid {
 			failed = true
 			log.Printf("cleanup %s: 跳过 %s：%s", plan.ID, item.Path, reason)
@@ -1527,6 +1548,9 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 	// run "failed" after moving 33 GB: the plan state is one word for a per-item
 	// outcome, and without the per-item lines nobody could tell which it was.
 	log.Printf("cleanup %s 完成：%d 项，成功 %d，未执行 %d", plan.ID, len(plan.items), applied, len(plan.items)-applied)
+	s.emit("cleanup-progress", CleanupProgress{
+		PlanID: plan.ID, Version: plan.Version, Done: len(plan.items), Total: len(plan.items),
+	})
 	if failed {
 		plan.State = "failed"
 	} else {

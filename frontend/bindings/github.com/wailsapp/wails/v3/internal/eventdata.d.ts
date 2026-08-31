@@ -12,6 +12,7 @@ import type * as wails$0 from "../../../../../example.com/marmot/internal/presen
 declare module "@wailsio/runtime" {
     namespace Events {
         interface CustomEvents {
+            "cleanup-progress": wails$0.CleanupProgress;
             "scan-progress": wails$0.ScanProgress;
             "volume-menu": wails$0.VolumeMenuAction;
         }

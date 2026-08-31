@@ -23,6 +23,7 @@ var assets embed.FS
 
 func init() {
 	application.RegisterEvent[wails.ScanProgress]("scan-progress")
+	application.RegisterEvent[wails.CleanupProgress]("cleanup-progress")
 	application.RegisterEvent[wails.VolumeMenuAction]("volume-menu")
 }
 
