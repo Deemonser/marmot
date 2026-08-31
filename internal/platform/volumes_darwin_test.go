@@ -116,3 +116,52 @@ func TestListVolumesReportsCurrentMacCapacitySources(t *testing.T) {
 		t.Fatalf("System/Data volume group identity is missing: root=%#v data=%#v", root, data)
 	}
 }
+
+// Every volume's usage must come from the source that can tell volume-own space
+// from container-shared space.
+//
+// Skipping diskutil for the eight non-scannable auxiliaries was tried as a
+// startup optimisation and reverted. statfs is not a slower diskutil: on APFS it
+// reports the CONTAINER's blocks and free space, so every volume in a shared
+// container computes its used bytes as the container's. Measured after that
+// change, Preboot, Update and VM each claimed 191.8 GB used and the volumes summed
+// to 931.3 GB on a 245 GB disk -- which made the source row's scan denominator
+// astronomical and pinned the progress bar at zero for an entire walk.
+//
+// The invariant is the basis, not the number: a number can look plausible on one
+// machine while coming from a source that cannot answer the question.
+func TestEveryVolumeUsageComesFromASourceThatSeparatesSharedSpace(t *testing.T) {
+	volumes, err := (Adapter{}).ListVolumes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(volumes) == 0 {
+		t.Skip("no volumes reported")
+	}
+	container := uint64(0)
+	for _, volume := range volumes {
+		if volume.TotalBytes > container {
+			container = volume.TotalBytes
+		}
+	}
+	for _, volume := range volumes {
+		if volume.Permission == "unavailable" {
+			continue
+		}
+		if volume.UsageBasis == "" {
+			t.Errorf("%s reports no usage basis at all", volume.Path)
+			continue
+		}
+		if volume.UsageBasis == "statfs_fallback_v1" {
+			// Allowed only as a genuine fallback, never as a shortcut: on a shared
+			// container it cannot separate own from shared usage.
+			t.Logf("%s fell back to statfs; its usage may be container-wide", volume.Path)
+			continue
+		}
+		// The specific symptom: an auxiliary volume claiming the container's usage.
+		if !volume.Scannable && container > 0 && volume.UsedBytes > container/2 {
+			t.Errorf("%s claims %d bytes used of a %d-byte container, which is the container's own usage",
+				volume.Path, volume.UsedBytes, container)
+		}
+	}
+}

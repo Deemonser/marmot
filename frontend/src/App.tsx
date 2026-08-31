@@ -6,7 +6,7 @@ import type { HueBand } from "./sunburst";
 import { autoStageable, stageSummary } from "./advice";
 import { countdownDigit, countdownFraction, deleteFraction, ringOffset } from "./countdown";
 import { meterColor } from "./meter";
-import { leaveDelay } from "./pagefade";
+import { leaveDelay, pageEnterMs, prefersReducedMotion } from "./pagefade";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
@@ -1414,6 +1414,11 @@ export default function App() {
   // direction and animated in the other, which reads as a glitch rather than a
   // choice.
   const [leavingResult, setLeavingResult] = useState(false);
+  // The source page is kept mounted for the length of the incoming animation so
+  // the two actually cross. A one-sided fade -- the old page vanishing on a frame
+  // while the new one eases in -- still reads as a cut, which is what the
+  // transition was supposed to stop.
+  const [sourceFading, setSourceFading] = useState(false);
   const [cleanupAt, setCleanupAt] = useState<{ done: number; total: number; current: string; doneBytes: number; totalBytes: number } | null>(null);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
@@ -1486,6 +1491,18 @@ export default function App() {
   // for and nothing to warn about (ADR-0055). The flip side is that the result
   // exists only while this process does.
   const showResult = Boolean(status?.snapshotId && status.state && browsableScanStates.has(status.state) && map);
+  const wasShowingResult = useRef(showResult);
+  useEffect(() => {
+    if (showResult === wasShowingResult.current) return;
+    wasShowingResult.current = showResult;
+    if (!showResult || prefersReducedMotion()) {
+      setSourceFading(false);
+      return;
+    }
+    setSourceFading(true);
+    const timer = window.setTimeout(() => setSourceFading(false), pageEnterMs);
+    return () => window.clearTimeout(timer);
+  }, [showResult]);
   const currentPage = pages[pageIndex] ?? null;
   const currentParent = map?.parent ?? null;
   const entries = useMemo(
@@ -2573,8 +2590,11 @@ export default function App() {
         )}
       </header>
 
-      {showResult ? (
-        <main className="workspace has-result" data-testid="result-view">
+      {(showResult || leavingResult) && (
+        <main
+          className={"workspace has-result" + (leavingResult ? " is-out" : "")}
+          data-testid="result-view"
+        >
           <section className="workbench" data-testid="workbench">
             <div className="map-panel">
               <div className="map-heading">
@@ -2645,8 +2665,12 @@ export default function App() {
             />
           </section>
         </main>
-      ) : (
-        <main className="workspace has-source" data-testid="source-view">
+      )}
+      {(!showResult || sourceFading || leavingResult) && (
+        <main
+          className={"workspace has-source" + (showResult && !leavingResult ? " is-out" : "")}
+          data-testid="source-view"
+        >
           {permission && permission.state !== "available" && (
             <div className="source-alert" role="status">{permission.message || "需要完整磁盘访问权限才能扫描系统目录"}</div>
           )}

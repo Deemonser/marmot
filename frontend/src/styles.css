@@ -41,14 +41,26 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
   to { opacity: 0; transform: scale(.985); }
 }
 .workspace { transform-origin: 50% 42%; }
-.app-shell-result .workspace.has-result,
-.app-shell-source .workspace.has-source {
+/* The outgoing page leaves the flow so the two overlap instead of stacking, and
+   stops taking clicks: it is a picture of where you were, not a live page. */
+.workspace.is-out {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  animation: page-leave 180ms cubic-bezier(.4, 0, 1, 1) both;
+}
+.app-shell-result .workspace.has-result:not(.is-out),
+.app-shell-source .workspace.has-source:not(.is-out) {
   animation: page-enter 260ms cubic-bezier(.32, 0, .24, 1) both;
 }
-/* The exit wins over the entry animation: the same element is mid-enter if the
-   user presses back immediately after a scan. */
+/* Pressing back mid-enter: the exit has to win over the entry on the same
+   element. */
 .app-shell.is-leaving .workspace.has-result {
   animation: page-leave 180ms cubic-bezier(.4, 0, 1, 1) both;
+}
+/* While the result page is leaving, the source page is arriving underneath it. */
+.app-shell.is-leaving .workspace.has-source {
+  animation: page-enter 260ms cubic-bezier(.32, 0, .24, 1) both;
 }
 /* The corners belong to the result page, so they travel with it rather than
    sitting still while the page underneath moves. */
@@ -57,9 +69,12 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   /* The state change is already immediate in this case (pagefade.leaveDelay), so
      there is nothing to hold; the animations just go. */
-  .app-shell-result .workspace.has-result,
-  .app-shell-source .workspace.has-source,
-  .app-shell.is-leaving .workspace.has-result { animation: none; }
+  .workspace.is-out,
+  .app-shell-result .workspace.has-result:not(.is-out),
+  .app-shell-source .workspace.has-source:not(.is-out),
+  .app-shell.is-leaving .workspace.has-result,
+  .app-shell.is-leaving .workspace.has-source { animation: none; }
+  .workspace.is-out { display: none; }
   .app-shell.is-leaving .collector-dock,
   .app-shell.is-leaving .advice-corner { transition: none; }
 }

@@ -88,20 +88,22 @@ func (Adapter) ListVolumes() ([]ports.Volume, error) {
 	// scan path waits on it before the walk can start. The calls are independent,
 	// so they run together.
 	//
-	// Running them together was not enough: ten concurrent process spawns still
-	// cost 390ms, which is the pause before the disk list appears at launch. And
-	// eight of those ten are system auxiliaries -- Preboot, VM, xarts, the Update
-	// mounts -- which are shown as a capacity summary and cannot be scanned. The
-	// precise APFS split of volume-own versus container-shared space only matters
-	// where a scan can be started, so only those pay for diskutil; the rest take
-	// their numbers from the statfs record already in hand, at no cost.
+	// Ten concurrent spawns still cost 390ms, which is the pause before the disk
+	// list appears at launch, and skipping diskutil for the eight auxiliaries was
+	// tried and reverted. It is not a slower statfs: on APFS, statfs reports the
+	// CONTAINER's blocks and free space, so every volume in a shared container
+	// computes its used bytes as the container's used bytes. Measured after that
+	// change: Preboot, Update and VM each reported 191.8 GB used and the volumes
+	// summed to 931.3 GB on a 245 GB disk, which made the source row's scan
+	// denominator astronomical and pinned the progress bar at zero for the whole
+	// walk. diskutil is the only source that separates volume-own from
+	// container-shared usage, which is exactly why it is called per volume.
+	//
+	// The latency is real and the fix is not this: it is a native query in place of
+	// a subprocess, or caching, neither of which changes a number.
 	errs := make([]error, len(volumes))
 	var wait sync.WaitGroup
 	for index := range volumes {
-		if !volumes[index].Scannable {
-			errs[index] = populateFromStatfs(&volumes[index], kept[index].stat)
-			continue
-		}
 		wait.Add(1)
 		go func(index int) {
 			defer wait.Done()
