@@ -197,8 +197,6 @@ type NodeActionResult struct {
 type CleanupPlanRequest struct {
 	SnapshotID int64    `json:"snapshotId"`
 	Paths      []string `json:"paths"`
-	// Permanent skips the trash. Sent per plan, never remembered (ADR-0063).
-	Permanent bool `json:"permanent"`
 }
 
 type CleanupPlan struct {
@@ -207,7 +205,6 @@ type CleanupPlan struct {
 	Version    int64               `json:"version"`
 	State      string              `json:"state"`
 	Items      int                 `json:"items"`
-	Permanent  bool                `json:"permanent"`
 	Results    []CleanupItemResult `json:"results"`
 }
 
@@ -600,7 +597,7 @@ func (s *Service) RevealStorageSource(sourceID string) (NodeActionResult, error)
 
 func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, error) {
 	plan, err := s.application.CreateCleanupPlan(application.CleanupPlanRequest{
-		SnapshotID: request.SnapshotID, Paths: request.Paths, Permanent: request.Permanent,
+		SnapshotID: request.SnapshotID, Paths: request.Paths,
 	})
 	return cleanupPlan(plan), err
 }
@@ -644,7 +641,7 @@ func cleanupPlan(plan application.CleanupPlan) CleanupPlan {
 	for _, item := range plan.Results {
 		results = append(results, CleanupItemResult{Path: item.Path, State: item.State, Reason: item.Reason})
 	}
-	return CleanupPlan{ID: plan.ID, SnapshotID: plan.SnapshotID, Version: plan.Version, State: plan.State, Items: plan.Items, Permanent: plan.Permanent, Results: results}
+	return CleanupPlan{ID: plan.ID, SnapshotID: plan.SnapshotID, Version: plan.Version, State: plan.State, Items: plan.Items, Results: results}
 }
 
 func mapEntry(entry application.MapEntry) MapEntry {

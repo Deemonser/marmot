@@ -306,8 +306,10 @@ func TestScanToCleanupVerticalSlice(t *testing.T) {
 		t.Fatalf("cleanup confirmation failed: state=%s err=%v", confirmed.State, err)
 	}
 	applied, err := service.ExecuteCleanupPlan(plan.ID, plan.Version)
-	if err != nil || applied.State != "applied" || len(trash.paths) != 1 || trash.paths[0] != path {
-		t.Fatalf("cleanup execution failed: plan=%#v paths=%#v err=%v", applied, trash.paths, err)
+	// Deleted, not trashed: a rebuildable object goes outright, because the trash
+	// is on the same volume and frees nothing (ADR-0063).
+	if err != nil || applied.State != "applied" || len(trash.removed) != 1 || trash.removed[0] != path {
+		t.Fatalf("cleanup execution failed: plan=%#v removed=%#v trashed=%#v err=%v", applied, trash.removed, trash.paths, err)
 	}
 }
 
@@ -789,9 +791,9 @@ func TestProtectedPathsAreNotCollectableAndCannotBeStaged(t *testing.T) {
 }
 
 // runPlan drives one plan from creation to execution and returns the outcome.
-func runPlan(t *testing.T, service *Service, snapshotID int64, paths []string, permanent bool) CleanupPlan {
+func runPlan(t *testing.T, service *Service, snapshotID int64, paths []string) CleanupPlan {
 	t.Helper()
-	plan, err := service.CreateCleanupPlan(CleanupPlanRequest{SnapshotID: snapshotID, Paths: paths, Permanent: permanent})
+	plan, err := service.CreateCleanupPlan(CleanupPlanRequest{SnapshotID: snapshotID, Paths: paths})
 	if err != nil {
 		t.Fatalf("create plan: %v", err)
 	}
@@ -825,9 +827,10 @@ func scanned(t *testing.T, service *Service, root string) int64 {
 	return status.SnapshotID
 }
 
-// Moving to the trash frees nothing: same volume, so it is a rename. A permanent
-// plan has to actually take the other path, not quietly do the safe thing.
-func TestPermanentPlanRemovesInsteadOfTrashing(t *testing.T) {
+// Moving to the trash frees nothing: same volume, so it is a rename. Deletion is
+// now the only mode, so it has to actually delete rather than quietly do the
+// reversible thing.
+func TestDeletionRemovesInsteadOfTrashing(t *testing.T) {
 	trash := &recordingTrash{}
 	service := testServiceWithTrash(t, trash)
 	root := t.TempDir()
@@ -835,26 +838,29 @@ func TestPermanentPlanRemovesInsteadOfTrashing(t *testing.T) {
 	if err := os.WriteFile(path, []byte("candidate"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	applied := runPlan(t, service, scanned(t, service, root), []string{path}, true)
-	if applied.State != "applied" || !applied.Permanent {
-		t.Fatalf("permanent plan came back as %#v", applied)
+	applied := runPlan(t, service, scanned(t, service, root), []string{path})
+	if applied.State != "applied" {
+		t.Fatalf("plan came back as %#v", applied)
 	}
 	if len(trash.removed) != 1 || trash.removed[0] != path {
 		t.Fatalf("nothing was removed outright: removed=%#v trashed=%#v", trash.removed, trash.paths)
 	}
 	if len(trash.paths) != 0 {
-		t.Fatalf("a permanent plan used the trash anyway: %#v", trash.paths)
+		t.Fatalf("the trash was used anyway: %#v", trash.paths)
 	}
-	// The result line has to say which of the two happened; they are not
-	// interchangeable and only one of them can be undone.
-	if applied.Results[0].Reason != "已直接删除" {
-		t.Fatalf("the result does not distinguish the two: %q", applied.Results[0].Reason)
+	if applied.Results[0].Reason != "已删除" {
+		t.Fatalf("the result does not say what happened: %q", applied.Results[0].Reason)
 	}
 }
 
-// The trash makes the irreplaceable guard advisory -- a mistake is a restore
-// away. Permanent deletion removes that, so the guard stops being advice.
-func TestPermanentDeletionIsRefusedForWhatCannotComeBack(t *testing.T) {
+// Delete means delete. The user asked three times, and the last time explicitly
+// included what cannot be rebuilt -- so a repository staged by hand goes the same
+// way as a build directory, and nothing is quietly rerouted to the trash.
+//
+// What still refuses is cleanup.DeleteBlock, and it refuses for a different
+// reason: it protects the machine from being broken, not the user from losing
+// their own files.
+func TestNothingIsReroutedToTheTrash(t *testing.T) {
 	trash := &recordingTrash{}
 	service := testServiceWithTrash(t, trash)
 	root := t.TempDir()
@@ -865,42 +871,27 @@ func TestPermanentDeletionIsRefusedForWhatCannotComeBack(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "HEAD"), []byte("ref: refs/heads/main"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	snapshotID := scanned(t, service, root)
-
-	_, err := service.CreateCleanupPlan(CleanupPlanRequest{SnapshotID: snapshotID, Paths: []string{repo}, Permanent: true})
-	if err == nil {
-		t.Fatal("a repository was accepted for permanent deletion")
+	applied := runPlan(t, service, scanned(t, service, root), []string{repo})
+	if applied.State != "applied" {
+		t.Fatalf("the plan did not complete: %#v", applied)
 	}
-	if !strings.Contains(err.Error(), "无法恢复") {
-		t.Fatalf("the refusal does not say why: %v", err)
+	if len(trash.paths) != 0 {
+		t.Fatalf("a staged path was rerouted to the trash: %#v", trash.paths)
 	}
-	// And the reversible path is still open: the guard is a refusal only where
-	// there is no way back.
-	if _, err := service.CreateCleanupPlan(CleanupPlanRequest{SnapshotID: snapshotID, Paths: []string{repo}}); err != nil {
-		t.Fatalf("the same path was refused for the trash too: %v", err)
+	if len(trash.removed) != 1 || trash.removed[0] != repo {
+		t.Fatalf("the repository was not deleted: %#v", trash.removed)
 	}
 }
 
-// Permanence is chosen per plan and never inherited. A plan built without the
-// flag must not remove anything outright, however the previous one was built.
-func TestPermanenceIsNotStickyBetweenPlans(t *testing.T) {
-	trash := &recordingTrash{}
-	service := testServiceWithTrash(t, trash)
-	root := t.TempDir()
-	first := filepath.Join(root, "first.txt")
-	second := filepath.Join(root, "second.txt")
-	for _, path := range []string{first, second} {
-		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
+// The machine-integrity guard is untouched, and it is the one refusal left. A
+// home folder root or a system tree is refused whatever the user staged, because
+// losing those is not "the user lost a file", it is a broken install.
+func TestMachineIntegrityGuardStillRefuses(t *testing.T) {
+	service := testService(t)
+	snapshotID := addTestSnapshot(t, service, "/", "")
+	for _, path := range []string{"/", "/System", "/Users/alice"} {
+		if _, err := service.CreateCleanupPlan(CleanupPlanRequest{SnapshotID: snapshotID, Paths: []string{path}}); err == nil {
+			t.Errorf("%s was accepted for deletion", path)
 		}
-	}
-	snapshotID := scanned(t, service, root)
-	runPlan(t, service, snapshotID, []string{first}, true)
-	applied := runPlan(t, service, snapshotID, []string{second}, false)
-	if applied.Permanent {
-		t.Fatal("the second plan inherited permanence")
-	}
-	if len(trash.paths) != 1 || trash.paths[0] != second {
-		t.Fatalf("the second plan did not use the trash: %#v", trash.paths)
 	}
 }

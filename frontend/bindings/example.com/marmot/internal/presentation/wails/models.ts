@@ -130,18 +130,12 @@ export interface CleanupPlan {
     "version": number;
     "state": string;
     "items": number;
-    "permanent": boolean;
     "results": CleanupItemResult[] | null;
 }
 
 export interface CleanupPlanRequest {
     "snapshotId": number;
     "paths": string[] | null;
-
-    /**
-     * Permanent skips the trash. Sent per plan, never remembered (ADR-0063).
-     */
-    "permanent": boolean;
 }
 
 export interface CleanupValidation {

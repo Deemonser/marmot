@@ -3,7 +3,6 @@ package application
 import (
 	"context"
 	"errors"
-	"example.com/marmot/internal/domain/recommendation"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -277,10 +276,6 @@ type ChildrenResult struct {
 type CleanupPlanRequest struct {
 	SnapshotID int64    `json:"snapshotId"`
 	Paths      []string `json:"paths"`
-	// Permanent removes without a trash step. Opt-in per plan, never a stored
-	// preference: an irreversible action should be chosen each time it happens,
-	// not once and then forgotten about (ADR-0063).
-	Permanent bool `json:"permanent"`
 }
 
 type CleanupPlan struct {
@@ -1425,18 +1420,6 @@ func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, er
 	if cleanup.HasOverlappingPaths(paths) {
 		return CleanupPlan{}, errors.New("parent and child cleanup items cannot overlap")
 	}
-	// The one extra rule permanent deletion carries. The trash makes the
-	// irreplaceable guard advisory -- a mistake is a restore away -- and this mode
-	// removes that. So the guard stops being advice and becomes a refusal: nothing
-	// that cannot be recreated is ever deleted outright, whoever asked.
-	if request.Permanent {
-		for _, path := range paths {
-			if reason := recommendation.IrreplaceableReason(path); reason != "" {
-				log.Printf("cleanup: 拒绝永久删除 %s：%s", path, reason)
-				return CleanupPlan{}, fmt.Errorf("不能直接删除（删了无法恢复，只能移入废纸篓）：%s：%s", reason, path)
-			}
-		}
-	}
 	items := make([]cleanup.Item, 0, len(paths))
 	for _, path := range paths {
 		node, err := s.store.NodeByPath(request.SnapshotID, path)
@@ -1456,12 +1439,8 @@ func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, er
 		}
 		items = append(items, item)
 	}
-	plan := &cleanupPlan{CleanupPlan: CleanupPlan{ID: fmt.Sprintf("plan-%d-%d", time.Now().UnixNano(), s.serial.Add(1)), SnapshotID: request.SnapshotID, Version: 1, State: "draft", Items: len(items), Permanent: request.Permanent, Results: make([]CleanupItemResult, 0, len(items))}, items: items}
-	mode := "移入废纸篓"
-	if request.Permanent {
-		mode = "直接删除"
-	}
-	log.Printf("cleanup %s: 建立计划，%d 项，方式 %s", plan.ID, len(items), mode)
+	plan := &cleanupPlan{CleanupPlan: CleanupPlan{ID: fmt.Sprintf("plan-%d-%d", time.Now().UnixNano(), s.serial.Add(1)), SnapshotID: request.SnapshotID, Version: 1, State: "draft", Items: len(items), Results: make([]CleanupItemResult, 0, len(items))}, items: items}
+	log.Printf("cleanup %s: 建立计划，%d 项", plan.ID, len(items))
 	s.mu.Lock()
 	s.plans[plan.ID] = plan
 	s.mu.Unlock()
@@ -1516,14 +1495,24 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 			plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "skipped", Reason: reason})
 			continue
 		}
-		outcome := "已移入废纸篓"
-		var err error
-		if plan.Permanent {
-			outcome = "已直接删除"
-			err = s.trash.RemovePermanently(item.Path)
-		} else {
-			_, err = s.trash.Trash(item.Path)
-		}
+		// Deleted outright, with no exception. The trash is on the same volume, so
+		// moving there reclaims nothing, and the user asked three times for delete
+		// to mean delete -- including for what cannot be rebuilt (ADR-0063 rev.
+		// 2026-08-31).
+		//
+		// What still refuses is cleanup.DeleteBlock, checked when the plan is
+		// built: system trees, home folder roots, volume roots, "/". That guard
+		// protects the machine from being broken, which is a different question
+		// from whether the user may lose their own files.
+		//
+		// recommendation.IrreplaceableReason keeps its job on the advice side
+		// (ADR-0061 §7): the tool will not RECOMMEND deleting a repository. It no
+		// longer overrides a path the user staged themselves. What the tool
+		// suggests and what the user is permitted to do are not the same question.
+		outcome := "已删除"
+		// The log line is the only remaining record that this object existed.
+		log.Printf("cleanup %s: 删除 %s", plan.ID, item.Path)
+		err := s.trash.RemovePermanently(item.Path)
 		if err != nil {
 			failed = true
 			log.Printf("cleanup %s: 失败 %s：%v", plan.ID, item.Path, err)
