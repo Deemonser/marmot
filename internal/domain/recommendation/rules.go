@@ -395,8 +395,9 @@ var Catalog = []Rule{
 		// network. It is the one part of this directory where "删了立刻又下回来"
 		// is literally true.
 		Pattern: ".gradle/caches/modules-*", Recovery: RecoveryRedownloadable, Risk: RiskReview,
-		WhatBreaks:   "要重新下载全部依赖。仍在构建的项目下次构建立刻把它们下回来，删了基本没有意义；只有确定不再构建这些项目才值得。",
-		HowToRestore: "构建时自动重新下载，需要联网且耗时。",
+		WhatBreaks: "要重新下载全部依赖。仍在构建的项目下次构建立刻把它们下回来，删了基本没有意义；只有确定不再构建这些项目才值得。",
+		HowToRestore: "构建时自动重新下载，需要联网且耗时。想按“多久没用过”精细回收的话，" +
+			"用 Gradle 8+ 的缓存保留配置——它有文件访问时间记录，本工具只能看到下载时间（R-063 §4d）。",
 	},
 	{
 		Name: "Gradle 编译分析缓存", Category: "构建缓存",
