@@ -25,13 +25,14 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
 .app-shell { position: relative; min-height: 100vh; background: #2b2c31; color: #f1f1f3; }
 
 /* The page change is the window resize (R-066): the reference ramps its window
-   height linearly and does not animate its content at all. Ours does the resize
-   from a frame loop in App.tsx; what is left here is a short opacity fade so
-   content revealed by the growing window does not pop in.
+   height linearly -- twelve frames of about 49.4pt at 60fps, Y fixed -- and does
+   not animate its content at all. The resize runs from a frame loop in App.tsx;
+   what is left here is a short opacity fade so content revealed by the growing
+   window does not pop in.
 
    No scale. The window is changing height, and scaling what is inside at the same
-   time is two motions fighting each other -- which is what the first attempt did,
-   and why the user could not see any transition worth the name. */
+   time is two motions fighting -- which is what the first attempt did, and why no
+   transition worth the name was visible. */
 @keyframes page-enter { from { opacity: 0; } to { opacity: 1; } }
 @keyframes page-leave { from { opacity: 1; } to { opacity: 0; } }
 /* The outgoing page leaves the flow so the two overlap instead of stacking, and
@@ -48,6 +49,9 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
 }
 .app-shell.is-leaving .workspace.has-result { animation: page-leave 140ms linear both; }
 .app-shell.is-leaving .workspace.has-source { animation: page-enter 140ms linear both; }
+/* The corners belong to the result page, so they travel with it. */
+.app-shell.is-leaving .collector-dock,
+.app-shell.is-leaving .advice-corner { opacity: 0; transition: opacity 140ms linear; }
 @media (prefers-reduced-motion: reduce) {
   .workspace.is-out,
   .app-shell-result .workspace.has-result:not(.is-out),
@@ -55,7 +59,256 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
   .app-shell.is-leaving .workspace.has-result,
   .app-shell.is-leaving .workspace.has-source { animation: none; }
   .workspace.is-out { display: none; }
+  .app-shell.is-leaving .collector-dock,
+  .app-shell.is-leaving .advice-corner { transition: none; }
 }
+.app-shell-source { overflow: auto; }
+.app-shell-result { height: 100vh; overflow: hidden; }
+
+/* The native hidden-inset titlebar keeps its own drag region — roughly the top
+   48px, where the traffic lights sit. Anything interactive placed there is
+   swallowed by window dragging, so the chrome row is bottom-aligned below it. */
+/* 45px, not 62: the reference's breadcrumb chip sits with its centre 25.75pt
+   from the window top and ours sat at 40.25pt, which pushed everything below it
+   down — including the chart, whose centre was 4% of the window height too low
+   (R-060 §3.8). */
+.topbar { display: flex; align-items: flex-end; gap: 10px; height: 45px; padding: 0 16px 7px 92px; color: #c9c9ce; --wails-draggable: drag; }
+.topbar-source { height: 52px; align-items: center; padding-bottom: 0; }
+/* Everything interactive in the titlebar band must opt out of dragging, or the
+   window moves instead of the control reacting. */
+.topbar button, .topbar .crumbs, .topbar .crumb, .topbar-arrow { --wails-draggable: no-drag; }
+.topbar-source { justify-content: center; }
+.topbar-title { flex: 1 1 auto; color: #e8e8ec; font-size: 13px; font-weight: 500; text-align: center; }
+
+.topbar-nav { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.topbar-arrow { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; background: transparent; color: #c2c3c9; font-size: 20px; line-height: 1; }
+.topbar-arrow:hover:not(:disabled) { color: #fff; }
+.topbar-arrow:disabled { color: #5a5b62; }
+
+/* Breadcrumb trail: chevron-shaped segments, the root one highlighted. */
+.crumbs { display: flex; align-items: center; min-width: 0; overflow: hidden; margin-left: 6px; }
+.crumb { max-width: 210px; overflow: hidden; padding: 3px 16px 3px 22px; margin-left: -9px; border: 0; border-radius: 0; background: #3a3b41; color: #cfd0d5; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%, 9px 50%); }
+.crumb:first-child { margin-left: 0; padding-left: 14px; border-radius: 4px 0 0 4px; clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%); }
+.crumb-root { background: #4671b8; color: #fff; }
+.crumb:hover { background: #4a4b52; color: #fff; }
+.crumb-root:hover { background: #5480c8; }
+.crumb.is-current { background: #4b4c53; color: #fff; }
+.brand-lockup { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.brand-lockup strong { display: block; color: #f5f5f7; font-size: 12px; font-weight: 600; }
+.brand-lockup span:not(.brand-mark) { display: block; margin-top: 2px; color: #98999f; font-size: 9px; }
+.brand-mark { display: grid; place-items: center; width: 24px; height: 24px; flex: 0 0 auto; border: 1px solid #777980; border-radius: 6px; background: #383940; color: #e7c364; font-size: 11px; font-weight: 700; }
+.status-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: #d2a75a; }
+
+.workspace { margin: 0 auto; }
+.workspace.has-source { width: 100%; padding: 0 19px; }
+.workspace.has-result { display: flex; width: 100%; height: calc(100vh - 34px); min-height: 0; flex-direction: column; padding: 0 16px 13px; }
+.workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.workspace-title { min-width: 0; }
+.eyebrow { margin: 0 0 4px; color: #9fa0a7; font-size: 9px; font-weight: 600; letter-spacing: .12em; }
+h1, h2, p { margin-top: 0; }
+h1 { margin-bottom: 2px; overflow: hidden; color: #f3f3f5; font-size: 18px; font-weight: 500; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
+.workspace-title > p:last-child { margin: 0; color: #96979e; font-size: 10px; }
+.history-actions { display: flex; align-items: center; gap: 5px; }
+
+.volume-strip { min-width: 0; }
+.volume-list { display: grid; min-width: 0; }
+/* Source page: one compact row per volume — icon, name, then the usage meter on
+   the right with the free-space figure under it, then the split action button.
+   This is the DaisyDisk source-window row (R-016): the meter is NOT a full-width
+   bar under the name, and the row carries no permission badge. */
+/* R-051 §3.3: the meter track is about 24% of the window, right-aligned, and
+   ends roughly one button-gap short of the action button. */
+.volume-row { display: grid; grid-template-columns: 34px minmax(110px, 1fr) minmax(190px, 240px) auto; column-gap: 15px; align-items: center; min-height: 44px; padding: 4px 0 4px 12px; }
+.volume-row + .volume-row { border-top: 1px solid #3f4046; }
+.volume-row.is-disabled { opacity: .55; }
+.volume-icon { display: grid; place-items: center; width: 34px; height: 34px; }
+.volume-icon svg { width: 30px; height: 30px; }
+.disk-body { fill: #9a9ca4; stroke: #6f7178; stroke-width: .7; }
+.disk-gloss { fill: #b9bbc2; }
+.disk-hub { fill: #7d7f87; }
+.disk-pin { fill: #4d4f56; }
+.volume-title { min-width: 0; }
+.volume-title strong, .volume-title span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.volume-title strong { color: #f0f0f2; font-size: 13px; font-weight: 400; }
+.volume-title span { margin-top: 3px; color: #8a8b92; font-size: 11px; }
+.volume-meter { min-width: 0; }
+.meter-track { position: relative; height: 4px; overflow: hidden; border-radius: 2px; background: #4c4d53; }
+.meter-track > span { display: block; height: 100%; border-radius: inherit; background: #e0492a; }
+.meter-track.is-scanning { background: #45464c; }
+.meter-track > .meter-scan { position: absolute; left: 0; top: 0; bottom: 0; }
+/* Marching blue-and-white slanted stripes, like the original: the pattern keeps
+   moving even when the fill does not, and the width is the real progress
+   (ADR-0053 §2).
+   background-size is essential and must equal the pattern's horizontal period.
+   Without it a slanted repeating gradient is laid out across the element box, so
+   its phase depends on the box width and every width change (5 Hz) shifts the
+   whole pattern sideways — the stripes crawl. With a fixed tile the pattern is
+   anchored to the left edge, so growing the fill only uncovers more tiles, and
+   the marching comes from background-position alone.
+   105deg means 15deg off vertical; its horizontal period is 6px / sin(105deg)
+   = 6.21px. */
+.meter-track.is-scanning > .meter-scan { background: none; background-image: repeating-linear-gradient(105deg, #5486d6 0 3px, #e9eefb 3px 6px); background-size: 6.21px 100%; animation: meter-march .55s linear infinite; transition: width .3s linear; }
+/* No denominator: a sweeping segment that claims no position. */
+.meter-track.is-indeterminate > .meter-scan { width: 36%; transition: none; animation: meter-sweep 1.7s ease-in-out infinite, meter-march .55s linear infinite; }
+.meter-caption { margin-top: 5px; text-align: right; font-size: 11px; line-height: 1.2; }
+.meter-caption.is-scanning { text-align: left; }
+.meter-caption b { color: #e0492a; font-weight: 400; }
+.meter-caption em { color: #8a8b92; font-style: normal; }
+.volume-loading { padding: 16px 0; color: #98999f; font-size: 10px; }
+
+/* Split button: [action | chevron], native-toolbar sized. */
+.volume-action { position: relative; display: inline-flex; align-items: stretch; }
+.volume-action-main, .volume-action-menu { min-height: 24px; border: 1px solid #6d6e75; background: #565761; color: #eeeef0; font-size: 11px; }
+.volume-action-main { min-width: 52px; padding: 0 11px; border-radius: 4px; }
+.volume-action-main:not(:only-child) { border-radius: 4px 0 0 4px; }
+.volume-action-menu { display: grid; width: 21px; padding: 0; border-left: 1px solid #46474d; border-radius: 0 4px 4px 0; place-items: center; }
+.volume-action-menu svg { width: 10px; height: 10px; fill: none; stroke: #e3e3e6; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.volume-action-main:hover:not(:disabled), .volume-action-menu:hover:not(:disabled) { background: #63646e; }
+.volume-action-main:disabled, .volume-action-menu:disabled { opacity: .5; }
+
+
+/* Footer: the folder picker on the left, the required scan readout on the right
+   (ADR-0027 §2). No primary scan button — the volume row's own button starts it,
+   the way the original does. */
+.source-foot { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 32px; margin-top: 2px; padding-top: 8px; border-top: 1px solid #3f4046; }
+.ghost-button { min-height: 24px; padding: 0 11px; border: 1px solid #6d6e75; border-radius: 4px; background: #565761; color: #eeeef0; font-size: 11px; }
+.ghost-button:hover:not(:disabled) { background: #63646e; }
+.ghost-button:disabled { opacity: .5; }
+.source-alert { margin-bottom: 8px; padding: 7px 10px; border: 1px solid #7a5f3c; border-radius: 5px; background: #3f3628; color: #e3c491; font-size: 10px; }
+
+.text-button, .icon-button, .quiet-button, .page-actions button, .context-button { border: 1px solid #5b5c63; border-radius: 4px; background: transparent; color: #d0d0d5; font-size: 10px; }
+.text-button { padding: 5px 8px; }
+.icon-button { min-width: 30px; padding: 5px 8px; }
+.quiet-button { padding: 6px 9px; }
+.text-button:hover, .icon-button:hover, .quiet-button:hover:hover, .page-actions button:hover, .context-button:hover { border-color: #a4a5ac; color: #fff; }
+.danger-button { width: 100%; min-height: 31px; padding: 0 14px; border: 1px solid #c47667; border-radius: 4px; background: #813f38; color: #ffe5df; font-size: 10px; font-weight: 600; white-space: nowrap; }
+
+.status-strip { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 28px; padding: 0 2px; border-bottom: 1px solid #46474d; color: #a0a1a8; font-size: 9px; }
+.status-main, .status-stats { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.status-main strong { color: #dddde1; font-weight: 500; }
+.status-path { max-width: 300px; overflow: hidden; color: #85868d; text-overflow: ellipsis; white-space: nowrap; }
+.status-stats { justify-content: end; white-space: nowrap; }
+.status-progress { width: min(16vw, 150px); height: 3px; overflow: hidden; border-radius: 2px; background: #514d47; }
+.status-progress span { display: block; width: 35%; height: 100%; border-radius: inherit; background: #e4ba5c; animation: scan-slide 1.25s ease-in-out infinite; }
+.status-cancel { padding: 3px 7px; border: 1px solid #865e4e; border-radius: 3px; background: transparent; color: #e5ad8c; font-size: 9px; }
+.status-cancel:hover { border-color: #c08a6c; color: #ffd0af; }
+.scan-pulse { width: 6px; height: 6px; border-radius: 50%; background: #7a7b82; }
+.scan-pulse.is-running { background: #e4ba5c; box-shadow: 0 0 0 4px rgba(228, 186, 92, .12); }
+.warning-text { color: #e0a779; }
+
+@keyframes scan-slide {
+  0% { transform: translateX(-115%); }
+  50% { transform: translateX(175%); }
+  100% { transform: translateX(310%); }
+}
+
+.breadcrumb-bar { display: flex; align-items: center; gap: 5px; min-height: 34px; overflow: hidden; color: #a1a2a8; font-size: 10px; }
+.breadcrumb-bar > span:not(.breadcrumb-meta) { display: inline-flex; align-items: center; min-width: 0; }
+.breadcrumb-bar button { max-width: 170px; overflow: hidden; border: 1px solid #46474d; border-radius: 4px; background: #33343a; color: #c9c9ce; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.breadcrumb-bar button.current { background: #4b4c53; color: #fff; }
+.crumb-separator { padding: 0 2px; color: #77787f; }
+.breadcrumb-meta { margin-left: auto; flex: 0 0 auto; color: #888990; font-size: 9px; }
+.breadcrumb-history { display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto; padding-right: 4px; }
+.breadcrumb-history .breadcrumb-icon { display: grid; place-items: center; width: 25px; height: 25px; padding: 0; border: 0; background: transparent; color: #b9bac0; font-size: 18px; line-height: 1; }
+.breadcrumb-history .breadcrumb-icon:hover:not(:disabled) { background: #3e3f46; color: #fff; }
+.breadcrumb-history .breadcrumb-icon:disabled { color: #5d5e65; }
+.breadcrumb-crumbs { display: inline-flex; align-items: center; min-width: 0; overflow: auto; }
+.has-result .breadcrumb-crumbs > span:first-child button { border-color: #6b8fc3; background: #547cb8; color: #fff; }
+.has-result .crumb-separator { display: none; }
+
+.workbench { display: grid; min-width: 0; min-height: 0; }
+.has-result .workbench { grid-template-columns: minmax(0, 62fr) minmax(320px, 38fr); flex: 1; gap: 0; }
+.map-panel, .directory-panel { min-width: 0; min-height: 0; background: transparent; }
+.map-panel { display: flex; flex-direction: column; }
+.map-heading { display: none; }
+/* The collector dock is fixed-position, so it reserves no space and the chart
+   used to centre over the whole height and run into it. Reserving the dock's band
+   here both clears the overlap and lifts the chart to where the reference has it. */
+.map-stage { position: relative; display: grid; min-height: 0; flex: 1; place-items: center; padding-bottom: 96px; overflow: hidden; }
+/* Sized off the stage's height, not the viewport: the five main rings have to
+   land at ~75% of the available height to match the reference (ADR-0059 §2), and
+   they are 0.809 of the whole chart's radius once the thin outer levels are
+   counted. The first pass derived 92.5% from that and came out 8% too big when
+   measured side by side against the reference, so this is the measured value. */
+.sunburst-wrap { position: relative; height: 85.5%; max-width: 100%; aspect-ratio: 1; }
+.sunburst { width: 100%; height: 100%; overflow: visible; }
+.sunburst-slice:focus, .sunburst-slice:focus-visible { outline: none; }
+/* No separating stroke: the gap between siblings is real background now
+   (ADR-0059 SS2), so a stroke on top would double it. The stroke is kept only for
+   the focus and selection states. */
+/* fill-opacity is in the list because it is what fades an arc to the staged look
+   and back again when a drag is abandoned; the base rule is what is in force once
+   .is-collected comes off. */
+.sunburst-slice { stroke: none; cursor: pointer; transition: opacity .13s, filter .13s, fill-opacity .19s ease; }
+/* No outline on the focused or selected wedge. The reference marks the arc under
+   the pointer by breathing its opacity instead, which reads on a wedge of any
+   size — a 1px stroke round a hairline arc is mostly stroke. */
+.sunburst-slice.is-breathing { animation: slice-breathe .9s ease-in-out infinite; }
+.sunburst-slice.is-selected { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  /* The pointer still has to be locatable without the animation. */
+  .sunburst-slice.is-breathing { animation: none; opacity: .55; }
+}
+.sunburst-slice.is-aggregate, .sunburst-slice.is-virtual { stroke-dasharray: 5 4; }
+.sunburst-slice.is-stale { filter: saturate(.35); opacity: .45; }
+/* The hub is a hole: the reference's interior is the page background to the byte
+   and it carries no ring (R-060). Transparent rather than unpainted so it still
+   takes the click that goes up a level. */
+.sunburst-center { fill: transparent; pointer-events: all; cursor: pointer; transition: fill .13s; }
+.sunburst-center:hover { fill: rgba(255, 255, 255, .035); }
+.sunburst-center:focus { stroke: #e6bd5f; stroke-width: 2; outline: none; }
+/* Size comes from the geometry, not from here: it is a ratio of the hub radius. */
+.sunburst-center-label { font-weight: 400; }
+.chart-placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: #8e8f96; font-size: 11px; }
+.map-footer { display: none; }
+
+/* Right inset measured against the reference: its rows end 12pt from the window
+   edge (R-060 SS3.7). */
+.directory-panel { position: relative; display: flex; flex-direction: column; justify-content: flex-start; padding: 14px 12px 10px 14px; }
+.directory-heading { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 2px 10px; }
+.directory-heading h2 { flex: 1 1 auto; overflow: hidden; margin: 0; color: #e9e9ec; font-size: 21px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.directory-heading strong { flex: 0 0 auto; color: #e9e9ec; font-size: 21px; font-weight: 400; }
+.directory-title { display: flex; align-items: start; gap: 9px; min-width: 0; }
+/* Twice the diameter of a row's dot, measured, and it takes the node's own
+   colour from the component rather than a fixed one. Absent at the scan root. */
+.directory-parent-dot { width: 14px; height: 14px; flex: 0 0 auto; border-radius: 50%; }
+.directory-title h2 { overflow: hidden; margin: 0 0 4px; color: #f4f4f6; font-size: 18px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.directory-title strong { color: #d1d1d5; font-size: 17px; font-weight: 400; }
+.directory-list { min-height: 0; flex: 0 1 auto; overflow: auto; padding: 0; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
+/* Row pitch 22pt and body type 17pt, both measured off the reference; the dot
+   column is exactly the dot (R-060 SS3.7). Name left, size right. */
+.directory-row { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto auto; align-items: center; gap: 11px; min-height: 22px; padding: 0 2px; border: 0; border-radius: 3px; outline: none; background: transparent; color: #e2e2e6; cursor: pointer; font-size: 17px; }
+.directory-row:hover, .directory-row.is-hovered { background: #393a41; }
+/* Preview rows come from the projection: no path, so nothing may act on them. */
+.directory-row.is-preview { cursor: default; }
+.directory-row.is-preview:hover { background: transparent; }
+.directory-row.is-focused { background: rgba(255, 255, 255, .04); }
+.directory-row.is-selected { background: rgba(255, 255, 255, .09); color: #fff; }
+.directory-row:focus-visible { outline: 1px solid #e6bd5f; outline-offset: -1px; }
+.directory-dot { width: 7px; height: 7px; border-radius: 50%; background: #808188; }
+.directory-dot.directory { background: #73e466; }
+.directory-dot.file { background: #888990; }
+.directory-dot.virtual { background: #77787f; }
+.directory-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Deliberately not `display: none` when empty: removing it from the grid puts
+   the size back in the wrong column, which is the misalignment this cell fixes.
+   An empty cell is zero-width and harmless. */
+.directory-tag { color: #97989f; font-size: 9px; white-space: nowrap; }
+.directory-size { min-width: 58px; color: #c7c7cc; text-align: right; white-space: nowrap; }
+.directory-empty { padding: 18px 12px; color: #94959c; font-size: 10px; }
+/* The reference keeps object actions as a light inline row under the selected
+   entry, not a card pinned to the corner of the panel. */
+.directory-context { position: static; min-height: 0; margin-top: 8px; padding: 7px 2px 0; border: 0; border-top: 1px solid #3f4046; border-radius: 0; background: transparent; box-shadow: none; }
+.context-line { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 7px; color: #c9c9ce; font-size: 9px; }
+.context-line strong { overflow: hidden; color: #f0f0f2; font-size: 10px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.context-line small { grid-column: 2; color: #92939a; font-size: 8px; }
+.context-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.context-button { padding: 4px 7px; border-color: #66676e; font-size: 9px; }
+.context-button.is-added { border-color: #c5a24f; color: #e3c873; }
+.context-warning { margin: 6px 0 0; color: #d8a477; font-size: 9px; }
+.directory-hint { display: none; }
+.directory-footer { display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px 0; color: #808188; font-size: 8px; }
 
 .notice { position: fixed; right: 18px; bottom: 16px; z-index: 40; max-width: min(380px, calc(100% - 36px)); padding: 9px 12px; border: 1px solid #81704a; border-radius: 4px; background: #39352a; color: #e5cc91; font-size: 10px; box-shadow: 0 7px 18px rgba(0,0,0,.25); }
 
