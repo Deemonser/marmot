@@ -437,6 +437,7 @@ function staleDisplayEntry(entry: MapEntry | null, staleKey: string | null): Map
 }
 
 function Sunburst({
+  arcsHidden,
   map,
   hoveredKey,
   focusedKey,
@@ -458,6 +459,10 @@ function Sunburst({
   collectedKeys,
   draggingKey,
 }: {
+  // Skip the arcs entirely. Used for the length of a page push: their cost is what
+  // made the entering page's first paint slow enough to swallow the start of its
+  // own animation.
+  arcsHidden: boolean;
   map: MapResult | null;
   hoveredKey: string | null;
   focusedKey: string | null;
@@ -869,7 +874,7 @@ function Sunburst({
       >
         <g transform="translate(300 300)">
           {/* Departing arcs: drawn under the live ones, never interactive. */}
-          {ghosts.length > 0 && (
+          {!arcsHidden && ghosts.length > 0 && (
             <g
               className="sunburst-ghosts"
               aria-hidden="true"
@@ -890,7 +895,7 @@ function Sunburst({
               ))}
             </g>
           )}
-          {slices.map(({ entry, key, renderKey, depth, path, aggregate, stale, nodeId, geom, preview, color, id, protection, name, size, collected, dragging, trail }) => {
+          {arcsHidden ? null : slices.map(({ entry, key, renderKey, depth, path, aggregate, stale, nodeId, geom, preview, color, id, protection, name, size, collected, dragging, trail }) => {
             // Only current-level arcs are interactive: a projected descendant
             // carries no path, so it can neither be activated nor collected
             // (ADR-0048, ADR-0017 §2).
@@ -1443,18 +1448,11 @@ export default function App() {
   // direction and animated in the other, which reads as a glitch rather than a
   // choice.
   const [leavingResult, setLeavingResult] = useState(false);
-  // The forward push, in two phases. "armed" paints the start position, "running"
-  // moves to the end. A CSS keyframe applied to a freshly mounted element skips its
-  // own beginning: the animation's clock starts when the style is computed, and the
-  // result page's first paint costs a big SVG (thousands of arcs for a 2.2M-node
-  // tree), so by the time anything appeared the 200ms was most of the way through.
-  // Captured: 90ms after the click the page was already only 25% out instead of
-  // 100%, which is why it read as "starts near the middle, drifts left".
-  //
-  // Painting the start state first and moving on the NEXT frame makes the start
-  // observable, which is the whole point of an enter transition.
-  const [pushPhase, setPushPhase] = useState<"armed" | "running" | null>(null);
-  const advancing = pushPhase !== null;
+  // Whether the forward push is running. One boolean and one keyframe, the same
+  // shape as the back direction: the two-phase arming that used to be here existed
+  // only because the entering page's first paint was slow, and the arcs are now
+  // skipped for the push instead.
+  const [advancing, setAdvancing] = useState(false);
   const [cleanupAt, setCleanupAt] = useState<{ done: number; total: number; current: string; doneBytes: number; totalBytes: number } | null>(null);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
@@ -1541,25 +1539,13 @@ export default function App() {
   const wasShowingResult = useRef(showResult);
   if (showResult !== wasShowingResult.current) {
     wasShowingResult.current = showResult;
-    setPushPhase(showResult && !prefersReducedMotion() ? "armed" : null);
+    setAdvancing(showResult && !prefersReducedMotion());
   }
   useEffect(() => {
-    if (pushPhase !== "armed") return;
-    // Two frames, not one: the first is where the start position gets painted.
-    let second = 0;
-    const first = window.requestAnimationFrame(() => {
-      second = window.requestAnimationFrame(() => setPushPhase("running"));
-    });
-    return () => {
-      window.cancelAnimationFrame(first);
-      if (second) window.cancelAnimationFrame(second);
-    };
-  }, [pushPhase]);
-  useEffect(() => {
-    if (pushPhase !== "running") return;
-    const timer = window.setTimeout(() => setPushPhase(null), contentPushMs);
+    if (!advancing) return;
+    const timer = window.setTimeout(() => setAdvancing(false), contentPushMs);
     return () => window.clearTimeout(timer);
-  }, [pushPhase]);
+  }, [advancing]);
   const currentPage = pages[pageIndex] ?? null;
   const currentParent = map?.parent ?? null;
   const entries = useMemo(
@@ -2640,7 +2626,7 @@ export default function App() {
     <div
       className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source")
         + (leavingResult ? " is-leaving" : "")
-        + (advancing ? " is-advancing" : "") + (pushPhase === "armed" ? " is-armed" : "")
+        + (advancing ? " is-advancing" : "")
         + (drag ? " is-dragging" : "")}
       onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
       {/* One chrome row, like the reference: window buttons, navigation and the
@@ -2691,6 +2677,12 @@ export default function App() {
               </div>
               <div className="map-stage">
                 <Sunburst
+                  // Thousands of arcs are the reason the entering page's first
+                  // paint was slow enough for its own animation to start without
+                  // it. Skipping them for the length of the push makes that paint
+                  // cheap, which fixes the cause instead of timing around it -- the
+                  // user's suggestion, and better than what was here.
+                  arcsHidden={advancing}
                   onDragEntry={beginEntryDrag}
                   collectedKeys={collectedKeys}
                   draggingKey={draggingKey}
