@@ -172,6 +172,9 @@ const resultWindowSize = { width: 968, height: 715 };
 // not reach it. main.go's MinWidth mirrors this — change them together.
 const minWindowWidth = 830;
 const resultMinHeight = 560;
+// Beyond this many disks the window stops growing and the source page scrolls
+// (.app-shell-source already has overflow: auto).
+const maxVisibleSourceRows = 5;
 const phaseLabels: Record<string, string> = {
   catalog: "准备卷",
   volume_overview: "读取概览",
@@ -1759,7 +1762,7 @@ export default function App() {
       .catch(() => undefined);
   }, []);
 
-  const sourceRows = Math.max(1, storageSources.length);
+  const sourceRows = Math.max(1, Math.min(storageSources.length, maxVisibleSourceRows));
   const sourceAlert = Boolean(permission && permission.state !== "available");
   const layoutReady = sourcesReady && permissionReady;
   useEffect(() => {
@@ -1782,6 +1785,10 @@ export default function App() {
         await Window.SetSize(resultWindowSize.width, height);
         await Window.SetMaxSize(0, height);
       }
+      // The window is born hidden (main.go): the first geometry anyone sees
+      // is the one this effect just set. Show() on a visible window is a
+      // no-op, so later passes through here are harmless.
+      await Window.Show();
     };
     try {
       void run().catch(() => undefined);

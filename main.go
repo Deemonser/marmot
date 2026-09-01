@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	marmotapp "example.com/marmot/internal/application"
 	"example.com/marmot/internal/infrastructure/advisor/openaicompat"
@@ -101,32 +102,23 @@ func main() {
 		app.Event.Emit(name, data)
 	}
 
-	// The window is born at its final size. The disk list and the permission
-	// strip are known before the window exists (ListVolumes answers from the
-	// identity cache in ~100µs, R-068 — only a machine with never-seen volumes
-	// pays diskutil here), so the height App.tsx would otherwise correct on
-	// its first renders is computed once, and locked: the source page's height
-	// is the content's, never the user's, so it is not draggable (the frontend
-	// re-locks it on every page transition). MinWidth sits above the 820px
-	// stylesheet breakpoint, which exists for the browser preview — dragging
-	// across it would snap the layout.
-	// The constants mirror App.tsx sourceWindowSize / sourceRowHeight / the
-	// 34px permission strip — change them together.
-	sourceRows := 1
-	if sources, err := core.GetStorageSources(); err == nil && len(sources) > 0 {
-		sourceRows = len(sources)
-	}
-	initialHeight := 151 + (sourceRows-1)*54
-	if core.GetPermissionStatus().State != "available" {
-		initialHeight += 34
-	}
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:     "Marmot",
-		Width:     968,
-		Height:    initialHeight,
-		MinWidth:  830,
-		MinHeight: initialHeight,
-		MaxHeight: initialHeight,
+	// The window is born hidden and shown by the frontend only after it has
+	// sized and locked it (App.tsx, the layout effect). Sizing it correctly at
+	// birth was tried and cannot work: the options' Height is applied to the
+	// CONTENT rect while the title bar still exists, the HiddenInset style
+	// (full-size content) lands later, and the runtime's SetSize speaks FRAME
+	// coordinates — so the window came up ~28px taller and visibly snapped
+	// once the frontend corrected it. Hidden until ready, the first geometry
+	// anyone sees is the final one, with no title-bar arithmetic to drift.
+	// MinWidth sits above the 820px stylesheet breakpoint, which exists for
+	// the browser preview — dragging across it would snap the layout
+	// (App.tsx minWindowWidth mirrors it — change them together).
+	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title:    "Marmot",
+		Hidden:   true,
+		Width:    968,
+		Height:   151,
+		MinWidth: 830,
 		Mac: application.MacWindow{
 			// A native invisible titlebar would sit on top of the webview and
 			// swallow every click in the first N pixels — which is exactly where
@@ -139,6 +131,12 @@ func main() {
 		BackgroundColour: application.NewRGB(43, 44, 49),
 		URL:              "/",
 	})
+	// If the frontend never gets to Show() — a webview that failed to load —
+	// a window at a slightly wrong height beats an app that looks dead.
+	go func() {
+		time.Sleep(3 * time.Second)
+		window.Show()
+	}()
 	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
