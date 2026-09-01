@@ -56,6 +56,7 @@ func main() {
 		Volumes:        adapter,
 		Preview:        adapter,
 		Credentials:    adapter,
+		ScanTotals:     adapter,
 		// The composition root is where a transport is chosen; the application
 		// layer only ever sees the port.
 		AdvisorFactory: buildAdvisor,

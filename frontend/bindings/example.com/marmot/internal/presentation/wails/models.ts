@@ -303,6 +303,7 @@ export interface ScanProgress {
      */
     "countedBytes": number;
     "volumeUsedBytes": number;
+    "expectedTotalBytes": number;
 }
 
 export interface ScanStatus {
@@ -324,6 +325,13 @@ export interface ScanStatus {
      */
     "countedBytes": number;
     "volumeUsedBytes": number;
+
+    /**
+     * ExpectedTotalBytes is the previous completed walk's final count for this
+     * root — the one denominator on the numerator's own scale (R-067 §2.4).
+     * Zero on the first-ever scan of a root.
+     */
+    "expectedTotalBytes": number;
 }
 
 export interface StorageSourceOverview {

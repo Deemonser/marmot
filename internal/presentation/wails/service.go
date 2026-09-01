@@ -36,6 +36,10 @@ type ScanStatus struct {
 	// denominator (ADR-0053 §1); Bytes stays the walked total.
 	CountedBytes    int64  `json:"countedBytes"`
 	VolumeUsedBytes uint64 `json:"volumeUsedBytes"`
+	// ExpectedTotalBytes is the previous completed walk's final count for this
+	// root — the one denominator on the numerator's own scale (R-067 §2.4).
+	// Zero on the first-ever scan of a root.
+	ExpectedTotalBytes int64 `json:"expectedTotalBytes"`
 }
 
 // ProjectedEntry is one arc below the current level. It carries only what the
@@ -84,8 +88,9 @@ type ScanProgress struct {
 	AffectedParentIDs []int64  `json:"affectedParentIds"`
 	// CountedBytes and VolumeUsedBytes are the progress bar's numerator and
 	// denominator (ADR-0053 §1); Bytes stays the walked total.
-	CountedBytes    int64  `json:"countedBytes"`
-	VolumeUsedBytes uint64 `json:"volumeUsedBytes"`
+	CountedBytes       int64  `json:"countedBytes"`
+	VolumeUsedBytes    uint64 `json:"volumeUsedBytes"`
+	ExpectedTotalBytes int64  `json:"expectedTotalBytes"`
 }
 
 type PermissionStatus struct {
@@ -642,11 +647,11 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 }
 
 func scanStatus(status application.ScanStatus) ScanStatus {
-	return ScanStatus{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: append([]string{}, status.Issues...), Error: status.Error, CountedBytes: status.CountedBytes, VolumeUsedBytes: status.VolumeUsedBytes}
+	return ScanStatus{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: append([]string{}, status.Issues...), Error: status.Error, CountedBytes: status.CountedBytes, VolumeUsedBytes: status.VolumeUsedBytes, ExpectedTotalBytes: status.ExpectedTotalBytes}
 }
 
 func ScanProgressView(progress application.ScanProgress) ScanProgress {
-	return ScanProgress{TaskID: progress.TaskID, SnapshotID: progress.SnapshotID, Root: progress.Root, State: progress.State, Phase: progress.Phase, Nodes: progress.Nodes, Files: progress.Files, Directories: progress.Directories, Bytes: progress.Bytes, Issues: append([]string{}, progress.Issues...), Error: progress.Error, SnapshotVersion: progress.SnapshotVersion, AffectedParentIDs: append([]int64{}, progress.AffectedParentIDs...), CountedBytes: progress.CountedBytes, VolumeUsedBytes: progress.VolumeUsedBytes}
+	return ScanProgress{TaskID: progress.TaskID, SnapshotID: progress.SnapshotID, Root: progress.Root, State: progress.State, Phase: progress.Phase, Nodes: progress.Nodes, Files: progress.Files, Directories: progress.Directories, Bytes: progress.Bytes, Issues: append([]string{}, progress.Issues...), Error: progress.Error, SnapshotVersion: progress.SnapshotVersion, AffectedParentIDs: append([]int64{}, progress.AffectedParentIDs...), CountedBytes: progress.CountedBytes, VolumeUsedBytes: progress.VolumeUsedBytes, ExpectedTotalBytes: progress.ExpectedTotalBytes}
 }
 
 func nodeView(node scan.Node) NodeView {

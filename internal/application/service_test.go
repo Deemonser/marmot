@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -957,5 +958,117 @@ func TestGroupVolumesInRootKeepsNestedMountWhenRootIsTheOuterVolume(t *testing.T
 	volumes, _ := service.groupVolumesInRoot("/System/Volumes/Update", items)
 	if len(volumes) != 1 || volumes[0].id != "staged-system" {
 		t.Fatalf("scanning the outer mount itself should keep the nested volume, got %+v", volumes)
+	}
+}
+
+type memoryScanTotals struct {
+	mu     sync.Mutex
+	totals map[string]int64
+}
+
+func (m *memoryScanTotals) LoadScanTotal(root string) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.totals[root]
+}
+
+func (m *memoryScanTotals) StoreScanTotal(root string, bytes int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.totals == nil {
+		m.totals = map[string]int64{}
+	}
+	m.totals[root] = bytes
+	return nil
+}
+
+// The progress numerator is lstat-allocated bytes; no statfs figure shares
+// that basis, so the denominator on the same scale is the previous completed
+// walk's own final count. First scan of a root: no history, ExpectedTotalBytes
+// is zero and the UI falls back to statfs. Second scan: the first walk's final
+// bytes ride along from the first status on (R-067 §2.4).
+func TestCompletedScanTeachesTheNextScanItsDenominator(t *testing.T) {
+	totals := &memoryScanTotals{}
+	store := memtree.OpenStore()
+	t.Cleanup(func() { store.Close() })
+	adapter := platform.Adapter{}
+	service := NewService(Dependencies{Store: store, Scanner: scanner.Scanner{}, FileSystem: adapter, Permissions: adapter, Trash: adapter, ScanTotals: totals})
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "payload.bin"), make([]byte, 8192), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runScan := func() ScanStatus {
+		t.Helper()
+		started, err := service.StartScan(ScanOptions{Root: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if started.ExpectedTotalBytes != totals.LoadScanTotal(started.Root) {
+			t.Fatalf("the very first status should already carry the history: got %d", started.ExpectedTotalBytes)
+		}
+		status := started
+		for i := 0; i < 400 && status.State == "running"; i++ {
+			time.Sleep(5 * time.Millisecond)
+			status, err = service.GetScanStatus(started.TaskID)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if status.State != "completed" {
+			t.Fatalf("scan did not complete: %#v", status)
+		}
+		return status
+	}
+
+	first := runScan()
+	if first.ExpectedTotalBytes != 0 {
+		t.Fatalf("a root never scanned before has no history, got %d", first.ExpectedTotalBytes)
+	}
+	if recorded := totals.LoadScanTotal(first.Root); recorded != first.Bytes {
+		t.Fatalf("the completed walk should have recorded its final count: recorded %d, walked %d", recorded, first.Bytes)
+	}
+
+	second := runScan()
+	if second.ExpectedTotalBytes != first.Bytes {
+		t.Fatalf("the second scan's denominator should be the first walk's final count %d, got %d", first.Bytes, second.ExpectedTotalBytes)
+	}
+}
+
+// A cancelled walk counted less than the truth: it must not overwrite the
+// history a completed walk left behind.
+func TestCancelledScanDoesNotTeachATotal(t *testing.T) {
+	totals := &memoryScanTotals{totals: map[string]int64{}}
+	store := memtree.OpenStore()
+	t.Cleanup(func() { store.Close() })
+	adapter := platform.Adapter{}
+	service := NewService(Dependencies{Store: store, Scanner: scanner.Scanner{}, FileSystem: adapter, Permissions: adapter, Trash: adapter, ScanTotals: totals})
+
+	root := t.TempDir()
+	for i := 0; i < 40; i++ {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%02d.bin", i)), make([]byte, 4096), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	totals.totals[root] = 12345
+
+	started, err := service.StartScan(ScanOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CancelScan(started.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	status := started
+	for i := 0; i < 400 && status.State == "running"; i++ {
+		time.Sleep(5 * time.Millisecond)
+		status, err = service.GetScanStatus(started.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := totals.LoadScanTotal(root); got != 12345 {
+		t.Fatalf("a %s scan overwrote the learned total: %d", status.State, got)
 	}
 }

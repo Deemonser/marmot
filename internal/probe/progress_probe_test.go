@@ -14,13 +14,14 @@ import (
 )
 
 type sample struct {
-	at      time.Duration
-	nodes   int64
-	files   int64
-	bytes   int64
-	counted int64
-	volume  uint64
-	phase   string
+	at       time.Duration
+	nodes    int64
+	files    int64
+	bytes    int64
+	counted  int64
+	volume   uint64
+	expected int64
+	phase    string
 }
 
 // TestScanProgressCurve records what a progress bar could actually plot: the
@@ -40,14 +41,14 @@ func TestScanProgressCurve(t *testing.T) {
 	start := time.Now()
 	service := marmotapp.NewService(marmotapp.Dependencies{
 		Store: store, Scanner: scanner.Scanner{MountResolver: adapter.ListMounts},
-		FileSystem: adapter, Permissions: adapter, Trash: adapter, Volumes: adapter, Preview: adapter,
+		FileSystem: adapter, Permissions: adapter, Trash: adapter, Volumes: adapter, Preview: adapter, ScanTotals: adapter,
 		Emit: func(name string, data any) {
 			progress, ok := data.(marmotapp.ScanProgress)
 			if !ok || name != "scan-progress" {
 				return
 			}
 			mu.Lock()
-			samples = append(samples, sample{at: time.Since(start), nodes: progress.Nodes, files: progress.Files, bytes: progress.Bytes, counted: progress.CountedBytes, volume: progress.VolumeUsedBytes, phase: progress.Phase})
+			samples = append(samples, sample{at: time.Since(start), nodes: progress.Nodes, files: progress.Files, bytes: progress.Bytes, counted: progress.CountedBytes, volume: progress.VolumeUsedBytes, expected: progress.ExpectedTotalBytes, phase: progress.Phase})
 			mu.Unlock()
 		},
 	})
@@ -122,12 +123,18 @@ func TestScanProgressCurve(t *testing.T) {
 	// The complaint this measures: the bar reads 100% while the walk is still
 	// running, so everything after the crossing is a silent wait. Where exactly
 	// is the crossing, and how much wall clock lies beyond it?
+	uiDenominator := func(s sample) float64 {
+		if s.expected > 0 {
+			return float64(s.expected)
+		}
+		return float64(s.volume)
+	}
 	crossed := map[float64]time.Duration{}
 	for _, s := range samples {
-		if s.volume == 0 {
+		if uiDenominator(s) == 0 {
 			continue
 		}
-		frac := float64(s.counted) / float64(s.volume)
+		frac := float64(s.counted) / uiDenominator(s)
 		for _, mark := range []float64{0.95, 0.99, 1.0} {
 			if _, seen := crossed[mark]; !seen && frac >= mark {
 				crossed[mark] = s.at
@@ -180,8 +187,8 @@ func TestScanProgressCurve(t *testing.T) {
 		}
 		// What the UI actually receives.
 		uiFrac := 0.0
-		if last.volume > 0 {
-			uiFrac = float64(last.counted) / float64(last.volume)
+		if uiDenominator(last) > 0 {
+			uiFrac = float64(last.counted) / uiDenominator(last)
 		}
 		t.Logf("PROBE t=%3d%% phase=%-16s bytes_gib=%7.1f counted_gib=%7.1f vol_gib=%7.1f of_final=%.3f  ui=%.3f  bar=%.3f (drift %+.3f)",
 			decile*10, last.phase, float64(last.bytes)/gib, float64(last.counted)/gib, float64(last.volume)/gib, byteFrac, uiFrac, barFrac, barFrac-float64(decile)/10)

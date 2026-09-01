@@ -424,6 +424,7 @@ function statusFromProgress(progress: ScanProgress): ScanStatus {
     directories: progress.directories,
     countedBytes: progress.countedBytes,
     volumeUsedBytes: progress.volumeUsedBytes,
+    expectedTotalBytes: progress.expectedTotalBytes,
     bytes: progress.bytes,
     issues: progress.issues ?? [],
     error: progress.error,
@@ -1047,7 +1048,15 @@ function VolumeTile({
 	// volume scan never has to fall back to the indeterminate style; and it is the
 	// group's used bytes, while the snapshot records only the volume whose path
 	// matched the root — on an APFS volume group that is the smaller of the two.
-	const scanDenominator = sourceUsed > 0 ? sourceUsed : (scanStatus?.volumeUsedBytes ?? 0);
+	// The one denominator on the numerator's own scale is the previous
+	// completed walk's final count; the statfs figures run ~6% high (purgeable,
+	// local snapshots, container overhead), which pins the bar's ceiling near
+	// 94% and makes the result page appear "early" (R-067 §2.4). History first;
+	// statfs only for the first-ever scan of a root.
+	const learnedTotal = scanStatus?.expectedTotalBytes ?? 0;
+	const scanDenominator = learnedTotal > 0
+		? learnedTotal
+		: sourceUsed > 0 ? sourceUsed : (scanStatus?.volumeUsedBytes ?? 0);
 	// The bar stops a few percent short of the end and that is correct, not a
 	// stall: hidden space counts towards the volume's used bytes and is not
 	// walkable, so the counted total cannot reach it (ADR-0052 §5). There is no
@@ -1069,7 +1078,10 @@ function VolumeTile({
 	// event may fill the bar — a bar reading 100% while the walk still has
 	// seconds to run is a lie the user notices (R-067 §2.3).
 	const rawFraction = scanDenominator > 0 ? (scanStatus?.countedBytes ?? 0) / scanDenominator : null;
-	const scanOvershot = rawFraction !== null && rawFraction > 1.05;
+	// Bytes grown since the last scan overshoot a learned denominator honestly
+	// — that is real data, absorbed by the 99% cap, not broken accounting — so
+	// the indeterminate escape applies only to the statfs fallback.
+	const scanOvershot = rawFraction !== null && learnedTotal === 0 && rawFraction > 1.05;
 	const scanFraction = rawFraction === null || scanOvershot
 		? null
 		: Math.max(0, Math.min(0.99, rawFraction));

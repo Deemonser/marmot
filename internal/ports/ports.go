@@ -148,3 +148,17 @@ type PreviewPort interface {
 	Preview(string) (string, error)
 	Reveal(string) (string, error)
 }
+
+// ScanTotals remembers, per scan root, how many bytes the last completed walk
+// counted. The progress numerator is lstat-allocated bytes, and no statfs
+// figure shares that basis — "volume used" runs ~6% high (purgeable, local
+// snapshots, container overhead), which pins the bar's ceiling around 94%.
+// The one number on the same scale is the previous run's own final count
+// (R-067 §2.4). History, not configuration: losing the file only means the
+// next scan falls back to the statfs denominator once.
+type ScanTotals interface {
+	// LoadScanTotal returns the last completed walk's final counted bytes for
+	// this root, or 0 when there is no history.
+	LoadScanTotal(root string) int64
+	StoreScanTotal(root string, bytes int64) error
+}

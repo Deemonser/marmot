@@ -54,6 +54,7 @@ type Service struct {
 	advisor        ports.Advisor
 	advisorFault   string
 	credentials    ports.CredentialStore
+	scanTotals     ports.ScanTotals
 	advisorFactory AdvisorFactory
 	// batchSize and maxParallel shape the triage round; zero means the default.
 	batchSize   int
@@ -78,6 +79,7 @@ type Dependencies struct {
 	Volumes        ports.VolumeCatalog
 	Preview        ports.PreviewPort
 	Credentials    ports.CredentialStore
+	ScanTotals     ports.ScanTotals
 	// AdvisorFactory is injected rather than imported so the application layer
 	// stays free of transport code (PROJECT-STRUCTURE dependency rule).
 	AdvisorFactory AdvisorFactory
@@ -103,8 +105,12 @@ type scanTask struct {
 	// instead of taking a 12-point jump when they are attached at the end
 	// (ADR-0053 §1). It feeds the bar only — never the persisted summary, which
 	// must keep matching the nodes actually written.
+	// expectedTotal is the previous completed walk's final counted bytes for
+	// this root — the only denominator on the same scale as the numerator
+	// (R-067 §2.4). Zero when this root has never completed a walk.
 	volumeUsed      uint64
 	preCounted      int64
+	expectedTotal   int64
 	cancel          context.CancelFunc
 	affectedParents map[int64]struct{}
 }
@@ -132,6 +138,10 @@ type ScanStatus struct {
 	// indeterminate rather than guess.
 	CountedBytes    int64  `json:"countedBytes"`
 	VolumeUsedBytes uint64 `json:"volumeUsedBytes"`
+	// ExpectedTotalBytes is the previous completed walk's final count for this
+	// root: the one denominator on the numerator's own scale. Zero on the
+	// first-ever scan of a root (R-067 §2.4).
+	ExpectedTotalBytes int64 `json:"expectedTotalBytes"`
 }
 
 // ProjectedEntry is one arc below the current level. It carries only what the
@@ -165,8 +175,9 @@ type ScanProgress struct {
 	AffectedParentIDs []int64  `json:"affectedParentIds"`
 	// CountedBytes and VolumeUsedBytes are the progress bar's numerator and
 	// denominator (ADR-0053 §1); Bytes stays the walked total.
-	CountedBytes    int64  `json:"countedBytes"`
-	VolumeUsedBytes uint64 `json:"volumeUsedBytes"`
+	CountedBytes       int64  `json:"countedBytes"`
+	VolumeUsedBytes    uint64 `json:"volumeUsedBytes"`
+	ExpectedTotalBytes int64  `json:"expectedTotalBytes"`
 }
 
 type PermissionStatus struct {
@@ -349,7 +360,7 @@ func NewService(deps Dependencies) *Service {
 	if emit == nil {
 		emit = func(string, any) {}
 	}
-	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, credentials: deps.Credentials, advisorFactory: deps.AdvisorFactory, legacyCacheDir: deps.LegacyCacheDir, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
+	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, credentials: deps.Credentials, scanTotals: deps.ScanTotals, advisorFactory: deps.AdvisorFactory, legacyCacheDir: deps.LegacyCacheDir, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
 }
 
 // BeginRecovery lets the Wails window become visible before large legacy cache
@@ -872,6 +883,9 @@ func (s *Service) StartScan(options ScanOptions) (ScanStatus, error) {
 		return ScanStatus{}, err
 	}
 	task := &scanTask{taskID: taskID, snapshotID: snapshotID, root: root, state: "running", phase: string(scan.PhaseCatalog), cancel: cancel, affectedParents: make(map[int64]struct{})}
+	if s.scanTotals != nil {
+		task.expectedTotal = s.scanTotals.LoadScanTotal(root)
+	}
 	s.mu.Lock()
 	s.tasks[taskID] = task
 	s.mu.Unlock()
@@ -1315,6 +1329,13 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 	// Arm the one map line that matters: the first root map for this snapshot,
 	// whose timestamp minus this one is the wait the user sees after the bar stops.
 	s.firstMap.Store(task.snapshotID)
+	// A completed walk's final count becomes the next scan's denominator; a
+	// cancelled or failed walk counted less than the truth and teaches nothing.
+	if s.scanTotals != nil && (finalState == "completed" || finalState == "completed_with_issues") {
+		if err := s.scanTotals.StoreScanTotal(task.root, status.Bytes); err != nil {
+			log.Printf("scan total for %s not stored: %v", task.root, err)
+		}
+	}
 	log.Printf("scan %s finished: state=%s elapsed=%s walk=%s tail=%s nodes=%d files=%d dirs=%d bytes=%d issues=%d",
 		task.taskID, finalState, time.Since(scanStarted).Round(time.Millisecond),
 		walkEnded.Sub(scanStarted).Round(time.Millisecond),
@@ -1689,7 +1710,7 @@ func (s *Service) emitProgress(task *scanTask) {
 	}
 	task.affectedParents = make(map[int64]struct{})
 	task.mu.Unlock()
-	s.emit("scan-progress", ScanProgress{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: status.Issues, Error: status.Error, SnapshotVersion: version, AffectedParentIDs: affected, CountedBytes: status.CountedBytes, VolumeUsedBytes: status.VolumeUsedBytes})
+	s.emit("scan-progress", ScanProgress{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: status.Issues, Error: status.Error, SnapshotVersion: version, AffectedParentIDs: affected, CountedBytes: status.CountedBytes, VolumeUsedBytes: status.VolumeUsedBytes, ExpectedTotalBytes: status.ExpectedTotalBytes})
 }
 
 func (t *scanTask) status() ScanStatus {
@@ -1709,7 +1730,7 @@ func (t *scanTask) countedBytesLocked() int64 {
 }
 
 func (t *scanTask) statusLocked() ScanStatus {
-	return ScanStatus{TaskID: t.taskID, SnapshotID: t.snapshotID, Root: t.root, State: t.state, Phase: t.phase, Nodes: t.nodes, Files: t.files, Directories: t.directories, Bytes: t.bytes, Issues: append([]string(nil), t.issues...), Error: t.error, CountedBytes: t.countedBytesLocked(), VolumeUsedBytes: t.volumeUsed}
+	return ScanStatus{TaskID: t.taskID, SnapshotID: t.snapshotID, Root: t.root, State: t.state, Phase: t.phase, Nodes: t.nodes, Files: t.files, Directories: t.directories, Bytes: t.bytes, Issues: append([]string(nil), t.issues...), Error: t.error, CountedBytes: t.countedBytesLocked(), VolumeUsedBytes: t.volumeUsed, ExpectedTotalBytes: t.expectedTotal}
 }
 
 func mapResult(result scan.MapResult) MapResult {
