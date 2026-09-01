@@ -1792,15 +1792,13 @@ export default function App() {
         await Window.SetSize(resultWindowSize.width, frame.height + error);
       }
       await Window.Show();
+      // Freely resizable everywhere (by request); the sizes set above are
+      // starting points, not constraints. Only the result page keeps a
+      // height floor, measured rather than assumed.
       if (showResult) {
         const frame = await Window.Size();
         const chrome = Math.max(0, frame.height - window.innerHeight);
         await Window.SetMinSize(minWindowWidth, resultMinHeight + chrome);
-      } else {
-        // The source page's height belongs to its content, never to the user.
-        // Locked at the style-mask level: no resize cursor is offered at all,
-        // and no min/max coordinate arithmetic exists to get wrong.
-        await Window.SetResizable(false);
       }
     };
     try {
