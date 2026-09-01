@@ -1408,6 +1408,11 @@ export default function App() {
   const [slide, setSlide] = useState<{ to: AppView; active: boolean } | null>(null);
   const viewRef = useRef<AppView>("source");
   const showResultRef = useRef(false);
+  // The task whose scan actually ran in this session. Only its finish earns the
+  // "正在整理结果" treatment below; opening a cached result walks the same data
+  // states (terminal status, then map) but is not a finish. Cleared when a
+  // transition settles — the finish is over once the page has moved.
+  const liveTaskRef = useRef<string | null>(null);
   // One transition at a time, and the plain layout effect keeps its hands off
   // the window while one runs.
   const inTransition = useRef(false);
@@ -1588,6 +1593,18 @@ export default function App() {
   // for and nothing to warn about (ADR-0055). The flip side is that the result
   // exists only while this process does.
   const showResult = Boolean(status?.snapshotId && status.state && browsableScanStates.has(status.state) && map);
+  // The finish look ("正在整理结果…", bar held full) is gated two ways. It only
+  // applies to a scan that ran live in this session (liveTaskRef): clicking 查看
+  // passes through the same data states — terminal status first, map a beat
+  // later — and wearing the scan style for that beat made opening a cached
+  // result flash 扫描中 and snap back. And it holds until the source page has
+  // actually slid away, not merely until the map arrives: the window grow and
+  // the slide run after showResult flips, and dropping to the idle row for that
+  // stretch made the scan appear to undo itself right before the page moved.
+  const finishing = Boolean(
+    status && status.taskId === liveTaskRef.current &&
+    (resultPending || (showResult && view !== "result")),
+  );
   const currentPage = pages[pageIndex] ?? null;
   const currentParent = map?.parent ?? null;
   const entries = useMemo(
@@ -1657,6 +1674,9 @@ export default function App() {
   navigationRef.current = { pages, index: pageIndex };
   rootRef.current = root;
   statusRef.current = status;
+  // Armed on every render that sees the task running, so it survives the clear
+  // in settleTransition for as long as the scan itself does.
+  if (status?.state === "running") liveTaskRef.current = status.taskId;
   storageSourcesRef.current = storageSources;
 
   async function loadStorageSources() {
@@ -1913,6 +1933,10 @@ export default function App() {
   // the window right. In the ordinary case this is a no-op.
   function settleTransition() {
     inTransition.current = false;
+    // The finish is over once the page has moved; without this, sliding back to
+    // the source page re-lit the finish style for the render between the slide
+    // ending and setStatus(null) landing.
+    liveTaskRef.current = null;
     const desired: AppView = showResultRef.current ? "result" : "source";
     if (viewRef.current !== desired) setView(desired);
   }
@@ -2072,8 +2096,14 @@ export default function App() {
 
   function viewCachedResult() {
     if (!cachedStatus || cachedStatus.snapshotId <= 0) return;
+    // Not a finish, whatever taskId this status carries: reopening the result
+    // of a scan that ran earlier in this session must not wear the scan style.
+    liveTaskRef.current = null;
+    // cachedStatus stays: the row keeps its 查看 badge while it slides out.
+    // Clearing it here flipped the button to 扫描 for the length of the
+    // transition. startScan and forgetResult still clear it, and returning to
+    // the source page overwrites it with the fresher status anyway.
     setStatus(cachedStatus);
-    setCachedStatus(null);
     setRoot(cachedStatus.root);
     void loadMap(rootPage(cachedStatus.snapshotId, cachedStatus.root));
   }
@@ -2857,9 +2887,9 @@ export default function App() {
                 source={source}
                 hasResult={Boolean(cachedStatus && cachedStatus.snapshotId > 0 && cachedStatus.root === source.path)}
                 scanning={Boolean(scanActive && status?.root === source.path)}
-                finishing={Boolean(resultPending && status?.root === source.path)}
+                finishing={Boolean(finishing && status?.root === source.path)}
                 scanStatus={scanActive && status?.root === source.path ? status : null}
-                scanLocked={scanActive || resultPending}
+                scanLocked={scanActive || resultPending || finishing}
                 onScan={(path) => { setRoot(path); void startScan(path); }}
                 onView={viewCachedResult}
                 onCancel={() => void cancelScan()}
