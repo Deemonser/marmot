@@ -172,6 +172,17 @@ const resultWindowSize = { width: 968, height: 715 };
 // not reach it. main.go's MinWidth mirrors this — change them together.
 const minWindowWidth = 830;
 const resultMinHeight = 560;
+// The two pages the shell can show. showResult says what the data allows;
+// `view` (state below) follows it through the transition choreography: forward
+// resizes the window first and slides the content second, back slides the
+// content first and resizes second (R-014's original does exactly this).
+type AppView = "source" | "result";
+// The window half of that choreography is a JS tween — a native window has no
+// CSS transitions. The slide half is CSS (.view-track in styles.css);
+// viewSlideMs must match that rule's transition duration.
+const windowMorphMs = 300;
+const viewSlideMs = 340;
+const settle = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 // Beyond this many disks the window stops growing and the source page scrolls
 // (.app-shell-source already has overflow: auto).
 const maxVisibleSourceRows = 5;
@@ -850,7 +861,12 @@ function Sunburst({
   });
 
   useEffect(() => {
-    if (focusedKey && pathRefs.current[focusedKey]) pathRefs.current[focusedKey]?.focus();
+    // preventScroll matters: during a page slide this chart sits off-viewport
+    // on the sliding track, and a plain focus() makes WebKit scroll the
+    // overflow-hidden shell sideways to reveal it — permanently, since there
+    // is no scrollbar to bring it back. The page then renders shifted by
+    // exactly that scroll (R: track at -1742 instead of -969).
+    if (focusedKey && pathRefs.current[focusedKey]) pathRefs.current[focusedKey]?.focus({ preventScroll: true });
   }, [focusedKey]);
 
   // The hub shows the current total on two lines. At the scan root it stays
@@ -1371,6 +1387,22 @@ export default function App() {
   const [map, setMap] = useState<MapResult | null>(null);
   const [pages, setPages] = useState<Page[]>([]);
   const [pageIndex, setPageIndex] = useState(-1);
+  // The page the DOM has settled on. It trails showResult by one choreography:
+  // the effects below move it only after the window tween (forward) or before
+  // the shrink (back), so the render never cuts between the two pages.
+  const [view, setView] = useState<AppView>("source");
+  // Non-null exactly while a slide runs; both pages are then mounted side by
+  // side on the double-width track. `active` flips one frame after the track
+  // mounts so the transform transitions instead of jumping to the end state.
+  const [slide, setSlide] = useState<{ to: AppView; active: boolean } | null>(null);
+  const viewRef = useRef<AppView>("source");
+  const showResultRef = useRef(false);
+  // One transition at a time, and the plain layout effect keeps its hands off
+  // the window while one runs.
+  const inTransition = useRef(false);
+  // Before the first Window.Show there is nothing visible to animate, so the
+  // view snaps and the layout effect sizes the still-hidden window.
+  const windowShown = useRef(false);
   const [hoveredEntry, setHoveredEntry] = useState<MapEntry | null>(null);
   // What the pointer is over, on any ring. Kept apart from hoveredEntry, which
   // only ever holds a current-level entry.
@@ -1609,6 +1641,8 @@ export default function App() {
 
   mapRef.current = map;
   pageRef.current = currentPage;
+  viewRef.current = view;
+  showResultRef.current = showResult;
   navigationRef.current = { pages, index: pageIndex };
   rootRef.current = root;
   statusRef.current = status;
@@ -1772,48 +1806,153 @@ export default function App() {
   const sourceRows = Math.max(1, Math.min(storageSources.length, maxVisibleSourceRows));
   const sourceAlert = Boolean(permission && permission.state !== "available");
   const layoutReady = sourcesReady && permissionReady;
+  const sourcePageHeight = sourceWindowSize.height + (sourceRows - 1) * sourceRowHeight + (sourceAlert ? 34 : 0);
+
+  // The page must END UP with exactly `target` CSS points. Frame and page
+  // coordinates are not reliably related in this runtime — the wails beta
+  // mixes frame and content rects, and a single post-show measurement read
+  // a stale innerHeight and produced a 185pt frame with a 34pt dead band —
+  // so no arithmetic: converge on the page's own measurement, adjusting the
+  // frame by the current error until the page reports the target.
+  async function convergeWindowHeight(target: number) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await settle(60);
+      if (window.innerHeight <= 0) continue;
+      const error = target - window.innerHeight;
+      if (error === 0) break;
+      const frame = await Window.Size();
+      await Window.SetSize(resultWindowSize.width, frame.height + error);
+    }
+  }
+
+  // The window half of a page transition: tween the frame towards the size
+  // that should yield `target` CSS points, then hand the residue to the same
+  // convergence the instant path uses. The chrome measured up front can be a
+  // frame stale; the convergence eats that error too.
+  async function animateWindowTo(target: number) {
+    const frame = await Window.Size();
+    const chrome = Math.max(0, frame.height - window.innerHeight);
+    const from = { width: frame.width, height: frame.height };
+    const to = { width: resultWindowSize.width, height: target + chrome };
+    if (from.width !== to.width || from.height !== to.height) {
+      const started = performance.now();
+      for (;;) {
+        const t = Math.min(1, (performance.now() - started) / windowMorphMs);
+        const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        await Window.SetSize(
+          Math.round(from.width + (to.width - from.width) * eased),
+          Math.round(from.height + (to.height - from.height) * eased),
+        );
+        if (t >= 1) break;
+        await settle(16);
+      }
+    }
+    await convergeWindowHeight(target);
+  }
+
+  // The content half: mount both pages on the track, let the transform
+  // transition carry them across, then settle on the destination. Resolves
+  // only after the track is torn down again.
+  function slideTo(to: AppView): Promise<void> {
+    return new Promise((resolve) => {
+      setSlide({ to, active: false });
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        setSlide({ to, active: true });
+        window.setTimeout(() => {
+          setView(to);
+          setSlide(null);
+          // Safety for engines where overflow: clip is unsupported (falls back
+          // to hidden, which scripts can still scroll): undo any sideways
+          // scroll a focus() during the slide may have caused.
+          const shell = document.querySelector(".app-shell");
+          if (shell) { shell.scrollLeft = 0; shell.scrollTop = 0; }
+          if (document.scrollingElement) document.scrollingElement.scrollLeft = 0;
+          resolve();
+        }, viewSlideMs + 40);
+      }));
+    });
+  }
+
+  // Transitions run against live state; if the data changed underneath one
+  // (a scan restarted mid-grow, a cached result reopened mid-shrink), snap
+  // the view to what the data now allows and let the layout effect above put
+  // the window right. In the ordinary case this is a no-op.
+  function settleTransition() {
+    inTransition.current = false;
+    const desired: AppView = showResultRef.current ? "result" : "source";
+    if (viewRef.current !== desired) setView(desired);
+  }
+
+  // Plain, instant sizing: the first (still hidden) layout, and source-page
+  // growth when volume rows or the permission banner change. Transitions own
+  // the window while they run, so this stays out of their way.
   useEffect(() => {
-    if (!showResult && !layoutReady) return;
-    const height = showResult
-      ? resultWindowSize.height
-      : sourceWindowSize.height + (sourceRows - 1) * sourceRowHeight + (sourceAlert ? 34 : 0);
-    // The page must END UP with exactly `height` CSS points. Frame and page
-    // coordinates are not reliably related in this runtime — the wails beta
-    // mixes frame and content rects, and a single post-show measurement read
-    // a stale innerHeight and produced a 185pt frame with a 34pt dead band —
-    // so no arithmetic: converge on the page's own measurement, adjusting the
-    // frame by the current error until the page reports the target. All of it
-    // happens before Show(), so the first visible geometry is the final one.
-    const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    if (inTransition.current) return;
+    const isResult = view === "result";
+    if (!isResult && !layoutReady) return;
+    const height = isResult ? resultWindowSize.height : sourcePageHeight;
+    // All of it happens before Show(), so the first visible geometry is the
+    // final one.
     const run = async () => {
       await Window.SetResizable(true);
       await Window.SetMaxSize(0, 0);
       await Window.SetMinSize(minWindowWidth, 0);
       await Window.SetSize(resultWindowSize.width, height);
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        await settle(60);
-        if (window.innerHeight <= 0) continue;
-        const error = height - window.innerHeight;
-        if (error === 0) break;
-        const frame = await Window.Size();
-        await Window.SetSize(resultWindowSize.width, frame.height + error);
-      }
+      await convergeWindowHeight(height);
       await Window.Show();
       // Freely resizable everywhere (by request); the sizes set above are
       // starting points, not constraints. Only the result page keeps a
       // height floor, measured rather than assumed.
-      if (showResult) {
+      if (isResult) {
         const frame = await Window.Size();
         const chrome = Math.max(0, frame.height - window.innerHeight);
         await Window.SetMinSize(minWindowWidth, resultMinHeight + chrome);
       }
     };
     try {
-      void run().catch(() => undefined);
+      // Shown or not, after the first pass there is something on screen to
+      // animate from, so transitions stop snapping (the browser preview has
+      // no bridge but does have a visible page).
+      void run().catch(() => undefined).finally(() => { windowShown.current = true; });
     } catch {
       // The ordinary browser preview does not expose the Wails window bridge.
     }
-  }, [showResult, sourceRows, sourceAlert, layoutReady]);
+  }, [view, sourceRows, sourceAlert, layoutReady]);
+
+  // Forward transition, the reference's order exactly: the window grows first
+  // with the source page still showing, and only then does the content slide
+  // across. The back transition mirrors it in returnToSource — slide first,
+  // shrink second.
+  useEffect(() => {
+    if (!showResult) {
+      // A path that drops the result without the choreography (forgetting it,
+      // starting a new scan) still has to land on the source page.
+      if (viewRef.current === "result" && !inTransition.current) setView("source");
+      return;
+    }
+    if (viewRef.current === "result" || inTransition.current) return;
+    if (!windowShown.current) { setView("result"); return; }
+    inTransition.current = true;
+    const run = async () => {
+      try {
+        await Window.SetResizable(true);
+        await Window.SetMaxSize(0, 0);
+        await Window.SetMinSize(minWindowWidth, 0);
+        await animateWindowTo(resultWindowSize.height);
+      } catch {
+        // No window bridge (browser preview): the slide still runs.
+      }
+      await slideTo("result");
+      try {
+        const frame = await Window.Size();
+        const chrome = Math.max(0, frame.height - window.innerHeight);
+        await Window.SetMinSize(minWindowWidth, resultMinHeight + chrome);
+      } catch {
+        // No window bridge (browser preview).
+      }
+    };
+    void run().finally(settleTransition);
+  }, [showResult]);
 
   async function startScan(nextRoot = root) {
     setBusy(true);
@@ -2321,18 +2460,39 @@ export default function App() {
     setNotice("已放弃扫描结果。结果只存在于内存，重新查看需要再扫描一次。");
   }
 
-  function returnToSource() {
-    if (!status || status.snapshotId <= 0 || scanActive) return;
-    setCachedStatus(status);
-    setStatus(null);
-    setMap(null);
-    setPages([]);
-    setPageIndex(-1);
-    setHoveredEntry(null);
-    setFocusedEntry(null);
-    setSelectedEntry(null);
-    setStaleEntry(null);
-    setCollectorOpen(false);
+  async function returnToSource() {
+    if (!status || status.snapshotId <= 0 || scanActive || inTransition.current) return;
+    inTransition.current = true;
+    try {
+      // The forward choreography reversed: the content slides out while the
+      // window still has the result size, and only then does the window
+      // shrink. The scan state stays alive through the slide so the outgoing
+      // page remains real, and cachedStatus is set before it so the tile
+      // already wears its result badge as it slides in.
+      setCachedStatus(status);
+      setCollectorOpen(false);
+      try {
+        await Window.SetMinSize(minWindowWidth, 0);
+      } catch {
+        // No window bridge (browser preview): the slide still runs.
+      }
+      await slideTo("source");
+      setStatus(null);
+      setMap(null);
+      setPages([]);
+      setPageIndex(-1);
+      setHoveredEntry(null);
+      setFocusedEntry(null);
+      setSelectedEntry(null);
+      setStaleEntry(null);
+      try {
+        await animateWindowTo(sourcePageHeight);
+      } catch {
+        // No window bridge (browser preview).
+      }
+    } finally {
+      settleTransition();
+    }
   }
 
   function markStale(entry: MapEntry) {
@@ -2622,140 +2782,155 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   });
 
-  return (
-    <div className={"app-shell " + (showResult ? "app-shell-result" : "app-shell-source") + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
-      {/* One chrome row, like the reference: window buttons, navigation and the
-          breadcrumb trail. Everything else that used to live up here (title
-          block, counters, history meta) is technical detail the reference never
-          shows on the result page. */}
-      <header className={"topbar " + (showResult ? "topbar-result" : "topbar-source")}>
-        {showResult ? (
-          <>
-            <div className="topbar-nav">
-              <button className="topbar-arrow" onClick={() => navigateToHistory(pageIndex - 1)} disabled={pageIndex <= 0} aria-label="后退" title="后退">‹</button>
-              <button className="topbar-arrow" onClick={() => navigateToHistory(pageIndex + 1)} disabled={pageIndex < 0 || pageIndex >= pages.length - 1} aria-label="前进" title="前进">›</button>
-            </div>
-            <nav className="crumbs" aria-label="目录路径">
-              <button className="crumb crumb-root" onClick={returnToSource}>磁盘和文件夹</button>
-              {(currentPage?.crumbs ?? []).map((crumb, index) => (
-                <button
-                  key={crumb.id + ":" + index}
-                  className={"crumb" + (index === (currentPage?.crumbs.length ?? 1) - 1 ? " is-current" : "")}
-                  onClick={() => jumpToBreadcrumb(index)}
-                >
-                  {breadcrumbLabel(crumb, index)}
-                </button>
-              ))}
-            </nav>
-          </>
-        ) : (
-          <div className="topbar-title">Marmot</div>
-        )}
+  // What the DOM is showing, as opposed to what the data allows (showResult).
+  // During a transition the two disagree: forward grows the window with the
+  // source page still up, back shrinks it with the source page already up.
+  const chromeView: AppView = slide ? slide.to : view;
+  const trackAtResult = slide ? (slide.to === "result") === slide.active : view === "result";
+
+  const sourcePage = (
+    <>
+      <header className="topbar topbar-source">
+        <div className="topbar-title">Marmot</div>
       </header>
-
-      {showResult ? (
-        <main className="workspace has-result" data-testid="result-view">
-          <section className="workbench" data-testid="workbench">
-            <div className="map-panel">
-              <div className="map-heading">
-                <div>
-                  <p className="eyebrow">CURRENT MAP</p>
-                  <h2>{currentParent?.name ?? currentPage?.path ?? "空间图"}</h2>
-                </div>
-                <div className="map-heading-meta">
-                  <span>{map?.total.toLocaleString() ?? 0} 项</span>
-                  <span>{confidenceLabel(mapConfidence)}</span>
-                </div>
-              </div>
-              <div className="map-stage">
-                <Sunburst
-                  onDragEntry={beginEntryDrag}
-                  collectedKeys={collectedKeys}
-                  draggingKey={draggingKey}
-                  hueRange={hueRange}
-                  baseDepth={baseDepth}
-                  levelEndAngle={currentPage?.endAngle ?? sunburstEndAngle}
-                  onEnterProjected={enterProjected}
-                  centerColor={centerColor}
-                  map={map}
-                  hoveredKey={hoveredKey}
-                  onHoverArc={hoverArc}
-                  breathingKey={breathingKey}
-                  focusedKey={focusedKey}
-                  selectedKey={selectedKey}
-                  onHover={setHoveredEntry}
-                  onFocus={setFocusedEntry}
-                  onActivate={activateEntry}
-                  onPreview={(entry) => void previewEntry(entry)}
-                  onReveal={(entry) => void revealEntry(entry)}
-                  onGoParent={goParent}
-                />
-              </div>
-              <div className="map-footer">
-                <span>文件夹按空间贡献着色，聚合项只代表统计结果</span>
-                <span>{map?.hasMore ? "已显示 " + (currentPage?.offset ?? 0) + " - " + ((currentPage?.offset ?? 0) + entries.filter((entry) => entry.kind === "node").length) + " / " + map.total : "当前层已显示完整结果"}</span>
-                <div className="page-actions">
-                  <button onClick={() => currentPage && void goToPage({ ...currentPage, offset: Math.max(0, currentPage.offset - pageSize) }, "replace")} disabled={!currentPage || currentPage.offset === 0 || mapBusy}>上一页</button>
-                  <button onClick={() => currentPage && map?.hasMore && void goToPage({ ...currentPage, offset: currentPage.offset + entries.filter((entry) => entry.kind === "node").length }, "replace")} disabled={!currentPage || !map?.hasMore || mapBusy}>下一页</button>
-                </div>
-              </div>
-            </div>
-            <DirectoryList
-              entryColors_={levelColors}
-              preview={previewForList}
-              parentDotColor={baseDepth > 0 ? sliceColor(hueRange.center, baseDepth) : null}
-              parent={currentParent}
-              entries={entries}
-              total={mapTotal}
-              map={map}
-              hoveredKey={hoveredKey}
-              focusedKey={focusedKey}
-              selectedKey={selectedKey}
-              contextEntry={inspectorEntry}
-              inCollector={inspectedInCollector}
-              onHover={setHoveredEntry}
-              onFocus={setFocusedEntry}
-              onActivate={activateEntry}
-              onPreview={(entry) => void previewEntry(entry)}
-              onReveal={(entry) => void revealEntry(entry)}
-              onEnter={(entry) => entry.kind === "node" ? openDirectory(entry) : expandEntry(entry)}
-              onCollect={toggleCollector}
-              onDragEntry={beginEntryDrag}
-              pulledKeys={pulledKeys}
-            />
-          </section>
-        </main>
-      ) : (
-        <main className="workspace has-source" data-testid="source-view">
-          {permission && permission.state !== "available" && (
-            <div className="source-alert" role="status">{permission.message || "需要完整磁盘访问权限才能扫描系统目录"}</div>
-          )}
-          <section className="volume-strip" aria-label="磁盘范围">
-            <div className="volume-list">
-              {storageSources.map((source) => (
-                <VolumeTile
-                  key={source.id}
-                  source={source}
-                  hasResult={Boolean(cachedStatus && cachedStatus.snapshotId > 0 && cachedStatus.root === source.path)}
-                  scanning={Boolean(scanActive && status?.root === source.path)}
-                  finishing={Boolean(resultPending && status?.root === source.path)}
-                  scanStatus={scanActive && status?.root === source.path ? status : null}
-                  scanLocked={scanActive || resultPending}
-                  onScan={(path) => { setRoot(path); void startScan(path); }}
-                  onView={viewCachedResult}
-                  onCancel={() => void cancelScan()}
-                  onForget={forgetResult}
-                />
-              ))}
-              {storageSources.length === 0 && <div className="volume-loading">正在读取存储源…</div>}
-            </div>
-          </section>
-
-          <div className="source-foot">
-            <button className="ghost-button" onClick={() => void chooseFolder()} disabled={busy || scanActive}>扫描文件夹…</button>
+      <main className="workspace has-source" data-testid="source-view">
+        {permission && permission.state !== "available" && (
+          <div className="source-alert" role="status">{permission.message || "需要完整磁盘访问权限才能扫描系统目录"}</div>
+        )}
+        <section className="volume-strip" aria-label="磁盘范围">
+          <div className="volume-list">
+            {storageSources.map((source) => (
+              <VolumeTile
+                key={source.id}
+                source={source}
+                hasResult={Boolean(cachedStatus && cachedStatus.snapshotId > 0 && cachedStatus.root === source.path)}
+                scanning={Boolean(scanActive && status?.root === source.path)}
+                finishing={Boolean(resultPending && status?.root === source.path)}
+                scanStatus={scanActive && status?.root === source.path ? status : null}
+                scanLocked={scanActive || resultPending}
+                onScan={(path) => { setRoot(path); void startScan(path); }}
+                onView={viewCachedResult}
+                onCancel={() => void cancelScan()}
+                onForget={forgetResult}
+              />
+            ))}
+            {storageSources.length === 0 && <div className="volume-loading">正在读取存储源…</div>}
           </div>
-	        </main>
-      )}
+        </section>
+
+        <div className="source-foot">
+          <button className="ghost-button" onClick={() => void chooseFolder()} disabled={busy || scanActive}>扫描文件夹…</button>
+        </div>
+      </main>
+    </>
+  );
+
+  // Built only while a map exists: every slide runs with the scan state still
+  // alive, so the outgoing result page stays real for the whole animation.
+  const resultPage = map && (
+    <>
+      <header className="topbar topbar-result">
+        <div className="topbar-nav">
+          <button className="topbar-arrow" onClick={() => navigateToHistory(pageIndex - 1)} disabled={pageIndex <= 0} aria-label="后退" title="后退">‹</button>
+          <button className="topbar-arrow" onClick={() => navigateToHistory(pageIndex + 1)} disabled={pageIndex < 0 || pageIndex >= pages.length - 1} aria-label="前进" title="前进">›</button>
+        </div>
+        <nav className="crumbs" aria-label="目录路径">
+          <button className="crumb crumb-root" onClick={() => void returnToSource()}>磁盘和文件夹</button>
+          {(currentPage?.crumbs ?? []).map((crumb, index) => (
+            <button
+              key={crumb.id + ":" + index}
+              className={"crumb" + (index === (currentPage?.crumbs.length ?? 1) - 1 ? " is-current" : "")}
+              onClick={() => jumpToBreadcrumb(index)}
+            >
+              {breadcrumbLabel(crumb, index)}
+            </button>
+          ))}
+        </nav>
+      </header>
+      <main className="workspace has-result" data-testid="result-view">
+        <section className="workbench" data-testid="workbench">
+          <div className="map-panel">
+            <div className="map-heading">
+              <div>
+                <p className="eyebrow">CURRENT MAP</p>
+                <h2>{currentParent?.name ?? currentPage?.path ?? "空间图"}</h2>
+              </div>
+              <div className="map-heading-meta">
+                <span>{map?.total.toLocaleString() ?? 0} 项</span>
+                <span>{confidenceLabel(mapConfidence)}</span>
+              </div>
+            </div>
+            <div className="map-stage">
+              <Sunburst
+                onDragEntry={beginEntryDrag}
+                collectedKeys={collectedKeys}
+                draggingKey={draggingKey}
+                hueRange={hueRange}
+                baseDepth={baseDepth}
+                levelEndAngle={currentPage?.endAngle ?? sunburstEndAngle}
+                onEnterProjected={enterProjected}
+                centerColor={centerColor}
+                map={map}
+                hoveredKey={hoveredKey}
+                onHoverArc={hoverArc}
+                breathingKey={breathingKey}
+                focusedKey={focusedKey}
+                selectedKey={selectedKey}
+                onHover={setHoveredEntry}
+                onFocus={setFocusedEntry}
+                onActivate={activateEntry}
+                onPreview={(entry) => void previewEntry(entry)}
+                onReveal={(entry) => void revealEntry(entry)}
+                onGoParent={goParent}
+              />
+            </div>
+            <div className="map-footer">
+              <span>文件夹按空间贡献着色，聚合项只代表统计结果</span>
+              <span>{map?.hasMore ? "已显示 " + (currentPage?.offset ?? 0) + " - " + ((currentPage?.offset ?? 0) + entries.filter((entry) => entry.kind === "node").length) + " / " + map.total : "当前层已显示完整结果"}</span>
+              <div className="page-actions">
+                <button onClick={() => currentPage && void goToPage({ ...currentPage, offset: Math.max(0, currentPage.offset - pageSize) }, "replace")} disabled={!currentPage || currentPage.offset === 0 || mapBusy}>上一页</button>
+                <button onClick={() => currentPage && map?.hasMore && void goToPage({ ...currentPage, offset: currentPage.offset + entries.filter((entry) => entry.kind === "node").length }, "replace")} disabled={!currentPage || !map?.hasMore || mapBusy}>下一页</button>
+              </div>
+            </div>
+          </div>
+          <DirectoryList
+            entryColors_={levelColors}
+            preview={previewForList}
+            parentDotColor={baseDepth > 0 ? sliceColor(hueRange.center, baseDepth) : null}
+            parent={currentParent}
+            entries={entries}
+            total={mapTotal}
+            map={map}
+            hoveredKey={hoveredKey}
+            focusedKey={focusedKey}
+            selectedKey={selectedKey}
+            contextEntry={inspectorEntry}
+            inCollector={inspectedInCollector}
+            onHover={setHoveredEntry}
+            onFocus={setFocusedEntry}
+            onActivate={activateEntry}
+            onPreview={(entry) => void previewEntry(entry)}
+            onReveal={(entry) => void revealEntry(entry)}
+            onEnter={(entry) => entry.kind === "node" ? openDirectory(entry) : expandEntry(entry)}
+            onCollect={toggleCollector}
+            onDragEntry={beginEntryDrag}
+            pulledKeys={pulledKeys}
+          />
+        </section>
+      </main>
+    </>
+  );
+
+  return (
+    <div className={"app-shell " + (chromeView === "result" ? "app-shell-result" : "app-shell-source") + (slide ? " is-sliding" : "") + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
+      {/* One chrome row per page, like the reference: window buttons, navigation
+          and the breadcrumb trail. Both pages sit on a double-width track; idle,
+          only the current one is mounted and the track is inert. While a slide
+          runs (.is-sliding) both are mounted and the track translates. */}
+      <div className={"view-track" + (trackAtResult ? " is-at-result" : "")}>
+        <div className="view-pane">{(slide !== null || view === "source") && sourcePage}</div>
+        <div className="view-pane">{(slide !== null || view === "result") && resultPage}</div>
+      </div>
       {drag && (
         /* The chip is the collected row, drawn early: same dot, name and size,
            so what you drag looks like what lands in the dock. */
@@ -2770,7 +2945,10 @@ export default function App() {
       )}
       {notice && <div className="notice" role="status">{notice}</div>}
 
-      {showResult && <section
+      {/* The overlays are position: fixed, so they cannot ride the sliding
+          track (a transformed ancestor would capture them). They sit out here
+          and simply hold off until the slide is over. */}
+      {view === "result" && !slide && <section
         ref={collectorRef}
         className={"collector-dock" + (collectorOpen ? " is-open" : "")
           + (drag ? " is-target" : "")
@@ -2911,7 +3089,7 @@ export default function App() {
           opposite corner. The two are a pair: this side proposes, that side
           stages, and a suggestion crosses between them the same way an arc does
           -- through the snapshot, never by handing a path straight to a delete. */}
-      {showResult && (
+      {view === "result" && !slide && (
         <div className={"advice-corner" + (adviceOpen ? " is-open" : "")}>
           {adviceOpen && (
             <section className="advice-panel" aria-label="可清理项">

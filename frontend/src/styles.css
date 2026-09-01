@@ -24,8 +24,37 @@ button:focus-visible, input:focus-visible, [role="button"]:focus-visible {
 
 .app-shell { position: relative; min-height: 100vh; background: #2b2c31; color: #f1f1f3; }
 
-.app-shell-source { overflow: auto; }
-.app-shell-result { height: 100vh; overflow: hidden; }
+/* overflow-x stays hidden: the page track below is double-width by design. */
+.app-shell-source { overflow-x: hidden; overflow-y: auto; }
+/* clip, not hidden: a hidden box is still a scroll container, and any
+   focus()/scrollIntoView aimed at content on the off-viewport half of the
+   page track scrolls it sideways for good. clip forbids all scrolling. */
+.app-shell-result { height: 100vh; overflow: hidden; overflow: clip; }
+
+/* Page transition. Both pages always sit on a double-width track, source pane
+   left, result pane right, and the track's transform IS the current page —
+   permanently, not only mid-slide. That keeps the start position of a slide
+   real: when .is-sliding lands and adds the transition, the transform is
+   already computed at the outgoing page, so the class flip animates both
+   pages across together instead of restarting from the source position (the
+   bug the first cut had). .is-sliding only contributes the transition, the
+   viewport clamp, and full-height panes. The window-size half is a JS tween
+   in App.tsx (a native window has no CSS transitions); this duration must
+   match viewSlideMs there. */
+.view-track { display: flex; width: 200%; }
+.view-track.is-at-result { transform: translateX(-50%); }
+.view-pane { flex: 0 0 50%; width: 50%; min-width: 0; }
+.app-shell.is-sliding { height: 100vh; overflow: hidden; overflow: clip; }
+.app-shell.is-sliding .view-track { height: 100%; transition: transform 340ms cubic-bezier(0.33, 0, 0.2, 1); }
+.app-shell.is-sliding .view-pane { height: 100%; overflow: hidden; }
+@media (prefers-reduced-motion: reduce) {
+  .app-shell.is-sliding .view-track { transition-duration: 1ms; }
+}
+
+/* The fixed overlays (dock, advice corner) cannot ride the transformed track,
+   so they mount only once the slide is over — softened rather than popping. */
+.app-shell-result .collector-dock, .advice-corner { animation: overlay-settle 200ms ease both; }
+@keyframes overlay-settle { from { opacity: 0; } to { opacity: 1; } }
 
 /* The native hidden-inset titlebar keeps its own drag region — roughly the top
    48px, where the traffic lights sit. Anything interactive placed there is
@@ -348,7 +377,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 
 @media (max-width: 820px) {
   body { overflow: auto; }
-  .app-shell-result { height: auto; min-height: 100vh; overflow: visible; }
+  .app-shell-result { height: auto; min-height: 100vh; overflow-x: hidden; overflow-y: auto; }
   .topbar-source { padding-inline: 18px; }
   .workspace.has-source { width: min(100%, 680px); padding-inline: 18px; }
   .workspace.has-result { height: auto; min-height: calc(100vh - 34px); padding-inline: 12px; }
