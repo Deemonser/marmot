@@ -182,7 +182,10 @@ const phaseLabels: Record<string, string> = {
   deep_scan: "深入扫描",
   finalize: "整理结果",
 };
-const browsableScanStates = new Set(["completed", "completed_with_issues", "cancelled", "interrupted"]);
+// "cancelled" is deliberately absent: cancelling means the user changed their
+// mind, so the page returns to its pre-scan state instead of presenting the
+// half-walked tree as a result (their words: 点取消就取消扫描呗).
+const browsableScanStates = new Set(["completed", "completed_with_issues", "interrupted"]);
 // The wheel's palette runs all the way through yellow, where white text is
 // unreadable, so the chip picks its text from the wedge's own luminance rather
 // than assuming one colour works on every hue. sRGB relative luminance, the same
@@ -1713,7 +1716,7 @@ export default function App() {
           setRoot(next.root);
           if (next.state === "running") {
             setStatus(next);
-          } else if (next.snapshotId > 0) {
+          } else if (next.snapshotId > 0 && browsableScanStates.has(next.state)) {
             setCachedStatus(next);
           } else {
             window.localStorage.removeItem("marmot.scanTaskId");
@@ -1867,7 +1870,10 @@ export default function App() {
   async function cancelScan() {
     if (!status) return;
     try {
-      setStatus(await MarmotService.CancelScan(status.taskId));
+      await MarmotService.CancelScan(status.taskId);
+      // Cancelled means discarded: back to the pre-scan page, nothing kept.
+      setStatus(null);
+      window.localStorage.removeItem("marmot.scanTaskId");
     } catch (error) {
       setNotice(String(error));
     }
