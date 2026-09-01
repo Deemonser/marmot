@@ -167,6 +167,11 @@ async function openVolumeMenu(button: HTMLElement, sourceID: string, hasResult: 
 const sourceWindowSize = { width: 968, height: 151 };
 const sourceRowHeight = 54;
 const resultWindowSize = { width: 968, height: 715 };
+// minWindowWidth sits above the 820px stylesheet breakpoint (written for the
+// browser preview): dragging across it snaps the layout, so the window must
+// not reach it. main.go's MinWidth mirrors this — change them together.
+const minWindowWidth = 830;
+const resultMinHeight = 560;
 const phaseLabels: Record<string, string> = {
   catalog: "准备卷",
   volume_overview: "读取概览",
@@ -1344,6 +1349,12 @@ function DirectoryList({
 export default function App() {
   const [permission, setPermission] = useState<PermissionStatus | null>(null);
   const [storageSources, setStorageSources] = useState<StorageSourceOverview[]>([]);
+  // The window is born at its final size (main.go asks the same two questions
+  // before creating it). Until both answers have arrived here too, this render
+  // knows less than the window does and must not move it — or the first frames
+  // would "correct" a three-row window down to the one-row default and back.
+  const [sourcesReady, setSourcesReady] = useState(false);
+  const [permissionReady, setPermissionReady] = useState(false);
   const [root, setRoot] = useState(defaultRoot);
   const [status, setStatus] = useState<ScanStatus | null>(null);
   const [cachedStatus, setCachedStatus] = useState<ScanStatus | null>(null);
@@ -1598,6 +1609,8 @@ export default function App() {
       setStorageSources((await MarmotService.GetStorageSources()) ?? []);
     } catch (error) {
       setNotice(String(error));
+    } finally {
+      setSourcesReady(true);
     }
   }
 
@@ -1701,7 +1714,10 @@ export default function App() {
         })
         .catch(() => window.localStorage.removeItem("marmot.scanTaskId"));
     }
-    MarmotService.GetPermissionStatus().then(setPermission).catch((error: unknown) => setNotice(String(error)));
+    MarmotService.GetPermissionStatus()
+      .then(setPermission)
+      .catch((error: unknown) => setNotice(String(error)))
+      .finally(() => setPermissionReady(true));
     const off = Events.On("scan-progress", (event: { data: ScanProgress }) => {
       setStatus(statusFromProgress(event.data));
       scheduleMapRefresh(event.data);
@@ -1745,16 +1761,34 @@ export default function App() {
 
   const sourceRows = Math.max(1, storageSources.length);
   const sourceAlert = Boolean(permission && permission.state !== "available");
+  const layoutReady = sourcesReady && permissionReady;
   useEffect(() => {
+    if (!showResult && !layoutReady) return;
     const height = showResult
       ? resultWindowSize.height
       : sourceWindowSize.height + (sourceRows - 1) * sourceRowHeight + (sourceAlert ? 34 : 0);
+    // The source page's height belongs to its content, never to the user, so
+    // it is locked; the result page resizes freely. Constraints are released
+    // before the resize and re-applied after it — a SetSize outside the
+    // standing min/max is silently clamped by macOS, which is how a page
+    // transition gets stuck at the previous page's height.
+    const run = async () => {
+      await Window.SetMaxSize(0, 0);
+      if (showResult) {
+        await Window.SetMinSize(minWindowWidth, resultMinHeight);
+        await Window.SetSize(resultWindowSize.width, height);
+      } else {
+        await Window.SetMinSize(minWindowWidth, height);
+        await Window.SetSize(resultWindowSize.width, height);
+        await Window.SetMaxSize(0, height);
+      }
+    };
     try {
-      void Window.SetSize(resultWindowSize.width, height).catch(() => undefined);
+      void run().catch(() => undefined);
     } catch {
       // The ordinary browser preview does not expose the Wails window bridge.
     }
-  }, [showResult, sourceRows, sourceAlert]);
+  }, [showResult, sourceRows, sourceAlert, layoutReady]);
 
   async function startScan(nextRoot = root) {
     setBusy(true);

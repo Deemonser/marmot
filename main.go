@@ -101,12 +101,32 @@ func main() {
 		app.Event.Emit(name, data)
 	}
 
+	// The window is born at its final size. The disk list and the permission
+	// strip are known before the window exists (ListVolumes answers from the
+	// identity cache in ~100µs, R-068 — only a machine with never-seen volumes
+	// pays diskutil here), so the height App.tsx would otherwise correct on
+	// its first renders is computed once, and locked: the source page's height
+	// is the content's, never the user's, so it is not draggable (the frontend
+	// re-locks it on every page transition). MinWidth sits above the 820px
+	// stylesheet breakpoint, which exists for the browser preview — dragging
+	// across it would snap the layout.
+	// The constants mirror App.tsx sourceWindowSize / sourceRowHeight / the
+	// 34px permission strip — change them together.
+	sourceRows := 1
+	if sources, err := core.GetStorageSources(); err == nil && len(sources) > 0 {
+		sourceRows = len(sources)
+	}
+	initialHeight := 151 + (sourceRows-1)*54
+	if core.GetPermissionStatus().State != "available" {
+		initialHeight += 34
+	}
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:     "Marmot",
 		Width:     968,
-		Height:    151,
-		MinWidth:  760,
-		MinHeight: 140,
+		Height:    initialHeight,
+		MinWidth:  830,
+		MinHeight: initialHeight,
+		MaxHeight: initialHeight,
 		Mac: application.MacWindow{
 			// A native invisible titlebar would sit on top of the webview and
 			// swallow every click in the first N pixels — which is exactly where
