@@ -1770,39 +1770,37 @@ export default function App() {
     const height = showResult
       ? resultWindowSize.height
       : sourceWindowSize.height + (sourceRows - 1) * sourceRowHeight + (sourceAlert ? 34 : 0);
-    // The source page's height belongs to its content, never to the user, so
-    // it is locked; the result page resizes freely. Constraints are released
-    // before the resize and re-applied after it — a SetSize outside the
-    // standing min/max is silently clamped by macOS, which is how a page
-    // transition gets stuck at the previous page's height.
-    //
-    // "height" is what the PAGE must get. The wails beta mixes frame and
-    // content coordinates (setContentMinSize is fed the frame number), so any
-    // native chrome ends up ADDED to the requested height: measured, asking
-    // for 151 produced a 185 frame with a 34px dead band. Rather than model
-    // that arithmetic, measure it — the difference between the frame
-    // (Window.Size) and what the page received (innerHeight) is the chrome,
-    // whatever the runtime did — and take it back out before locking.
+    // The page must END UP with exactly `height` CSS points. Frame and page
+    // coordinates are not reliably related in this runtime — the wails beta
+    // mixes frame and content rects, and a single post-show measurement read
+    // a stale innerHeight and produced a 185pt frame with a 34pt dead band —
+    // so no arithmetic: converge on the page's own measurement, adjusting the
+    // frame by the current error until the page reports the target. All of it
+    // happens before Show(), so the first visible geometry is the final one.
+    const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     const run = async () => {
+      await Window.SetResizable(true);
       await Window.SetMaxSize(0, 0);
       await Window.SetMinSize(minWindowWidth, 0);
       await Window.SetSize(resultWindowSize.width, height);
-      // The window is born hidden (main.go): the first geometry anyone sees
-      // is the one this effect just set. Show() on a visible window is a
-      // no-op, so later passes through here are harmless.
-      await Window.Show();
-      await new Promise((resolve) => setTimeout(resolve, 80));
-      const frame = await Window.Size();
-      const chrome = Math.max(0, frame.height - window.innerHeight);
-      const frameHeight = height + chrome;
-      if (frame.height !== frameHeight) {
-        await Window.SetSize(resultWindowSize.width, frameHeight);
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await settle(60);
+        if (window.innerHeight <= 0) continue;
+        const error = height - window.innerHeight;
+        if (error === 0) break;
+        const frame = await Window.Size();
+        await Window.SetSize(resultWindowSize.width, frame.height + error);
       }
+      await Window.Show();
       if (showResult) {
+        const frame = await Window.Size();
+        const chrome = Math.max(0, frame.height - window.innerHeight);
         await Window.SetMinSize(minWindowWidth, resultMinHeight + chrome);
       } else {
-        await Window.SetMinSize(minWindowWidth, frameHeight);
-        await Window.SetMaxSize(0, frameHeight);
+        // The source page's height belongs to its content, never to the user.
+        // Locked at the style-mask level: no resize cursor is offered at all,
+        // and no min/max coordinate arithmetic exists to get wrong.
+        await Window.SetResizable(false);
       }
     };
     try {
