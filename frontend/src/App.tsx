@@ -1775,20 +1775,35 @@ export default function App() {
     // before the resize and re-applied after it — a SetSize outside the
     // standing min/max is silently clamped by macOS, which is how a page
     // transition gets stuck at the previous page's height.
+    //
+    // "height" is what the PAGE must get. The wails beta mixes frame and
+    // content coordinates (setContentMinSize is fed the frame number), so any
+    // native chrome ends up ADDED to the requested height: measured, asking
+    // for 151 produced a 185 frame with a 34px dead band. Rather than model
+    // that arithmetic, measure it — the difference between the frame
+    // (Window.Size) and what the page received (innerHeight) is the chrome,
+    // whatever the runtime did — and take it back out before locking.
     const run = async () => {
       await Window.SetMaxSize(0, 0);
-      if (showResult) {
-        await Window.SetMinSize(minWindowWidth, resultMinHeight);
-        await Window.SetSize(resultWindowSize.width, height);
-      } else {
-        await Window.SetMinSize(minWindowWidth, height);
-        await Window.SetSize(resultWindowSize.width, height);
-        await Window.SetMaxSize(0, height);
-      }
+      await Window.SetMinSize(minWindowWidth, 0);
+      await Window.SetSize(resultWindowSize.width, height);
       // The window is born hidden (main.go): the first geometry anyone sees
       // is the one this effect just set. Show() on a visible window is a
       // no-op, so later passes through here are harmless.
       await Window.Show();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      const frame = await Window.Size();
+      const chrome = Math.max(0, frame.height - window.innerHeight);
+      const frameHeight = height + chrome;
+      if (frame.height !== frameHeight) {
+        await Window.SetSize(resultWindowSize.width, frameHeight);
+      }
+      if (showResult) {
+        await Window.SetMinSize(minWindowWidth, resultMinHeight + chrome);
+      } else {
+        await Window.SetMinSize(minWindowWidth, frameHeight);
+        await Window.SetMaxSize(0, frameHeight);
+      }
     };
     try {
       void run().catch(() => undefined);
