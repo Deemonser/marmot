@@ -51,8 +51,21 @@ func (Adapter) ListMounts() ([]ports.Mount, error) {
 	mounts := make([]ports.Mount, 0, len(records))
 	for _, record := range records {
 		profile := scan.DeviceProfileUnknown
+		// The medium never changes for a volume, so it comes from the identity
+		// cache; diskutil (serial here, ~95ms per volume) only runs for a
+		// volume this machine has never seen (R-068).
+		native, nativeOK := readNativeVolumeInfo(record.path)
+		if nativeOK && native.haveUUID {
+			if identity, hit := lookupVolumeIdentity(native.uuid); hit {
+				mounts = append(mounts, ports.Mount{ID: record.id, Path: record.path, DeviceProfile: deviceProfileFromIdentity(identity)})
+				continue
+			}
+		}
 		if info, err := readDiskutilInfo(record.path); err == nil {
 			profile = info.DeviceProfile
+			if nativeOK && native.haveUUID {
+				storeVolumeIdentity(native.uuid, identityFromDiskutil(info))
+			}
 		}
 		mounts = append(mounts, ports.Mount{ID: record.id, Path: record.path, DeviceProfile: profile})
 	}
@@ -83,24 +96,17 @@ func (Adapter) ListVolumes() ([]ports.Volume, error) {
 			DeviceProfile: scan.DeviceProfileUnknown,
 		})
 	}
-	// populateVolume spawns `diskutil info` per volume, which is ~95ms of process
-	// startup each. Serially that was 754ms of the 761ms this call costs, and the
-	// scan path waits on it before the walk can start. The calls are independent,
-	// so they run together.
+	// populateVolume answers from getattrlist + statfs + the volume-identity
+	// cache in microseconds; it spawns `diskutil info` (~95ms of process
+	// startup) only for a volume this machine has never seen (R-068). The
+	// goroutines remain for that first-contact case — ten concurrent spawns
+	// cost 390ms where serial cost 754ms.
 	//
-	// Ten concurrent spawns still cost 390ms, which is the pause before the disk
-	// list appears at launch, and skipping diskutil for the eight auxiliaries was
-	// tried and reverted. It is not a slower statfs: on APFS, statfs reports the
-	// CONTAINER's blocks and free space, so every volume in a shared container
-	// computes its used bytes as the container's used bytes. Measured after that
-	// change: Preboot, Update and VM each reported 191.8 GB used and the volumes
-	// summed to 931.3 GB on a 245 GB disk, which made the source row's scan
-	// denominator astronomical and pinned the progress bar at zero for the whole
-	// walk. diskutil is the only source that separates volume-own from
-	// container-shared usage, which is exactly why it is called per volume.
-	//
-	// The latency is real and the fix is not this: it is a native query in place of
-	// a subprocess, or caching, neither of which changes a number.
+	// Plain statfs for the usage number was tried and reverted: on APFS it
+	// reports the CONTAINER's blocks, so Preboot, Update and VM each claimed
+	// 191.8 GB and the volumes summed to 931.3 GB on a 245 GB disk. Volume-own
+	// usage must come from ATTR_VOL_SPACEUSED or from diskutil; nothing else
+	// answers that question.
 	errs := make([]error, len(volumes))
 	var wait sync.WaitGroup
 	for index := range volumes {
@@ -250,8 +256,42 @@ func volumeRole(kind string) string {
 }
 
 func populateVolume(volume *ports.Volume, record mountRecord) error {
+	// The native fast path (R-068): the numbers that change are answered in
+	// microseconds — volume-own used bytes by getattrlist ATTR_VOL_SPACEUSED
+	// (the same quantity diskutil reports, verified equal), capacity and free
+	// by the statfs already in hand — and the identity that never changes for
+	// a volume (name, container, group, medium) comes from a cache keyed by
+	// the volume's UUID. diskutil, at ~95ms of process spawn per call, is only
+	// paid the first time a volume is ever seen on this machine.
+	if native, ok := readNativeVolumeInfo(record.path); ok && native.haveUUID && native.haveSpaceUsed {
+		if identity, hit := lookupVolumeIdentity(native.uuid); hit {
+			if identity.Name != "" {
+				volume.Name = identity.Name
+			}
+			volume.ContainerID = identity.ContainerID
+			volume.VolumeGroupID = identity.VolumeGroupID
+			volume.DeviceProfile = deviceProfileFromIdentity(identity)
+			if err := populateFromStatfs(volume, record.stat); err != nil {
+				return err
+			}
+			// statfs filled container-wide figures; the volume's own usage is
+			// the native answer. On APFS total and free genuinely are the
+			// container's — the same numbers diskutil reports for a volume.
+			volume.UsedBytes = native.spaceUsed
+			if identity.FilesystemType == "apfs" && volume.ContainerTotalBytes > 0 {
+				volume.UsageBasis = "native_apfs_volume_v1"
+			} else {
+				volume.UsageBasis = "native_volume_v1"
+			}
+			volume.Permission = "available"
+			return nil
+		}
+	}
 	info, diskutilErr := readDiskutilInfo(record.path)
 	if diskutilErr == nil {
+		if native, ok := readNativeVolumeInfo(record.path); ok && native.haveUUID {
+			storeVolumeIdentity(native.uuid, identityFromDiskutil(info))
+		}
 		volume.ContainerID = info.ContainerID
 		volume.VolumeGroupID = info.VolumeGroupID
 		if info.VolumeName != "" {
