@@ -124,6 +124,11 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .volume-action-main, .volume-action-menu { min-height: 24px; border: 1px solid #6d6e75; background: #565761; color: #eeeef0; font-size: 11px; }
 .volume-action-main { min-width: 52px; padding: 0 11px; border-radius: 4px; }
 .volume-action-main:not(:only-child) { border-radius: 4px 0 0 4px; }
+/* While scanning the menu button is invisible but still occupies its grid
+   space; the main button gets its full rounding back so it does not read as
+   cut off against an invisible neighbour. */
+.volume-action.is-scanning .volume-action-main { border-radius: 4px; }
+.volume-action.is-scanning .volume-action-menu { border-left-color: transparent; }
 .volume-action-menu { display: grid; width: 21px; padding: 0; border-left: 1px solid #46474d; border-radius: 0 4px 4px 0; place-items: center; }
 .volume-action-menu svg { width: 10px; height: 10px; fill: none; stroke: #e3e3e6; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
 .volume-action-main:hover:not(:disabled), .volume-action-menu:hover:not(:disabled) { background: #63646e; }

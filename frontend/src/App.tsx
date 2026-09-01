@@ -1162,7 +1162,7 @@ function VolumeTile({
 	        {finishing ? <em>正在整理结果…</em> : scanning ? <em>扫描中…</em> : <b>{formatBytes(source.freeBytes)}</b>}
 	      </div>
 	    </div>
-	    <div className="volume-action">
+	    <div className={"volume-action" + (scanning ? " is-scanning" : "")}>
 	      <button
 	        className="volume-action-main"
 	        onClick={scanning ? onCancel : hasResult ? onView : () => onScan(source.path)}
@@ -1170,18 +1170,22 @@ function VolumeTile({
 	      >
 	        {busy ? "取消" : hasResult ? "查看" : "扫描"}
 	      </button>
-	      {!scanning && (
-	        <button
-	          className="volume-action-menu"
-	          style={{ "--custom-contextmenu": volumeMenuName } as CSSProperties}
-	          onClick={(event) => void openVolumeMenu(event.currentTarget, source.id, hasResult)}
-	          disabled={disabled}
-	          aria-label={source.name + "操作菜单"}
-	          aria-haspopup="menu"
-	        >
-	          <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 4 L5 7 L8 4" /></svg>
-	        </button>
-	      )}
+	      {/* Hidden, not unmounted, while scanning: the action cell sits in an
+	          `auto` grid column, so unmounting the 21px menu button re-resolved
+	          the whole row — the meter visibly widened and the buttons narrowed
+	          the moment 扫描 was pressed. visibility keeps the space (and drops
+	          the interactivity) so the row's geometry never moves. */}
+	      <button
+	        className="volume-action-menu"
+	        style={{ "--custom-contextmenu": volumeMenuName, visibility: scanning ? "hidden" : undefined } as CSSProperties}
+	        onClick={(event) => void openVolumeMenu(event.currentTarget, source.id, hasResult)}
+	        disabled={disabled || scanning}
+	        aria-hidden={scanning || undefined}
+	        aria-label={source.name + "操作菜单"}
+	        aria-haspopup="menu"
+	      >
+	        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 4 L5 7 L8 4" /></svg>
+	      </button>
 	    </div>
     </article>
   );
