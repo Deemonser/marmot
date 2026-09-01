@@ -162,16 +162,19 @@ async function openVolumeMenu(button: HTMLElement, sourceID: string, hasResult: 
     clientY: Math.round(box.bottom),
   }));
 }
-// R-014 measured the original's launch window at about 968 x 151; the source
-// window grows only by the volume rows it actually has.
-const sourceWindowSize = { width: 968, height: 151 };
+// R-014 measured the original's launch window at about 968 x 151. Both pages
+// are deliberately scaled down from that (~0.89) so the app reads as a small
+// tool rather than a workspace; the source height stays content-exact
+// (topbar + rows + foot), only the width shrinks. main.go's Width mirrors the
+// shared width — change them together.
+const sourceWindowSize = { width: 860, height: 151 };
 const sourceRowHeight = 54;
-const resultWindowSize = { width: 968, height: 715 };
+const resultWindowSize = { width: 860, height: 635 };
 // minWindowWidth sits above the 820px stylesheet breakpoint (written for the
 // browser preview): dragging across it snaps the layout, so the window must
 // not reach it. main.go's MinWidth mirrors this — change them together.
 const minWindowWidth = 830;
-const resultMinHeight = 560;
+const resultMinHeight = 500;
 // The two pages the shell can show. showResult says what the data allows;
 // `view` (state below) follows it through the transition choreography: forward
 // resizes the window first and slides the content second, back slides the
@@ -183,6 +186,14 @@ type AppView = "source" | "result";
 const windowMorphMs = 300;
 const viewSlideMs = 340;
 const settle = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+// The usable screen area, from the DOM. NOT the wails Screens API: in
+// v3.0.0-beta.9 any Screens.* call nil-panics the Go side
+// (messageprocessor_screens.go:32) and takes the whole app down. availTop /
+// availLeft are non-standard but WebKit has them; they fall back to 0.
+function screenWorkArea() {
+  const s = window.screen as Screen & { availLeft?: number; availTop?: number };
+  return { x: s.availLeft ?? 0, y: s.availTop ?? 0, width: s.availWidth, height: s.availHeight };
+}
 // Beyond this many disks the window stops growing and the source page scrolls
 // (.app-shell-source already has overflow: auto).
 const maxVisibleSourceRows = 5;
@@ -1834,7 +1845,24 @@ export default function App() {
     const chrome = Math.max(0, frame.height - window.innerHeight);
     const from = { width: frame.width, height: frame.height };
     const to = { width: resultWindowSize.width, height: target + chrome };
-    if (from.width !== to.width || from.height !== to.height) {
+    // The window grows downward from its top edge, so growing near the bottom
+    // of the screen would push the page below the dock. If the new height
+    // does not fit under the current position, the window rides up as it
+    // grows, just enough to keep its bottom on the work area.
+    let fromPos: { x: number; y: number } | null = null;
+    let toPosY = 0;
+    try {
+      const pos = await Window.Position();
+      const area = screenWorkArea();
+      const maxY = area.y + area.height - to.height - 8;
+      if (pos.y > maxY) {
+        fromPos = pos;
+        toPosY = Math.max(area.y + 8, maxY);
+      }
+    } catch {
+      // No window bridge (browser preview): grow in place.
+    }
+    if (from.width !== to.width || from.height !== to.height || fromPos) {
       const started = performance.now();
       for (;;) {
         const t = Math.min(1, (performance.now() - started) / windowMorphMs);
@@ -1843,6 +1871,12 @@ export default function App() {
           Math.round(from.width + (to.width - from.width) * eased),
           Math.round(from.height + (to.height - from.height) * eased),
         );
+        if (fromPos) {
+          await Window.SetPosition(
+            Math.round(fromPos.x),
+            Math.round(fromPos.y + (toPosY - fromPos.y) * eased),
+          );
+        }
         if (t >= 1) break;
         await settle(16);
       }
@@ -1899,6 +1933,24 @@ export default function App() {
       await Window.SetMinSize(minWindowWidth, 0);
       await Window.SetSize(resultWindowSize.width, height);
       await convergeWindowHeight(height);
+      if (!windowShown.current) {
+        // First layout only, still hidden: the window grows downward from
+        // this very top edge when the result page arrives, so it is placed
+        // where the RESULT-sized window sits centered on the work area —
+        // never where the small source window would center, whose bottom
+        // half the grown page would then run past. A window the user has
+        // since moved is theirs; this never fires again.
+        try {
+          const area = screenWorkArea();
+          const frame = await Window.Size();
+          const chrome = Math.max(0, frame.height - window.innerHeight);
+          const x = Math.round(area.x + Math.max(0, (area.width - resultWindowSize.width) / 2));
+          const y = Math.round(area.y + Math.max(8, (area.height - (resultWindowSize.height + chrome)) / 2));
+          await Window.SetPosition(x, y);
+        } catch {
+          // No window bridge (browser preview): keep the default spot.
+        }
+      }
       await Window.Show();
       // Freely resizable everywhere (by request); the sizes set above are
       // starting points, not constraints. Only the result page keeps a

@@ -116,7 +116,9 @@ func main() {
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:    "Marmot",
 		Hidden:   true,
-		Width:    968,
+		// Mirrors App.tsx sourceWindowSize — the pages are scaled down from
+		// the reference's 968 so the app reads as a small tool.
+		Width:    860,
 		Height:   151,
 		MinWidth: 830,
 		Mac: application.MacWindow{
