@@ -3378,30 +3378,35 @@ export default function App() {
                         onPointerLeave={() => hoverAdviceNode(null)}
                         onPointerDown={(event) => dragAdviceItem(item, event)}
                       >
-                        <button
-                          className="advice-summary"
-                          onClick={() => {
-                            // The click that follows a drag belongs to the drag.
-                            if (dragSuppressesClick.current) return;
-                            setAdviceDetail(open ? null : item.nodeId);
-                          }}
-                          aria-expanded={open}
-                        >
-                          <span className="advice-risk" aria-hidden="true" />
-                          <span className="advice-text">
-                            <strong>{item.name}</strong>
-                            <span className="advice-path">{homePath(item.path)}</span>
-                          </span>
-                          <span className="advice-size">{formatBytes(item.reclaimableBytes)}</span>
-                        </button>
-                        <div className="advice-tags">
-                          <AdviceTags item={item} />
-                          {/* Back from the dock by the user's hand. The mark is
-                              what keeps 全部加入 from putting it straight back. */}
-                          {wasDismissed && <span className="advice-tag is-dismissed">已移出</span>}
-                          {item.manual
-                            ? <span className="advice-manual">需要管理员权限，本工具不执行</span>
-                            : <button className="advice-collect" onClick={() => void collectAdviceItem(item)}>加入</button>}
+                        <div className="advice-row">
+                          <button
+                            className="advice-summary"
+                            onClick={() => {
+                              // The click that follows a drag belongs to the drag.
+                              if (dragSuppressesClick.current) return;
+                              setAdviceDetail(open ? null : item.nodeId);
+                            }}
+                            aria-expanded={open}
+                          >
+                            <span className="advice-risk" aria-hidden="true" />
+                            <span className="advice-text">
+                              <span className="advice-title">
+                                <strong>{item.name}</strong>
+                                <span className="advice-tags">
+                                  <AdviceTags item={item} />
+                                  {/* Back from the dock by the user's hand. The mark is
+                                      what keeps 全部加入 from putting it straight back. */}
+                                  {wasDismissed && <span className="advice-tag is-dismissed">已移出</span>}
+                                  {/* Needs admin rights; this tool will not take them
+                                      (ADR-0065). The command is in the detail. */}
+                                  {item.manual && <span className="advice-tag is-manual">需管理员权限</span>}
+                                </span>
+                              </span>
+                              <span className="advice-path">{homePath(item.path)}</span>
+                            </span>
+                            <span className="advice-size">{formatBytes(item.reclaimableBytes)}</span>
+                          </button>
+                          {!item.manual && <button className="advice-collect" onClick={() => void collectAdviceItem(item)}>加入</button>}
                         </div>
                         {open && <AdviceDetail item={item} />}
                       </article>
@@ -3423,6 +3428,11 @@ export default function App() {
                 aria-hidden={!dockOpen || undefined}
                 inert={!dockOpen}
               >
+                {/* One child for the section's single grid row, so the fold can
+                    animate the row from 1fr to 0fr -- the content's real height
+                    to nothing -- instead of a max-height that starts far above
+                    the content and spends most of the transition invisible. */}
+                <div className="dock-staged-body">
                 {adviceData && (
                   <header className="dock-section-head"><span>已收集 · {collector.length} 项</span></header>
                 )}
@@ -3491,6 +3501,7 @@ export default function App() {
                       </div>
                     );
                   })}
+                </div>
                 </div>
               </section>
             )}

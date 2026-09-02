@@ -7,6 +7,9 @@
   -webkit-font-smoothing: antialiased;
   color: #f1f1f3;
   background: #2b2c31;
+  /* The page is dark, and says so: without this the system's overlay
+     scrollbars are drawn for a light page -- black thumbs on a dark list. */
+  color-scheme: dark;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -401,7 +404,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* min-height: 0 and flex are load-bearing: a grid inside a shrinking flex
    column keeps its content height and runs under the action bar; with them it
    gives way and scrolls, which is the only honest thing a capped list can do. */
-.collector-list { display: grid; min-height: 0; max-height: 26vh; flex: 1 1 auto; overflow: auto; padding: 4px 0 0; }
+.collector-list { display: grid; min-height: 0; max-height: 26vh; flex: 1 1 auto; overflow: auto; padding: 4px 0 0; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
 .plan-review { display: grid; gap: 7px; margin-top: 10px; padding: 10px; border: 1px solid #5c625b; background: #333a35; }
 .plan-review > div:not(.plan-result) { display: flex; justify-content: space-between; gap: 10px; color: #aab0a8; font-size: 9px; }
 .plan-review strong { color: #e2e7df; font-weight: 500; }
@@ -523,7 +526,12 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    and the caption therefore sit exactly where they will be after the first
    drop; only the background appears. The earlier empty state was its own row
    with its own padding, and the ring moved 20px on the first drop. */
-.collector-panel.is-empty, .collector-panel.is-bar-only { background: transparent; box-shadow: none; }
+/* Transparent as the same colours at zero alpha, so they can be transitioned.
+   Folding: the background holds until the rows have gone (160ms delay, on top
+   of the 140ms fade), then fades. Unfolding uses the panel's own transition,
+   with no delay, so the card is there before the rows come back. */
+.collector-panel.is-empty, .collector-panel.is-bar-only { background: rgba(44, 45, 51, 0); box-shadow: 0 10px 26px rgba(0, 0, 0, 0); }
+.collector-panel.is-bar-only { transition: background-color 160ms ease 160ms, box-shadow 160ms ease 160ms; }
 /* The pill. When the panel is only its bar -- lists folded, or nothing in it
    yet and a drag in flight -- the reference paints a 36pt rounded bar behind
    the caption instead of the panel. It starts under the badge, at its centre,
@@ -548,7 +556,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    the 50pt disc hangs 22pt out and 11pt down). The panel therefore starts 17px
    in from the page gutter to keep the badge off the window edge, and the width
    gives those 17px back so the right edge still meets the map column's. */
-.collector-panel { display: flex; width: calc((100vw - 32px) * .62 - 17px); max-height: calc(100vh - 54px); flex-direction: column; padding: 6px 6px 0; border: 0; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); }
+.collector-panel { display: flex; width: calc((100vw - 32px) * .62 - 17px); max-height: calc(100vh - 54px); flex-direction: column; padding: 6px 6px 0; border: 0; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); transition: background-color 160ms ease, box-shadow 160ms ease; }
 /* Two sections, one object in exactly one of them (ADR-0066). Each list has
    its own ceiling rather than sharing the panel's: a 58-row 已收集 must not
    push 待确认 down to a sliver, and the other way round. */
@@ -570,9 +578,17 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* 已收集 folds with the badge. Its natural height is auto, which cannot
    transition, so the ceiling stands in for it: content is never taller than the
    list's own cap plus the head. */
-.dock-staged { flex: 0 0 auto; max-height: calc(26vh + 40px); overflow: hidden; transition: max-height 240ms ease, margin 240ms ease; }
-.dock-staged.is-folded { max-height: 0; margin: 0; border-top: 0; }
-@media (prefers-reduced-motion: reduce) { .dock-staged { transition: none; } }
+/* The fold is a grid row going from 1fr to 0fr: it starts at the content's own
+   height, so the motion is visible from the first frame. (A max-height from
+   26vh spent most of its 240ms above the content, doing nothing anyone could
+   see, then dropped.) The rows fade as they fold, and the panel's background
+   waits for them -- see .collector-panel.is-bar-only -- so no text is ever
+   left standing on the bare page. */
+.dock-staged { display: grid; flex: 0 0 auto; grid-template-rows: 1fr; overflow: hidden; transition: grid-template-rows 240ms ease, margin 240ms ease; }
+.dock-staged.is-folded { grid-template-rows: 0fr; margin: 0; border-top: 0; }
+.dock-staged-body { display: flex; min-height: 0; flex-direction: column; transition: opacity 160ms ease 40ms; }
+.dock-staged.is-folded .dock-staged-body { opacity: 0; transition: opacity 140ms ease; }
+@media (prefers-reduced-motion: reduce) { .dock-staged, .dock-staged-body { transition: none; } }
 /* Fold is a glyph, not a word: it is the least important control in the row
    and the only one that recurs, so it should read at a glance and take no
    width from the actions beside it. */
@@ -719,16 +735,21 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 
 .advice-stage span { min-width: 0; }
 .advice-waiting { color: #85868d; }
-.advice-manual { margin-left: auto; color: #96979e; font-size: 9px; }
 .advice-command { display: block; padding: 5px 7px; border-radius: 4px; background: #23242a; color: #cfd2d8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; overflow-x: auto; white-space: pre; user-select: all; }
 .advice-stage .quiet-button { flex: none; }
-.advice-list { min-height: 0; flex: 1; padding: 4px 6px; overflow-y: auto; }
+.advice-list { min-height: 0; flex: 1; padding: 4px 6px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
 .advice-empty { margin: 0; padding: 18px 8px; color: #96979e; font-size: 10px; text-align: center; }
 
-.advice-item { padding: 6px 6px 7px; border-radius: 6px; cursor: default; }
+.advice-item { padding: 4px 6px 5px; border-radius: 6px; cursor: default; }
+/* One row per suggestion: the summary button grows, the action sits at the
+   end. The tags used to be a second row under every item; they now follow the
+   name on its own line, so a list shows twice the items in the same height. */
+.advice-row { display: flex; align-items: center; gap: 8px; }
 .advice-item:hover { background: rgba(255, 255, 255, .05); }
 .advice-item + .advice-item { border-top: 1px solid #33343a; }
-.advice-summary { display: flex; width: 100%; align-items: center; gap: 8px; padding: 0; border: 0; background: transparent; text-align: left; }
+.advice-summary { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 8px; padding: 0; border: 0; background: transparent; text-align: left; }
+.advice-title { display: flex; min-width: 0; align-items: center; gap: 5px; }
+.advice-title strong { min-width: 0; flex: 0 1 auto; }
 /* Risk is a colour and a word, never a colour alone: the word is in the tag row
    below, so the dot is a scanning aid rather than the only statement. */
 .advice-risk { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; }
@@ -746,9 +767,10 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .advice-path { overflow: hidden; color: #8b8c93; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .advice-size { flex: 0 0 auto; color: #d7d7dc; font-size: 11px; font-variant-numeric: tabular-nums; }
 
-.advice-tags { display: flex; align-items: center; gap: 5px; padding: 5px 0 0 15px; flex-wrap: wrap; }
-.advice-tag { padding: 2px 6px; border-radius: 3px; background: #383941; color: #b6b7bd; font-size: 9px; }
-.advice-collect { margin-left: auto; padding: 2px 8px; border: 1px solid #5b5c63; border-radius: 3px; background: transparent; color: #d0d0d5; font-size: 9px; }
+.advice-tags { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+.advice-tag { padding: 1px 5px; border-radius: 3px; background: #383941; color: #b6b7bd; font-size: 8px; line-height: 1.4; white-space: nowrap; }
+.advice-tag.is-manual { background: #3a3226; color: #e5cc91; }
+.advice-collect { flex: 0 0 auto; padding: 2px 8px; border: 1px solid #5b5c63; border-radius: 3px; background: transparent; color: #d0d0d5; font-size: 9px; }
 .advice-collect:hover:not(:disabled) { border-color: #a4a5ac; color: #fff; }
 .advice-collect:disabled { border-color: #3f4047; color: #7b7c83; }
 
