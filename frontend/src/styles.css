@@ -142,9 +142,15 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .meter-track.is-scanning > .meter-scan { background: none; background-image: repeating-linear-gradient(105deg, #5486d6 0 3px, #e9eefb 3px 6px); background-size: 6.21px 100%; animation: meter-march .55s linear infinite; transition: width .3s linear; }
 /* No denominator: a sweeping segment that claims no position. */
 .meter-track.is-indeterminate > .meter-scan { width: 36%; transition: none; animation: meter-sweep 1.7s ease-in-out infinite, meter-march .55s linear infinite; }
-.meter-caption { margin-top: 5px; text-align: right; font-size: 11px; line-height: 1.2; }
-.meter-caption.is-scanning { text-align: left; }
-.meter-caption b { color: #e0492a; font-weight: 400; }
+.meter-caption { display: flex; justify-content: flex-end; gap: 8px; margin-top: 5px; text-align: right; font-size: 11px; line-height: 1.2; }
+.meter-caption.is-scanning { justify-content: flex-start; text-align: left; }
+/* "已使用 205.7 GB" on the left, shown only while the pointer is over the meter
+   (R-016: the reference reveals it on hover and hides it at rest). It keeps its
+   width when hidden so the free figure never shifts. */
+.meter-caption .meter-used-label { margin-right: auto; color: #8a8b92; opacity: 0; transition: opacity .15s; }
+.volume-meter:hover .meter-caption .meter-used-label { opacity: 1; }
+/* Colour comes inline from meterColor, matching the bar. */
+.meter-caption b { font-weight: 400; }
 .meter-caption em { color: #8a8b92; font-style: normal; }
 .volume-loading { padding: 16px 0; color: #98999f; font-size: 10px; }
 
@@ -318,20 +324,41 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    column's share of the width. Folding 待确认 changes the height and nothing
    else -- a fold that also moved the left edge and changed the width read as
    the panel jumping (ADR-0066 修订). */
-.app-shell-result .collector-dock { right: auto; bottom: 16px; left: 28px; width: auto; max-width: none; border: 0; background: transparent; box-shadow: none; }
-.collector-target { position: relative; display: grid; place-items: center; width: 52px; height: 52px; flex: 0 0 auto; border: 3px solid #7c7d84; border-radius: 50%; box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #7c7d84; transition: border-color .12s ease, transform .12s ease; }
-/* A drag is in flight: the empty ring lifts to say it is a target, and turns
-   blue once the pointer is inside the drop area. The caption comes up with it.
-   Only the empty ring scales -- the filled badge is absolutely positioned off
-   the action bar's left edge by a transform of its own, so it says the same
-   thing with its border and the panel's outline instead. */
-/* The ring in the bar is centred by translateY(-50%); the lift has to keep that
-   translation in the same transform or the ring drops half its height. */
-.collector-dock.is-target .collector-panel.is-empty .collector-target { border-color: #a3a4ab; transform: translateY(-50%) scale(1.06); }
+.app-shell-result .collector-dock { right: auto; bottom: 24px; left: 33px; width: auto; max-width: none; border: 0; background: transparent; box-shadow: none; }
+/* The collector target is one 50px element whose rings are drawn by a border
+   and four box-shadows, so its three states -- measured off the reference at
+   2x -- are the same list with different lengths and colours, and CSS
+   transitions the one into the next:
+     idle      slate outer ring, gap, thin slate ring, gap, 26px slate disc
+     dragging  blue outer ring, gap, thicker slate ring, gap, 14px blue dot
+     filled    blue outer ring, gap, 40px slate disc with the amount in it
+   Outside the ring a 3px halo in the page colour cuts it out of the panel.
+   The shadow list is always [halo, gap, ring, gap] so every transition has a
+   counterpart to interpolate; in the filled state the ring and inner gap
+   collapse onto the disc colour. */
+.collector-target { position: relative; display: grid; place-items: center; width: 50px; height: 50px; flex: 0 0 auto; border: 2px solid #38414e; border-radius: 50%; background: #38414e; box-shadow: 0 0 0 3px #2b2c31, inset 0 0 0 4px #2b2c31, inset 0 0 0 6px #38414e, inset 0 0 0 10px #2b2c31; transition: border-color .25s ease, background-color .25s ease, box-shadow .25s ease, transform .12s ease; }
+/* The idle target is a button too, so React keeps the element across the
+   first drop and the ring morphs instead of being replaced. It does nothing. */
+.collector-target:disabled { opacity: 1; cursor: default; }
+/* Sonar while something is in the air: a ring that grows out of the target and
+   fades, on repeat. It is the "drop here" the reference animates, and it uses
+   ::before because ::after is the refusal slash. */
+.collector-target::before { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid #4873cf; opacity: 0; pointer-events: none; }
+.collector-dock.is-target .collector-target:not(.is-filled)::before { animation: target-sonar 1.4s ease-out infinite; }
+.collector-dock.is-refused .collector-target::before { animation: none; }
+@keyframes target-sonar { from { transform: scale(1); opacity: .5; } to { transform: scale(1.55); opacity: 0; } }
+/* Dragging: the outer ring turns blue, the middle ring thickens, and the disc
+   shrinks to a blue dot. Not the filled badge, which keeps its amount. */
+.collector-dock.is-target .collector-target:not(.is-filled) { border-color: #4873cf; background: #4873cf; box-shadow: 0 0 0 3px #2b2c31, inset 0 0 0 5px #2b2c31, inset 0 0 0 10px #38414e, inset 0 0 0 16px #2b2c31; }
+/* A drag is in flight: the target goes to its blue-dot form (rule above) and
+   lightens once the pointer is inside the drop area. The caption comes up with
+   it. Nothing scales and the panel draws no outline: the reference marks the
+   target by colour and the sonar ring alone. */
+/* No scale on the target during a drag: the reference's ring keeps its size and
+   says "target" with colour and the sonar alone. */
 .collector-dock.is-target .collector-caption { color: #e4e4e8; }
-.collector-dock.is-armed .collector-panel.is-empty .collector-target { border-color: #4c7cc4; transform: translateY(-50%) scale(1.14); box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #4c7cc4, 0 0 0 6px rgba(76, 124, 196, .18); }
+.collector-dock.is-armed .collector-target:not(.is-filled) { border-color: #6f9ede; background: #6f9ede; }
 .collector-dock.is-armed .collector-bar .collector-target { border-color: #6f9ede; }
-.collector-dock.is-armed .collector-panel { box-shadow: 0 10px 26px rgba(0, 0, 0, .35), 0 0 0 2px rgba(76, 124, 196, .55); }
 
 /* A protected object is in the air: the ring stops inviting the drop and becomes
    the prohibition sign, for the whole drag rather than only once the pointer is
@@ -343,8 +370,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    The ring itself stays neutral and the slash alone carries the refusal, the way
    the reference does it -- a red ring as well would read as something having
    gone wrong, and nothing has: this is a rule being stated. */
-.collector-dock.is-refused .collector-bar .collector-target { border-color: #7c7d84; box-shadow: inset 0 0 0 4px #232429; }
-.collector-dock.is-refused .collector-panel.is-empty .collector-target { transform: translateY(-50%); }
+.collector-dock.is-refused .collector-bar .collector-target { border-color: #38414e; background: #38414e; box-shadow: 0 0 0 3px #2b2c31, inset 0 0 0 4px #2b2c31, inset 0 0 0 6px #38414e, inset 0 0 0 10px #2b2c31; }
 /* The refusal is a sentence, not a label, and the dock's usual 420px wraps it to
    two lines -- where the drag chip, which follows the cursor at z-index 60, lands
    on top of the second one. The reference gives the message a wide bar, so this
@@ -364,8 +390,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* The amount inside the filled badge would sit under the slash. */
 .collector-dock.is-refused .collector-count { opacity: 0; }
 .collector-dock.is-refused .collector-caption { color: #dfe0e4; }
-.collector-dock.is-refused .collector-panel { box-shadow: 0 10px 26px rgba(0, 0, 0, .35), 0 0 0 2px rgba(208, 69, 58, .5); }
-.collector-target.is-filled { border-color: #4c7cc4; box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #4c7cc4; }
+.collector-target.is-filled { border-color: #4873cf; background: #38414e; box-shadow: 0 0 0 3px #2b2c31, inset 0 0 0 3px #2b2c31, inset 0 0 0 3px #38414e, inset 0 0 0 3px #38414e; }
 .collector-caption { min-width: 0; font-size: 12px; }
 .collector-count { color: #dfe0e4; font-size: 12px; font-weight: 500; }
 /* Plain rows, no gap between them: the reference's list is a run of single lines,
@@ -399,7 +424,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
   .directory-panel { min-height: 360px; padding: 14px 0 94px; border-top: 1px solid #47484e; border-left: 0; }
   .directory-list { max-height: 300px; }
   .directory-context { margin-top: 6px; }
-  .app-shell-result .collector-dock { bottom: 12px; left: 12px; }
+  .app-shell-result .collector-dock { bottom: 20px; left: 26px; }
 }
 
 @media (max-width: 520px) {
@@ -417,7 +442,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
   .directory-row { padding-inline: 6px; }
   .directory-heading { padding-inline: 6px; }
   .directory-footer { padding-inline: 6px; }
-  .collector-dock, .app-shell-result .collector-dock { left: 10px; }
+  .collector-dock, .app-shell-result .collector-dock { left: 24px; }
   .notice { right: 10px; bottom: 10px; max-width: calc(100% - 20px); }
 }
 
@@ -436,14 +461,16 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    left/top stay at 0 and the position is a transform written by the pointer
    handler -- see placeDragChip. The margins are the offset off the cursor
    hotspot: enough to clear the arrow, not enough to read as a separate object. */
-.drag-chip { position: fixed; left: 0; top: 0; z-index: 60; display: flex; align-items: center; gap: 10px; max-width: 320px; margin: 7px 0 0 9px; padding: 5px 11px; border-radius: 6px; font-size: 13px; font-weight: 500; pointer-events: none; box-shadow: 0 5px 16px rgba(0, 0, 0, .5); }
-.drag-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Secondary in either text colour, rather than a grey that only works on one. */
-.drag-chip-size { flex: 0 0 auto; opacity: .7; font-variant-numeric: tabular-nums; }
-/* Over the dock, and refused: a ring around the chip rather than a border, so the
-   wedge colour keeps the whole box. */
-.drag-chip.is-over { box-shadow: 0 5px 16px rgba(0, 0, 0, .5), 0 0 0 3px rgba(255, 255, 255, .35); }
-.drag-chip.is-refused { box-shadow: 0 5px 16px rgba(0, 0, 0, .5), 0 0 0 3px #d0453a; }
+/* The dot sits under the pointer's hotspot: the chip's transform puts its
+   top-left corner at the pointer, and the negative margins pull the dot's
+   centre back onto it (dot 8px, first line 22px, so the dot is 7px down and
+   4px in). The text hangs to the right, off the arrow. */
+.drag-chip { position: fixed; left: 0; top: 0; z-index: 60; display: grid; grid-template-columns: 8px minmax(0, 1fr); column-gap: 11px; align-items: start; max-width: 340px; margin: -11px 0 0 -4px; color: #ececef; font-size: 17px; font-weight: 400; line-height: 22px; pointer-events: none; text-shadow: 0 1px 2px rgba(0, 0, 0, .55), 0 0 6px rgba(0, 0, 0, .35); }
+.drag-chip-dot { width: 8px; height: 8px; margin-top: 7px; border-radius: 50%; background: var(--chip-color); }
+.drag-chip-name { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drag-chip-size { grid-column: 2; color: #d5d6db; font-variant-numeric: tabular-nums; }
+/* Refused: the dot goes the slash's red; the dock says why. */
+.drag-chip.is-refused .drag-chip-dot { background: #d0453a; }
 
 /* Pointer-dragging a slice must not select the page text underneath. */
 .app-shell { user-select: none; }
@@ -452,7 +479,9 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    over them neither breathes an arc nor swings the list to another node. The
    drop test is by coordinates, so nothing here needs the events. */
 .app-shell.is-dragging .sunburst, .app-shell.is-dragging .directory-list { pointer-events: none; }
-.app-shell.is-dragging { cursor: grabbing; }
+/* The pointer stays an arrow through a drag, like the reference: the chip
+   under it already says what is being carried. */
+.app-shell.is-dragging, .app-shell.is-dragging * { cursor: default; }
 
 .sunburst-hub { cursor: pointer; }
 .sunburst-center-label { pointer-events: none; }
@@ -477,8 +506,11 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    both faces -- the colour dot and the cross -- and swaps them on row hover, which
    is what the reference does. -webkit-user-drag: none keeps the row's own
    `element` from claiming a press here as the start of a drag. */
-.collector-remove { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #a8a9b0; font-size: 13px; line-height: 1; -webkit-user-drag: none; }
-.collector-remove:hover { background: rgba(255,255,255,.12); color: #fff; }
+/* No hover fill and no hand: the row already highlights under the pointer, and a
+   third tone on top of the panel and the row was one layer too many. The dot
+   turning into a cross is the whole affordance. */
+.collector-remove { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #a8a9b0; font-size: 13px; line-height: 1; cursor: default; -webkit-user-drag: none; }
+.collector-remove:hover { color: #fff; }
 /* Both faces sit in the button's own single cell and never take a hit of their
    own: the button is the target, whichever face is showing. */
 .collector-remove > span { grid-area: 1 / 1; pointer-events: none; }
@@ -491,17 +523,32 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    and the caption therefore sit exactly where they will be after the first
    drop; only the background appears. The earlier empty state was its own row
    with its own padding, and the ring moved 20px on the first drop. */
-.collector-panel.is-empty { background: transparent; box-shadow: none; }
+.collector-panel.is-empty, .collector-panel.is-bar-only { background: transparent; box-shadow: none; }
+/* The pill. When the panel is only its bar -- lists folded, or nothing in it
+   yet and a drag in flight -- the reference paints a 36pt rounded bar behind
+   the caption instead of the panel. It starts under the badge, at its centre,
+   and the badge's page-colour halo is what cuts its left end: the bar is
+   behind the token, not beside it. A version that began 4px clear of the
+   badge grew its own rounded left end there, which is not the shape. z-index
+   -1 puts it under the panel's own background, so it is only ever seen when
+   that background is off. Idle and empty, nothing. */
+.collector-bar::before { content: ""; position: absolute; z-index: -1; left: 3px; right: 0; top: -1px; bottom: -1px; border-radius: 999px; background: #30343c; opacity: 0; transition: opacity .2s ease; }
+/* In the pill the action is the reference's red capsule. */
+.collector-bar .danger-button.compact { border-radius: 999px; border-color: #b5352e; background: #9b2823; color: #fff; }
+.collector-bar .danger-button.compact:hover { background: #ad2d27; }
+.collector-panel.is-bar-only .collector-bar::before, .collector-dock.is-target .collector-panel.is-empty .collector-bar::before { opacity: 1; }
 .collector-panel.is-empty .collector-bar .collector-caption { color: #b9bac0; }
 .collector-dock.is-target .collector-panel.is-empty .collector-caption { color: #e4e4e8; }
 /* The badge is a button now; nothing about it should say so beyond the cursor. */
 .collector-badge { padding: 0; appearance: none; color: inherit; }
 .collector-badge.is-deleting { cursor: default; }
 
-/* The badge hangs 14px past the panel's left edge, so the panel starts 12px in
-   from the page gutter to keep the badge off the window edge; the width gives
-   those 12px back so the right edge still meets the map column's. */
-.collector-panel { display: flex; width: calc((100vw - 32px) * .62 - 12px); max-height: calc(100vh - 54px); flex-direction: column; padding: 6px 6px 0; border: 0; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); }
+/* The badge straddles the panel's bottom-left corner the way the reference's
+   does (measured: centre 3pt inside the left edge, 14pt above the bottom, so
+   the 50pt disc hangs 22pt out and 11pt down). The panel therefore starts 17px
+   in from the page gutter to keep the badge off the window edge, and the width
+   gives those 17px back so the right edge still meets the map column's. */
+.collector-panel { display: flex; width: calc((100vw - 32px) * .62 - 17px); max-height: calc(100vh - 54px); flex-direction: column; padding: 6px 6px 0; border: 0; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); }
 /* Two sections, one object in exactly one of them (ADR-0066). Each list has
    its own ceiling rather than sharing the panel's: a 58-row 已收集 must not
    push 待确认 down to a sliver, and the other way round. */
@@ -514,7 +561,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .dock-pending { height: calc(100vh - 54px); flex: 0 1 auto; overflow: hidden; transition: height 240ms ease, margin 240ms ease; }
 .dock-pending.is-folded { height: 0; margin: 0; }
 .dock-pending.is-folded + .dock-section { margin-top: 0; border-top: 0; }
-@media (prefers-reduced-motion: reduce) { .dock-pending { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .dock-pending { transition: none; } .collector-target::before { animation: none !important; } .collector-bar .collector-count { animation: none; } }
 .dock-section-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 6px 2px; color: #9fa0a7; font-size: 9px; font-weight: 600; letter-spacing: .12em; }
 .dock-pending .advice-head { padding: 7px 6px 6px; }
 .dock-pending .advice-stage { padding: 6px 6px; }
@@ -543,15 +590,31 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .collector-tags .advice-tag { padding: 1px 5px; font-size: 8px; }
 .collector-item.has-advice { cursor: default; }
 .collector-item .advice-detail { grid-column: 1 / -1; margin: 2px 0 6px 20px; }
-.collector-bar { position: relative; display: flex; align-items: center; gap: 8px; min-height: 46px; margin: 4px -6px 0; padding: 0 10px 0 60px; }
-.collector-bar .collector-target { position: absolute; left: -14px; top: 50%; transform: translateY(-50%); }
+/* The bar is shorter than the badge on purpose: the badge is centred on it,
+   so a 34px bar puts the centre 17px above the panel's bottom edge and the
+   disc hangs 8px below the panel, which is the reference's silhouette. */
+.collector-bar { position: relative; display: flex; align-items: center; gap: 8px; min-height: 34px; margin: 4px -6px 0; padding: 0 10px 0 44px; }
+.collector-bar .collector-target { position: absolute; left: -22px; top: 50%; transform: translateY(-50%); }
 .collector-bar .collector-caption { flex: 1 1 auto; color: #d6d7db; font-size: 12px; }
+/* At rest the caption is two tones, measured off the reference: the unit a
+   shade lighter than the words after it. Messages (deleting, refused) keep
+   the plain caption colour, because they are things to read, not a label. */
+.collector-caption .collector-unit { color: #a9abb3; font-weight: 400; }
+.collector-caption .collector-dim { color: #7e8189; }
 
-/* Filled badge is a solid disc with the amount; the ring form is the empty
-   drop target only. */
-.collector-bar .collector-target.is-filled { border: 2px solid #4c7cc4; background: #232429; box-shadow: none; }
+/* Filled badge, measured off the reference at 2x: a 2pt blue ring, a 3pt gap
+   in the page colour, then a 40pt slate disc -- and outside the ring a 3pt
+   halo, also in the page colour, that cuts it out of the panel behind. The
+   gap and the halo are what make the disc read as a token sitting on top of
+   the panel rather than a circle drawn on it. The ring form (border + inset
+   rings) is the empty drop target only. */
+.collector-bar .collector-target.is-filled { border-color: #4873cf; background: #38414e; box-shadow: 0 0 0 3px #2b2c31, inset 0 0 0 3px #2b2c31, inset 0 0 0 3px #38414e, inset 0 0 0 3px #38414e; }
+/* The amount lands with a small pop when the first object is collected. The
+   span mounts once and only its text changes after that, so this runs once. */
+.collector-bar .collector-count { animation: count-pop .32s cubic-bezier(.2, .9, .3, 1.25) both; }
+@keyframes count-pop { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .collector-bar .collector-target.is-counting { border-color: #4a4b51; }
-.collector-bar .collector-count { position: relative; z-index: 1; color: #e9eaee; font-size: 15px; font-weight: 400; }
+.collector-bar .collector-count { position: relative; z-index: 1; color: #e9e9f1; font-size: 16px; font-weight: 300; letter-spacing: -.01em; }
 .collector-ring { position: absolute; inset: -2px; width: calc(100% + 4px); height: calc(100% + 4px); transform: rotate(-90deg); }
 /* No transition: the offset is driven per frame from the countdown's own
    deadline. A 1s ease over a value that steps once a second is what made the ring
@@ -560,7 +623,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Different phase, different colour: the red ring is a warning that something is
    about to happen and can still be stopped; this one is work in progress that
    cannot. */
-.collector-ring.is-deleting circle { stroke: #4c7cc4; transition: stroke-dashoffset 240ms linear; }
+.collector-ring.is-deleting circle { stroke: #4873cf; transition: stroke-dashoffset 240ms linear; }
 .collector-target.is-deleting .collector-count { color: #9dc0ea; font-size: 12px; }
 .destructive-note { margin-left: 4px; color: #e2887c; font-weight: 400; }
 

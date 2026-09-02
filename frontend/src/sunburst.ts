@@ -10,9 +10,14 @@ export type HueBand = { center: number; width: number };
 // biggest wedge in pale orange and compressed the rest.
 export const sunburstHueStart = 0;
 export const sunburstHueSpan = 360;
-// Folded small siblings use the reference's grey, measured at #888787 =
-// HSB(0, 1%, 53%) — a deliberate neutral, not some hue darkened (R-055 SS3.3).
-export const sunburstAggregate = "#888787";
+// Folded small siblings are near-black, not grey. The current reference paints
+// the "较小的文件" wedges and their list dot #35363B on a #25272D page: a
+// deliberate neutral (saturation ~4%) lifted 16/15/14 above the background, so
+// the wedge reads as "something is here" without competing with the coloured
+// ones. Ours keeps that same lift over our #2b2c31 page rather than copying the
+// value, so the contrast matches. (R-055 SS3.3 measured #888787 from an older
+// build; the mid grey now marks something else there.)
+export const sunburstAggregate = "#3b3b3f";
 // Hidden space is the one aggregate the reference does not paint grey: sampled at
 // r=150 between 76 and 86 degrees it reads #874A96, a dimmed violet (R-055
 // SS3.2). It is a different kind of statement from the folded tail — that is

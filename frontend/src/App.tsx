@@ -209,19 +209,6 @@ const phaseLabels: Record<string, string> = {
 // mind, so the page returns to its pre-scan state instead of presenting the
 // half-walked tree as a result (their words: 点取消就取消扫描呗).
 const browsableScanStates = new Set(["completed", "completed_with_issues", "interrupted"]);
-// The wheel's palette runs all the way through yellow, where white text is
-// unreadable, so the chip picks its text from the wedge's own luminance rather
-// than assuming one colour works on every hue. sRGB relative luminance, the same
-// definition WCAG contrast uses.
-function readableOn(hex: string): string {
-  const channel = (index: number) => {
-    const c = parseInt(hex.slice(index, index + 2), 16) / 255;
-    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-  };
-  const luminance = 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
-  return luminance > 0.35 ? "#1b1c20" : "#ffffff";
-}
-
 // Why a refusal happened, in words. The backend sends a code, not a sentence:
 // the policy is its to decide (cleanup.DeleteBlock) but a sentence per entry
 // would repeat across a space map payload that is already capped, and the wording
@@ -1102,7 +1089,6 @@ function VolumeTile({
   onCancel: () => void;
   onForget: () => void;
 }) {
-	const members = source.members ?? [];
 	const busy = scanning || finishing;
 	const disabled = !source.scannable || (scanLocked && !busy);
 	const sourceTotal = source.totalBytes;
@@ -1111,9 +1097,11 @@ function VolumeTile({
 	// The original names the volume, then its capacity and role — not its path,
 	// and not a permission badge. Permission problems get their own alert row.
 	const roleLabel = source.path === "/" ? "启动盘" : source.kind === "external" ? "外部卷" : "卷";
-	const subtitle = members.length > 1
-		? `${formatBytes(sourceTotal)} ${roleLabel} · ${members.length} 个技术卷`
-		: `${formatBytes(sourceTotal)} ${roleLabel}`;
+	// Capacity and role only. The member count ("2 个技术卷") and the APFS
+	// volume-group note that used to sit in this line's tooltip described the
+	// mapping in ADR-0020, which is a fact about how the source was assembled,
+	// not about the disk; nobody choosing what to scan needs it.
+	const subtitle = `${formatBytes(sourceTotal)} ${roleLabel}`;
 	const capacityLabel = `${formatBytes(sourceUsed)} 已用 · 剩余 ${formatBytes(source.freeBytes)} · 共 ${formatBytes(sourceTotal)}`;
 	// ADR-0050 §2: phase, counts, tree bytes and elapsed time are not visible
 	// chrome — the original shows none of them — but they must stay available, so
@@ -1184,7 +1172,7 @@ function VolumeTile({
 	    </span>
 	    <div className="volume-title">
 	      <strong>{source.name}</strong>
-	      <span title={source.message}>{subtitle}</span>
+	      <span>{subtitle}</span>
 	    </div>
 	    <div className="volume-meter">
 	      <div
@@ -1235,7 +1223,17 @@ function VolumeTile({
 	            was redundant anyway -- a marching bar already says a scan is running.
 	            "正在整理结果" stays: that is not a phase but the state after the walk
 	            ends, when the bar is full and nothing else explains the wait. */}
-	        {finishing ? <em>正在整理结果…</em> : scanning ? <em>扫描中…</em> : <b>{formatBytes(source.freeBytes)}</b>}
+	        {finishing ? <em>正在整理结果…</em> : scanning ? <em>扫描中…</em> : (
+	          <>
+	            {/* The reference reveals the used figure on the left of this line
+	                only while the pointer is over the meter; at rest the free space
+	                stands alone. CSS drives the reveal from .volume-meter:hover. */}
+	            <span className="meter-used-label">已使用 {formatBytes(sourceUsed)}</span>
+	            {/* Same colour as the bar above it: a green bar over a red figure
+	                read as two opinions about the same disk. */}
+	            <b style={{ color: meterColor(source.usedBytes, source.totalBytes) }}>{formatBytes(source.freeBytes)}</b>
+	          </>
+	        )}
 	      </div>
 	    </div>
 	    <div className={"volume-action" + (scanning ? " is-scanning" : "")}>
@@ -1545,9 +1543,19 @@ export default function App() {
   // block 待确认 shows, so the reason travels with the object (ADR-0066 §1).
   const [collectorDetail, setCollectorDetail] = useState<string | null>(null);
   // The badge in the action bar folds the panel body -- both sections -- down to
-  // the bar itself. Anything arriving in the dock, and a new analysis, unfold it:
-  // what just happened must be visible.
-  const [dockOpen, setDockOpen] = useState(true);
+  // the bar itself, and folded is the default: the reference answers a drop with
+  // the amount in the badge and "GB 已收集" in the bar, not with the list. The
+  // badge unfolds it on demand. A new analysis, and 全部加入 from one, do unfold
+  // it: those put things in the dock the user has not seen one by one.
+  const [dockOpen, setDockOpen] = useState(false);
+  // Emptied -- the last row removed, or the plan carried out -- the dock goes
+  // back to its folded default rather than staying open on nothing. Not while
+  // 待确认 is showing: emptying 已收集 by moving a row back up must not fold the
+  // list it moved to.
+  const pendingShowing = (adviceBusy || Boolean(adviceError) || advice !== null) && adviceOpen;
+  useEffect(() => {
+    if (collector.length === 0 && !pendingShowing) setDockOpen(false);
+  }, [collector.length, pendingShowing]);
   // A dock row is hovered whose node is not on the current level: the wheel
   // breathes the projected arc by id instead.
   const [breathingNodeId, setBreathingNodeId] = useState<number | null>(null);
@@ -2756,7 +2764,6 @@ export default function App() {
     const path = entryNode(entry)?.path ?? "";
     if (!collector.some((item) => entryKey(item) === entryKey(entry))) {
       setCollector((current) => current.some((item) => entryKey(item) === entryKey(entry)) ? current : current.concat(entry));
-      setDockOpen(true);
       // Collected again after being taken out: the user changed their mind, and
       // the mark that kept it out of 全部加入 comes off.
       setDismissed((current) => {
@@ -3179,6 +3186,10 @@ export default function App() {
   // folding is a height transition and not a re-layout: unmounting it snapped
   // the dock from full height to its compact form in one frame.
   const dockHasPanel = collector.length > 0 || adviceData;
+  // Nothing unfolded above the bar: the panel is then the reference's pill
+  // rather than a card, with the badge clear of its left end.
+  const barOnly = !(adviceData && countdown === null && adviceOpen && dockOpen)
+    && !(countdown === null && collector.length > 0 && dockOpen);
   const bulk = advice ? bulkCandidates(advice.items ?? [], isCollected, dismissed) : [];
   const pendingBytes = pendingAdvice.reduce((sum, item) => sum + item.reclaimableBytes, 0);
   const pendingDecisions = pendingAdvice.filter((item) => !item.manual).length;
@@ -3194,13 +3205,14 @@ export default function App() {
         <div className="view-pane">{(slide !== null || view === "result") && resultPage}</div>
       </div>
       {drag && (
-        /* The chip is the collected row, drawn early: same dot, name and size,
-           so what you drag looks like what lands in the dock. */
+        /* The chip is the collected row, drawn early: the wedge's dot, the name,
+           the size under it -- and no box, the way the reference carries it. */
         <div
           ref={dragChip}
           className={"drag-chip" + (drag.blocked ? " is-refused" : drag.over ? " is-over" : "")}
-          style={{ background: drag.color, color: readableOn(drag.color) }}
+          style={{ "--chip-color": drag.color } as CSSProperties}
         >
+          <span className="drag-chip-dot" aria-hidden="true" />
           <span className="drag-chip-name">{drag.label}</span>
           <span className="drag-chip-size">{formatBytes(drag.size)}</span>
         </div>
@@ -3231,13 +3243,16 @@ export default function App() {
              drop ring and one line of instruction. With an analysis folded away
              the line also says how many suggestions are waiting, and reopens it. */
           <div className="collector-panel is-empty">
-            <div className="collector-bar">
-              <span className="collector-target" aria-hidden="true" />
+            {/* key: the same bar element survives the switch to the filled panel,
+                so the target's ring morphs into the badge instead of being
+                replaced. The idle target is a button for the same reason. */}
+            <div className="collector-bar" key="bar">
+              <button type="button" className="collector-target" aria-hidden="true" tabIndex={-1} disabled />
               <span className="collector-caption">{drag?.blocked || "将文件拖放至此，以收集要删除的文件"}</span>
             </div>
           </div>
         ) : (
-          <div className="collector-panel">
+          <div className={"collector-panel" + (barOnly ? " is-bar-only" : "")}>
             {/* 待确认. Hidden with the other list during the countdown: nothing
                 may join the set the plan was built from. */}
             {adviceData && countdown === null && (
@@ -3449,10 +3464,10 @@ export default function App() {
                 edge, amount, and the destructive action. With suggestions on
                 screen but nothing collected yet it is the empty state's ring and
                 line instead, so the panel still says how things get in here. */}
-            <div className="collector-bar">
+            <div className="collector-bar" key="bar">
               {collector.length === 0 ? (
                 <>
-                  <span className="collector-target" aria-hidden="true" />
+                  <button type="button" className="collector-target" aria-hidden="true" tabIndex={-1} disabled />
                   <span className="collector-caption">{drag?.blocked || (adviceOpen ? "将文件拖放至此，或从上面加入" : "将文件拖放至此，以收集要删除的文件")}</span>
                   {!adviceOpen && pendingAdvice.length > 0 && (
                     <button className="quiet-button" onClick={() => { setAdviceOpen(true); setDockOpen(true); }}>待确认 {pendingAdvice.length} 项</button>
@@ -3509,7 +3524,7 @@ export default function App() {
                             ? "正在删除…（大目录要逐个文件删除，可能要几分钟）"
                             : validation && !validation.valid
                               ? "校验未通过，不能执行"
-                              : formatBytes(collectorBytes).split(" ")[1] + " 已收集"}
+                              : <><span className="collector-unit">{formatBytes(collectorBytes).split(" ")[1]}</span> <span className="collector-dim">已收集</span></>}
                   </span>
                   {/* A folded analysis stays reachable from the bar. */}
                   {countdown === null && !adviceOpen && pendingAdvice.length > 0 && (
