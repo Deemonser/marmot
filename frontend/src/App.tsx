@@ -106,6 +106,9 @@ const pageSize = 256;
 // original lists it and folds only a few MB at the root. Measured against the
 // reference: its root fold is 6.5 MB out of 231.9 GB.
 const smallEntryShare = 0.0005;
+// How long keyboard focus outlives the last key press before the highlight and
+// the focus ring go away on their own.
+const focusIdleMs = 3000;
 // Seconds the destructive action waits before running, so it can be stopped.
 const countdownSeconds = 5;
 // Pixels the pointer must travel before a press turns into a drag instead of a
@@ -432,10 +435,6 @@ function hasCapability(entry: MapEntry | null, capability: Capability): boolean 
 
 function entryPath(entry: MapEntry): string {
   return entryNode(entry)?.path ?? (entry.virtualType ? virtualLabels[entry.virtualType] ?? entry.name : entry.name);
-}
-
-function firstEntry(map: MapResult): MapEntry | null {
-  return (map.entries ?? [])[0] ?? null;
 }
 
 // The first crumb names the scanned volume the way the reference does; deeper
@@ -1520,6 +1519,23 @@ export default function App() {
     setHoverPreview(null);
   }, [levelKey]);
   const [focusedEntry, setFocusedEntry] = useState<MapEntry | null>(null);
+  // Keyboard focus is transient: it shows while the keys are in use and goes
+  // away on its own once they stop, so the list does not carry a highlighted
+  // row indefinitely. The selection (a click) is not touched -- that is a
+  // choice, not a cursor. The DOM focus goes with it, or the focus ring would
+  // outlive the highlight.
+  const focusIdleTimer = useRef<number | null>(null);
+  function releaseFocus() {
+    focusIdleTimer.current = null;
+    setFocusedEntry(null);
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.classList.contains("directory-row")) active.blur();
+    if (active instanceof SVGElement && active.classList.contains("sunburst-slice")) (active as unknown as HTMLElement).blur();
+  }
+  function armFocusIdle() {
+    if (focusIdleTimer.current !== null) window.clearTimeout(focusIdleTimer.current);
+    focusIdleTimer.current = window.setTimeout(releaseFocus, focusIdleMs);
+  }
   const [selectedEntry, setSelectedEntry] = useState<MapEntry | null>(null);
   const [staleEntry, setStaleEntry] = useState<MapEntry | null>(null);
   const [collector, setCollector] = useState<MapEntry[]>([]);
@@ -1821,13 +1837,16 @@ export default function App() {
         ? target.crumbs
         : target.crumbs.map((crumb, index) => index === target.crumbs.length - 1 ? { ...crumb, path: resolvedPath } : crumb);
       const resolvedTarget = { ...target, offset: next.offset, path: resolvedPath, crumbs: resolvedCrumbs };
+      // No default focus: a new level opens with nothing highlighted, the way
+      // the reference does. The first row used to take it, which read as a
+      // permanently selected item. Focus appears when the keyboard asks for it.
       if (mode !== "replace") {
         setHoveredEntry(null);
-        setFocusedEntry(firstEntry(next));
+        setFocusedEntry(null);
         setSelectedEntry(null);
       } else {
         setHoveredEntry((current) => current ? nextEntries.find((entry) => entryKey(entry) === entryKey(current)) ?? null : null);
-        setFocusedEntry((current) => current ? nextEntries.find((entry) => entryKey(entry) === entryKey(current)) ?? firstEntry(next) : firstEntry(next));
+        setFocusedEntry((current) => current ? nextEntries.find((entry) => entryKey(entry) === entryKey(current)) ?? null : null);
         setSelectedEntry((current) => current ? nextEntries.find((entry) => entryKey(entry) === entryKey(current)) ?? null : null);
       }
       setStaleEntry((current) => current ? nextEntries.find((entry) => entryKey(entry) === entryKey(current)) ?? null : null);
@@ -2972,7 +2991,16 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!focusedEntry) return;
+    armFocusIdle();
+    return () => { if (focusIdleTimer.current !== null) window.clearTimeout(focusIdleTimer.current); };
+  }, [focusedKey]);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Any key is activity: the focus stays for as long as the keyboard is in
+      // use, and starts fading only when it stops.
+      if (focusedEntry) armFocusIdle();
       const command = event.metaKey || event.ctrlKey;
       const target = event.target as HTMLElement | null;
       if (target && ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target.tagName)) return;
@@ -3011,13 +3039,20 @@ export default function App() {
         if (entries.length === 0) return;
         event.preventDefault();
         const focusedIndex = focusedEntry ? entries.findIndex((entry) => entryKey(entry) === entryKey(focusedEntry)) : -1;
-        let nextIndex = focusedIndex < 0 ? 0 : focusedIndex;
-        let direction = 1;
-        if (event.key === "ArrowDown" || event.key === "ArrowRight") nextIndex = Math.min(entries.length - 1, nextIndex + 1);
-        if (event.key === "ArrowUp" || event.key === "ArrowLeft") { nextIndex = Math.max(0, nextIndex - 1); direction = -1; }
-        if (event.key === "PageDown") nextIndex = Math.min(entries.length - 1, nextIndex + Math.max(1, Math.floor(entries.length / 8)));
-        if (event.key === "PageUp") { nextIndex = Math.max(0, nextIndex - Math.max(1, Math.floor(entries.length / 8))); direction = -1; }
-        if (event.key === "Home") nextIndex = 0;
+        const backward = event.key === "ArrowUp" || event.key === "ArrowLeft" || event.key === "PageUp" || event.key === "End";
+        let nextIndex = focusedIndex;
+        let direction = backward ? -1 : 1;
+        if (focusedIndex < 0) {
+          // Nothing focused yet: the first press lands on the first row (or the
+          // last, going up) rather than skipping past it.
+          nextIndex = backward ? entries.length - 1 : 0;
+        } else {
+          if (event.key === "ArrowDown" || event.key === "ArrowRight") nextIndex = Math.min(entries.length - 1, nextIndex + 1);
+          if (event.key === "ArrowUp" || event.key === "ArrowLeft") nextIndex = Math.max(0, nextIndex - 1);
+          if (event.key === "PageDown") nextIndex = Math.min(entries.length - 1, nextIndex + Math.max(1, Math.floor(entries.length / 8)));
+          if (event.key === "PageUp") nextIndex = Math.max(0, nextIndex - Math.max(1, Math.floor(entries.length / 8)));
+        }
+        if (event.key === "Home") { nextIndex = 0; direction = 1; }
         if (event.key === "End") { nextIndex = entries.length - 1; direction = -1; }
         const settled = settleFocus(nextIndex, direction);
         if (settled < 0) return;
