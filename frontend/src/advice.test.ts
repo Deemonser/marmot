@@ -46,3 +46,38 @@ test("a manual finding never stages itself, however safe", () => {
   assert.equal(autoStageable(item({ manual: true })), false);
   assert.equal(autoStageable(item({ manual: true, risk: "safe", recovery: "regenerable" })), false);
 });
+
+import { bulkCandidates, sourceLabel } from "./advice.ts";
+
+const pending = (path: string, over: Partial<Parameters<typeof bulkCandidates>[0][0]> = {}) => ({
+  source: "rule", risk: "review", recovery: "regenerable", path, ...over,
+});
+
+// The bulk button acts on the list the user can see. Anything they removed from
+// the dock is marked, and the mark keeps it out of the next bulk add.
+test("bulk add skips manual, collected and dismissed suggestions", () => {
+  const items = [
+    pending("/a"),
+    pending("/b", { manual: true }),
+    pending("/c"),
+    pending("/d"),
+  ];
+  const collected = (item: { path: string }) => item.path === "/c";
+  const out = bulkCandidates(items, collected, new Set(["/d"]));
+  assert.deepEqual(out.map((item) => item.path), ["/a"]);
+});
+
+test("a dismissed suggestion comes back once it is collected again", () => {
+  const items = [pending("/a")];
+  // Collected by hand after being dismissed: no longer a candidate for the
+  // bulk button, for the ordinary reason that it is already in the dock.
+  assert.deepEqual(bulkCandidates(items, () => true, new Set(["/a"])), []);
+  // Dismissal cleared (the caller does that on collect): back in the pool.
+  assert.deepEqual(bulkCandidates(items, () => false, new Set()).length, 1);
+});
+
+test("source label names the rule, or the model with its confidence", () => {
+  assert.equal(sourceLabel({ source: "rule", ruleName: "Xcode DerivedData", category: "cache", confidence: 0 }), "Xcode DerivedData");
+  assert.equal(sourceLabel({ source: "rule", ruleName: "", category: "cache", confidence: 0 }), "cache");
+  assert.equal(sourceLabel({ source: "advisor", ruleName: "", category: "cache", confidence: 0.874 }), "AI · 87%");
+});

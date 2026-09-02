@@ -3,8 +3,9 @@ import { paintMorph, clearMorphStyles, planMorph, arcPath, morphDuration, morphA
 import type { ArcGeom, MorphPlan } from "./morph";
 import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstHiddenSpace, sunburstEndAngle, previewDwellMs, previewLeaveMs } from "./sunburst";
 import type { HueBand } from "./sunburst";
-import { autoStageable, stageSummary } from "./advice";
+import { autoStageable, stageSummary, bulkCandidates, sourceLabel } from "./advice";
 import { countdownDigit, countdownFraction, deleteFraction, ringOffset } from "./countdown";
+import { useNotice, NoticeToast } from "./useNotice";
 import { meterColor } from "./meter";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
 import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
@@ -327,6 +328,47 @@ function homePath(path: string): string {
   return "~" + (match[1] ?? "");
 }
 
+// The tags a suggestion wears in either section of the dock, so a collected
+// object keeps the reasons it was proposed with (ADR-0066 §1). Recoverability
+// leads: it is the axis that decides whether a suggestion is frightening --
+// reinstalling a toolchain costs a download, losing a photo library costs the
+// photos. Risk follows it.
+function AdviceTags({ item }: { item: AdviceItem }) {
+  return (
+    <>
+      {item.source === "advisor"
+        ? <><span className="advice-tag">{item.category}</span><span className="advice-tag is-ai">{sourceLabel(item)}</span></>
+        : <span className="advice-tag">{sourceLabel(item)}</span>}
+      <span className={"advice-tag is-recovery recovery-" + item.recovery}>
+        {recoveryLabels[item.recovery] ?? item.recovery}
+      </span>
+      <span className="advice-tag">{riskLabels[item.risk] ?? item.risk}</span>
+    </>
+  );
+}
+
+// The reasoning behind a suggestion. One rendering for 待确认 and 已收集: the
+// reason travels with the object rather than staying behind in the list it left.
+function AdviceDetail({ item }: { item: AdviceItem }) {
+  return (
+    <dl className="advice-detail">
+      <dt>依据</dt>
+      <dd>{(item.evidence ?? []).join(" · ") || "—"}</dd>
+      <dt>删除后</dt>
+      <dd>{item.whatBreaks}</dd>
+      <dt>如何恢复</dt>
+      <dd>{item.howToRestore}</dd>
+      {item.manual && <>
+        <dt>手动执行</dt>
+        {/* The command, verbatim and selectable. This app will not ask for admin
+            rights to delete files: the blast radius of a cleanup tool running as
+            root is in a different league (ADR-0065). */}
+        <dd><code className="advice-command">{item.command}</code></dd>
+      </>}
+    </dl>
+  );
+}
+
 function confidenceLabel(confidence: string): string {
   return ({ exact: "精确", estimated: "估算", partial: "部分结果", unknown: "未知" } as Record<string, string>)[confidence] ?? "待确认";
 }
@@ -477,6 +519,7 @@ function Sunburst({
   onHover,
   onHoverArc,
   breathingKey,
+  breathingNodeId,
   onFocus,
   onActivate,
   onPreview,
@@ -498,6 +541,9 @@ function Sunburst({
   onHover: (entry: MapEntry | null) => void;
   onHoverArc: (preview: HoverPreview | null) => void;
   breathingKey: string | null;
+  // A node on any ring to breathe, named by id rather than key: the dock's rows
+  // know their node, not the wheel's key for it (ADR-0066 §3).
+  breathingNodeId: number | null;
   onFocus: (entry: MapEntry) => void;
   onActivate: (entry: MapEntry, geom?: ArcGeom) => void;
   onPreview: (entry: MapEntry) => void;
@@ -965,7 +1011,7 @@ function Sunburst({
                   "sunburst-slice" +
                   " depth-" + depth +
                   (selected ? " is-selected" : "") +
-                  (key === breathingKey ? " is-breathing" : "") +
+                  (key === breathingKey || (breathingNodeId !== null && id === breathingNodeId) ? " is-breathing" : "") +
                   (aggregate ? " is-aggregate" : "") +
                   (stale ? " is-stale" : "") +
                   (collected || dragging ? " is-collected" : "") +
@@ -1490,6 +1536,21 @@ export default function App() {
   // only in a transient notice.
   const [adviceError, setAdviceError] = useState("");
   const [adviceStaged, setAdviceStaged] = useState({ added: 0, bytes: 0 });
+  // Paths the user took back out of the dock. A suggestion returns to 待确认
+  // wearing this mark, and the bulk button skips it: the button acts on a list
+  // the user can see, and re-adding what they just removed would break that
+  // (ADR-0066 §2). Cleared by a fresh analysis and by a completed deletion.
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+  // Which collected row has its suggestion's reasoning open -- the same detail
+  // block 待确认 shows, so the reason travels with the object (ADR-0066 §1).
+  const [collectorDetail, setCollectorDetail] = useState<string | null>(null);
+  // The badge in the action bar folds the panel body -- both sections -- down to
+  // the bar itself. Anything arriving in the dock, and a new analysis, unfold it:
+  // what just happened must be visible.
+  const [dockOpen, setDockOpen] = useState(true);
+  // A dock row is hovered whose node is not on the current level: the wheel
+  // breathes the projected arc by id instead.
+  const [breathingNodeId, setBreathingNodeId] = useState<number | null>(null);
   // The advisor round is a separate wait from the rule pass, and it must not
   // block it. Measured against deepseek-v4-flash: the rule layer is under a
   // second, the model round was 235 seconds.
@@ -1517,14 +1578,14 @@ export default function App() {
   // cancellable promise, so stopping is a real cancellation of the request
   // rather than discarding a result that still gets paid for.
   const adviceCall = useRef<{ cancel: () => void } | null>(null);
-  const [collectorOpen, setCollectorOpen] = useState(false);
   // Where a deletion has got to. Moving to the trash was a rename and finished
   // before the UI could show anything; deleting unlinks every file, so a 18.5 GB
   // cache takes as long as it takes and silence reads as a hang.
   const [cleanupAt, setCleanupAt] = useState<{ done: number; total: number; current: string; doneBytes: number; totalBytes: number } | null>(null);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
-  const [notice, setNotice] = useState("");
+  // All one-off messages go through notify; see notice.ts for the rules.
+  const { notice, notify, dismiss: dismissNotice, hold: holdNotice, release: releaseNotice } = useNotice();
   const [busy, setBusy] = useState(false);
   const [mapBusy, setMapBusy] = useState(false);
   // The hub takes the colour the current node had in its parent's wheel, so a
@@ -1572,6 +1633,7 @@ export default function App() {
   const countdownLeft = useRef(1);
   const [ringFraction, setRingFraction] = useState(1);
   const collectorRef = useRef<HTMLElement | null>(null);
+  const pendingRef = useRef<HTMLElement | null>(null);
   const mapRequest = useRef(0);
   const refreshTimer = useRef<number | undefined>(undefined);
   const mapRef = useRef<MapResult | null>(null);
@@ -1639,6 +1701,20 @@ export default function App() {
   }, [hoverPreview]);
   const inspectedInCollector = inspectorEntry ? collector.some((item) => entryKey(item) === entryKey(inspectorEntry)) : false;
   const collectorBytes = collector.reduce((sum, item) => sum + entrySize(item), 0);
+  // Path is the one identity a collected entry and an AdviceItem share, so it is
+  // how the dock's two sections agree on which objects are in which (ADR-0066).
+  const collectedPaths = useMemo(() => new Set(collector.map((item) => entryNode(item)?.path ?? "")), [collector]);
+  const adviceByPath = useMemo(() => {
+    const index = new Map<string, AdviceItem>();
+    for (const item of advice?.items ?? []) index.set(item.path, item);
+    return index;
+  }, [advice]);
+  // 待确认: every suggestion not yet in the dock, manual ones included -- they
+  // stay here for good, with the command, since this app will not run them.
+  const pendingAdvice = useMemo(
+    () => (advice?.items ?? []).filter((item) => !collectedPaths.has(item.path)),
+    [advice, collectedPaths],
+  );
   // Staged in the dock, or on its way there while its lookup runs. These arcs
   // stay drawn: the object is still on disk until the dock's own action runs, so
   // an empty slot would overstate it, and in a space map the slot's position is
@@ -1659,6 +1735,14 @@ export default function App() {
     if (draggingKey) keys.add(draggingKey);
     return keys;
   }, [collectedKeys, draggingKey]);
+  // A pulled arc cannot be hovered -- it does not hit-test -- so a hover that
+  // still names one is stale by definition. This is the guard for every route
+  // into that state, not only the drag: staging from the advice list pulls an
+  // arc the pointer may be resting on right now. The dock's own rows point at
+  // collected arcs through hoveredEntry, which this leaves alone.
+  useEffect(() => {
+    if (hoveredArcKey && pulledKeys.has(hoveredArcKey)) setHoveredArcKey(null);
+  }, [hoveredArcKey, pulledKeys]);
   // At the root the displayed total is the volume's used bytes, so the number in
   // the hub is the number the entries add up to — the tree total alone excludes
   // the balancing entry and would not add up (ADR-0052 §4).
@@ -1683,7 +1767,7 @@ export default function App() {
     try {
       setStorageSources((await MarmotService.GetStorageSources()) ?? []);
     } catch (error) {
-      setNotice(String(error));
+      notify(String(error));
     } finally {
       setSourcesReady(true);
     }
@@ -1742,7 +1826,7 @@ export default function App() {
       commitNavigation(resolvedTarget, mode, targetIndex);
       return true;
     } catch (error) {
-      if (request === mapRequest.current) setNotice(String(error));
+      if (request === mapRequest.current) notify(String(error));
       return false;
     } finally {
       if (request === mapRequest.current) setMapBusy(false);
@@ -1791,7 +1875,7 @@ export default function App() {
     }
     MarmotService.GetPermissionStatus()
       .then(setPermission)
-      .catch((error: unknown) => setNotice(String(error)))
+      .catch((error: unknown) => notify(String(error)))
       .finally(() => setPermissionReady(true));
     const off = Events.On("scan-progress", (event: { data: ScanProgress }) => {
       setStatus(statusFromProgress(event.data));
@@ -2032,7 +2116,7 @@ export default function App() {
 
   async function startScan(nextRoot = root) {
     setBusy(true);
-    setNotice("");
+    dismissNotice();
     mapRequest.current += 1;
     if (refreshTimer.current !== undefined) {
       window.clearTimeout(refreshTimer.current);
@@ -2049,6 +2133,8 @@ export default function App() {
     setAdvice(null);
     setAdviceOpen(false);
     setAdviceDetail(null);
+    setDismissed(new Set());
+    setCollectorDetail(null);
     setPlan(null);
     setValidation(null);
     try {
@@ -2058,7 +2144,7 @@ export default function App() {
       setRoot(next.root);
       setStatus(next);
     } catch (error) {
-      setNotice(String(error));
+      notify(String(error));
     } finally {
       setBusy(false);
     }
@@ -2078,7 +2164,7 @@ export default function App() {
       setRoot(selected);
       await startScan(selected);
     } catch (error) {
-      setNotice(String(error));
+      notify(String(error));
     }
   }
 
@@ -2090,7 +2176,7 @@ export default function App() {
       setStatus(null);
       window.localStorage.removeItem("marmot.scanTaskId");
     } catch (error) {
-      setNotice(String(error));
+      notify(String(error));
     }
   }
 
@@ -2162,7 +2248,7 @@ export default function App() {
   function expandEntry(entry: MapEntry) {
     if (!hasCapability(entry, "enter") || !currentPage) return;
     if (entry.kind !== "aggregate" || entry.virtualType !== "smaller_objects") {
-      setNotice("该解释对象没有可展开的文件节点");
+      notify("该解释对象没有可展开的文件节点");
       return;
     }
     const visibleNodes = entries.filter((item) => item.kind === "node").length;
@@ -2187,6 +2273,11 @@ export default function App() {
   function overDock(x: number, y: number): boolean {
     const rect = collectorRef.current?.getBoundingClientRect();
     if (!rect) return false;
+    // 待确认 is part of the dock but not a drop target: its own rows start
+    // drags, and a press that wandered four pixels inside it must not count as
+    // "dropped into the dock". The drop is onto 已收集 or the action bar.
+    const pending = pendingRef.current?.getBoundingClientRect();
+    if (pending && x >= pending.left && x <= pending.right && y >= pending.top && y <= pending.bottom) return false;
     return x >= rect.left - dropSlack && x <= rect.right + dropSlack
       && y >= rect.top - dropSlack && y <= rect.bottom + dropSlack;
   }
@@ -2219,6 +2310,14 @@ export default function App() {
     let dragging = false;
     const move = (moveEvent: PointerEvent) => {
       if (!dragging && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < dragThreshold) return;
+      if (!dragging) {
+        // The arc or row this started on stops hit-testing the moment the drag
+        // is under way (.is-dragging), so its pointerleave never comes. Left
+        // alone, the hover it set outlives the drag: the wedge went on breathing
+        // with the pointer nowhere near it. Clear it here, by hand.
+        hoverArc(null);
+        setHoveredEntry(null);
+      }
       dragging = true;
       dragAt.current = { x: moveEvent.clientX, y: moveEvent.clientY };
       placeDragChip();
@@ -2235,6 +2334,10 @@ export default function App() {
       window.removeEventListener("pointercancel", finish);
       setDrag(null);
       if (!dragging) return;
+      // Same again on the way out: whatever the pointer is over now got no
+      // pointerenter either, so nothing is hovered until it moves.
+      hoverArc(null);
+      setHoveredEntry(null);
       // The click that follows this pointerup belongs to the drag, not to the
       // arc or row underneath it.
       dragSuppressesClick.current = true;
@@ -2259,7 +2362,7 @@ export default function App() {
     try {
       toggleCollector(await MarmotService.GetNodeEntry(snapshotId, source.nodeId), "add");
     } catch (error) {
-      setNotice("无法收集该对象：" + String(error));
+      notify("无法收集该对象：" + String(error));
     } finally {
       setPendingCollect(null);
     }
@@ -2276,13 +2379,17 @@ export default function App() {
   async function runAdvice() {
     const snapshotId = mapRef.current?.snapshotId ?? status?.snapshotId ?? 0;
     if (snapshotId <= 0) {
-      setNotice("请先完成一次扫描。");
+      notify("请先完成一次扫描。");
       return;
     }
     setAdviceOpen(true);
     setAdviceError("");
     setAdvisorFault("");
     setAdviceStaged({ added: 0, bytes: 0 });
+    // A fresh analysis is a fresh start: what was declined last time is not held
+    // against the new list.
+    setDismissed(new Set());
+    setDockOpen(true);
     setAdviceBusy(true);
     try {
       const rules = await MarmotService.GetCleanupAdvice(snapshotId);
@@ -2292,7 +2399,7 @@ export default function App() {
       setAdviceStaged(await stageAdviceItems((rules.items ?? []).filter(autoStageable), rules.snapshotId));
     } catch (error) {
       setAdviceError(String(error));
-      setNotice("分析失败：" + String(error));
+      notify("分析失败：" + String(error));
       return;
     } finally {
       setAdviceBusy(false);
@@ -2311,7 +2418,7 @@ export default function App() {
       // A cancelled round is not a failure and does not need a notice.
       if (!String(error).includes("cancel")) {
         setAdvisorFault(String(error));
-        setNotice("AI 分析失败：" + String(error));
+        notify("AI 分析失败：" + String(error));
       }
     } finally {
       adviceCall.current = null;
@@ -2339,6 +2446,7 @@ export default function App() {
       bytes += pending[index].reclaimableBytes;
     });
     if (staged.length > 0) {
+      setDockOpen(true);
       setCollector((current) => {
         const known = new Set(current.map(entryKey));
         return current.concat(staged.filter((entry) => !known.has(entryKey(entry))));
@@ -2353,10 +2461,10 @@ export default function App() {
   async function stageRemainingAdvice() {
     if (!advice) return;
     const staged = await stageAdviceItems(
-      (advice.items ?? []).filter((item) => !item.manual && !isCollected(item)),
+      bulkCandidates(advice.items ?? [], isCollected, dismissed),
       advice.snapshotId,
     );
-    setNotice(staged.added > 0
+    notify(staged.added > 0
       ? "已加入 " + staged.added + " 项 · " + formatBytes(staged.bytes)
       : "没有可加入的项。");
   }
@@ -2381,9 +2489,9 @@ export default function App() {
       // The key is never read back, so it must not linger in the form either.
       setAdvisorForm((form) => ({ ...form, apiKey: "" }));
       setAdvisorOpen(false);
-      setNotice("已连接 " + next.description);
+      notify("已连接 " + next.description);
     } catch (error) {
-      setNotice("保存失败：" + String(error));
+      notify("保存失败：" + String(error));
     } finally {
       setAdvisorSaving(false);
     }
@@ -2393,9 +2501,9 @@ export default function App() {
     try {
       await MarmotService.ClearAdvisor();
       setAdvisor(await MarmotService.GetAdvisorStatus());
-      setNotice("已断开 AI，仅使用本机规则。");
+      notify("已断开 AI，仅使用本机规则。");
     } catch (error) {
-      setNotice("清除失败：" + String(error));
+      notify("清除失败：" + String(error));
     }
   }
 
@@ -2407,7 +2515,42 @@ export default function App() {
   // this already in the dock" would eventually disagree, and the visible symptom
   // would be a suggestion staged twice or a badge that lies.
   function isCollected(item: AdviceItem): boolean {
-    return collector.some((entry) => entryNode(entry)?.path === item.path);
+    return collectedPaths.has(item.path);
+  }
+
+  // Hovering a dock row points at the object on the wheel (ADR-0066 §3). On the
+  // current level that is the entry itself, which also lights its list row; on a
+  // deeper ring only the id is known, and the wheel breathes the projected arc.
+  // Highlight only, never scroll: a hover that drags the list around takes the
+  // user's eyes off what they were reading.
+  function hoverAdviceNode(nodeId: number | null) {
+    if (nodeId === null) {
+      setHoveredEntry(null);
+      setBreathingNodeId(null);
+      return;
+    }
+    const entry = entries.find((candidate) => entryNode(candidate)?.id === nodeId) ?? null;
+    setHoveredEntry(entry);
+    setBreathingNodeId(entry ? null : nodeId);
+  }
+
+  // A 待确认 row drags like an arc or a directory row: the pointer path, one chip,
+  // one armed state. The source carries the node id and nothing else it did not
+  // already have; the drop looks the entry up in the snapshot the same way an
+  // outer ring's arc does (ADR-0066 §4).
+  function dragAdviceItem(item: AdviceItem, event: ReactPointerEvent) {
+    if (item.manual) return;
+    const entry = entries.find((candidate) => entryNode(candidate)?.id === item.nodeId) ?? null;
+    const key = entry ? entryKey(entry) : "node:" + item.nodeId;
+    beginEntryDrag({
+      key,
+      name: item.name,
+      size: item.reclaimableBytes,
+      color: levelColors[key] ?? "#7fb96a",
+      entry,
+      nodeId: item.nodeId,
+      protection: entry?.protection ?? "",
+    }, event);
   }
 
   async function collectAdviceItem(item: AdviceItem) {
@@ -2416,7 +2559,7 @@ export default function App() {
     try {
       toggleCollector(await MarmotService.GetNodeEntry(snapshotId, item.nodeId), "add");
     } catch (error) {
-      setNotice("无法收集该对象：" + String(error));
+      notify("无法收集该对象：" + String(error));
     }
   }
 
@@ -2426,7 +2569,7 @@ export default function App() {
     try {
       setEvidence(await MarmotService.PreviewEvidence(snapshotId));
     } catch (error) {
-      setNotice("无法生成证据包：" + String(error));
+      notify("无法生成证据包：" + String(error));
     }
   }
 
@@ -2515,9 +2658,9 @@ export default function App() {
     if (action === "reveal") {
       try {
         const result = await MarmotService.RevealStorageSource(sourceID);
-        if (!result.ok) setNotice(result.message);
+        if (!result.ok) notify(result.message);
       } catch (error) {
-        setNotice(String(error));
+        notify(String(error));
       }
     }
   }
@@ -2537,9 +2680,11 @@ export default function App() {
     setAdvice(null);
     setAdviceOpen(false);
     setAdviceDetail(null);
+    setDismissed(new Set());
+    setCollectorDetail(null);
     setPlan(null);
     setValidation(null);
-    setNotice("已放弃扫描结果。结果只存在于内存，重新查看需要再扫描一次。");
+    notify("已放弃扫描结果。结果只存在于内存，重新查看需要再扫描一次。");
   }
 
   async function returnToSource() {
@@ -2552,7 +2697,7 @@ export default function App() {
       // page remains real, and cachedStatus is set before it so the tile
       // already wears its result badge as it slides in.
       setCachedStatus(status);
-      setCollectorOpen(false);
+      setAdviceOpen(false);
       try {
         await Window.SetMinSize(minWindowWidth, 0);
       } catch {
@@ -2580,7 +2725,7 @@ export default function App() {
   function markStale(entry: MapEntry) {
     setStaleEntry(entry);
     setSelectedEntry(entry);
-    setNotice("对象已变化，已停用文件操作。请重新读取当前目录。");
+    notify("对象已变化，已停用文件操作。请重新读取当前目录。");
   }
 
   // mode "add" is what a drop does: the dock only ever takes things in, so
@@ -2589,7 +2734,7 @@ export default function App() {
   function toggleCollector(entry: MapEntry | null, mode: "toggle" | "add" = "toggle") {
     if (!entry) return;
     if (staleEntry && entryKey(staleEntry) === entryKey(entry)) {
-      setNotice("对象已变化，不能加入收集区。");
+      notify("对象已变化，不能加入收集区。");
       return;
     }
     // Protected objects are refused with the reason the backend gave, not with a
@@ -2601,46 +2746,67 @@ export default function App() {
     // screen long after the gesture it belongs to. The keyboard and the menu have
     // no dock message, so they still need it.
     if (entry.protection) {
-      if (mode === "toggle") setNotice(protectionMessage(entry.protection, entry.name));
+      if (mode === "toggle") notify(protectionMessage(entry.protection, entry.name));
       return;
     }
     if (!hasCapability(entry, "collect") || !entryNode(entry)) {
-      setNotice("聚合对象和受限对象不能加入收集区。");
+      notify("聚合对象和受限对象不能加入收集区。");
       return;
     }
-    setCollector((current) => {
-      if (!current.some((item) => entryKey(item) === entryKey(entry))) return current.concat(entry);
-      return mode === "add" ? current : current.filter((item) => entryKey(item) !== entryKey(entry));
-    });
+    const path = entryNode(entry)?.path ?? "";
+    if (!collector.some((item) => entryKey(item) === entryKey(entry))) {
+      setCollector((current) => current.some((item) => entryKey(item) === entryKey(entry)) ? current : current.concat(entry));
+      setDockOpen(true);
+      // Collected again after being taken out: the user changed their mind, and
+      // the mark that kept it out of 全部加入 comes off.
+      setDismissed((current) => {
+        if (!current.has(path)) return current;
+        const next = new Set(current);
+        next.delete(path);
+        return next;
+      });
+      return;
+    }
+    if (mode === "add") return;
+    setCollector((current) => current.filter((item) => entryKey(item) !== entryKey(entry)));
+    if (collectorDetail === path) setCollectorDetail(null);
+    // The row being removed is, as often as not, the row under the pointer: its
+    // pointerenter pointed the wheel at this arc, and an unmounted row sends no
+    // pointerleave. Without this the arc went on breathing after the cross.
+    if (hoveredEntry && entryKey(hoveredEntry) === entryKey(entry)) setHoveredEntry(null);
+    if (breathingNodeId !== null && breathingNodeId === entryNode(entry)?.id) setBreathingNodeId(null);
+    // Taken out of the dock by hand. A suggestion goes back to 待确认 with this
+    // mark, and the bulk button skips it (ADR-0066 §2).
+    setDismissed((current) => new Set(current).add(path));
   }
 
   async function previewEntry(entry: MapEntry | null) {
     const node = entryNode(entry);
     if (!entry || !node || !hasCapability(entry, "preview") || (staleEntry && entryKey(staleEntry) === entryKey(entry))) {
-      setNotice("该对象不能预览。");
+      notify("该对象不能预览。");
       return;
     }
     try {
       const result = await MarmotService.PreviewNode(statusRef.current?.snapshotId ?? 0, node.id);
       if (result.code === "stale_node") markStale(entry);
-      else setNotice(result.ok ? "Quick Look 已打开" : result.message);
+      else notify(result.ok ? "Quick Look 已打开" : result.message);
     } catch (error) {
-      setNotice(String(error));
+      notify(String(error));
     }
   }
 
   async function revealEntry(entry: MapEntry | null) {
     const node = entryNode(entry);
     if (!entry || !node || !hasCapability(entry, "reveal") || (staleEntry && entryKey(staleEntry) === entryKey(entry))) {
-      setNotice("该对象不能在 Finder 中定位。");
+      notify("该对象不能在 Finder 中定位。");
       return;
     }
     try {
       const result = await MarmotService.RevealNode(statusRef.current?.snapshotId ?? 0, node.id);
       if (result.code === "stale_node") markStale(entry);
-      else setNotice(result.ok ? "已在 Finder 中定位" : result.message);
+      else notify(result.ok ? "已在 Finder 中定位" : result.message);
     } catch (error) {
-      setNotice(String(error));
+      notify(String(error));
     }
   }
 
@@ -2655,12 +2821,11 @@ export default function App() {
       setPlan(nextValidation.valid ? { ...next, state: "validated" } : next);
       setValidation(nextValidation);
       if (!nextValidation.valid) {
-        setNotice("校验未通过，不能执行清理。");
         return;
       }
       startCountdown(next.id, next.version);
     } catch (error) {
-      setNotice(String(error));
+      notify(String(error));
     }
   }
 
@@ -2702,7 +2867,6 @@ export default function App() {
       const recheck = await MarmotService.ValidateCleanupPlan(planID, version);
       setValidation(recheck);
       if (!recheck.valid) {
-        setNotice("执行前校验失败，已中止。");
         return;
       }
       setPlan(await MarmotService.ConfirmCleanupPlan(planID, version));
@@ -2724,14 +2888,16 @@ export default function App() {
         setAdvice(null);
         setAdviceOpen(false);
         setAdviceDetail(null);
+        setDismissed(new Set());
+        setCollectorDetail(null);
       }
       setCleanupAt(null);
       if (stuck.length === 0) {
-        setNotice(applied.removed > 0
+        notify(applied.removed > 0
           ? "已删除，空间已释放"
           : "已删除，空间已释放，正在重新扫描…");
       } else {
-        setNotice(
+        notify(
           `已处理 ${moved.length} 项，${stuck.length} 项未执行：` +
             stuck.slice(0, 3).map((item) => `${item.path.split("/").pop()}（${item.reason}）`).join("；") +
             (stuck.length > 3 ? ` 等 ${stuck.length} 项` : ""),
@@ -2752,7 +2918,7 @@ export default function App() {
       }
     } catch (error) {
       setCleanupAt(null);
-      setNotice(String(error));
+      notify(String(error));
     }
   }
 
@@ -2781,7 +2947,7 @@ export default function App() {
     // Anything without files is one of the dock's own rows being dragged back
     // over the dock, which is not a Finder drop and needs no explanation.
     if (!event.dataTransfer.types.includes("Files")) return;
-    setNotice("收集区只接受扫描结果中的对象，不接受从 Finder 拖入的路径");
+    notify("收集区只接受扫描结果中的对象，不接受从 Finder 拖入的路径");
   }
 
   // A collected object is out of the current directory (R-014 SS3.6) and its row
@@ -2804,7 +2970,8 @@ export default function App() {
       const target = event.target as HTMLElement | null;
       if (target && ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target.tagName)) return;
       if (event.key === "Escape") {
-        setCollectorOpen(false);
+        dismissNotice();
+        setAdviceOpen(false);
         return;
       }
       if (command && event.key === "ArrowUp") {
@@ -2956,6 +3123,7 @@ export default function App() {
                 hoveredKey={hoveredKey}
                 onHoverArc={hoverArc}
                 breathingKey={breathingKey}
+                breathingNodeId={breathingNodeId}
                 focusedKey={focusedKey}
                 selectedKey={selectedKey}
                 onHover={setHoveredEntry}
@@ -3003,6 +3171,18 @@ export default function App() {
     </>
   );
 
+  // The dock's own state, named once (ADR-0066 §1). 待确认 shows while an
+  // analysis is open -- running, failed or done; the panel exists if either
+  // section has something to say.
+  const adviceData = adviceBusy || Boolean(adviceError) || advice !== null;
+  // The section stays mounted while there is a result, folded or not, so that
+  // folding is a height transition and not a re-layout: unmounting it snapped
+  // the dock from full height to its compact form in one frame.
+  const dockHasPanel = collector.length > 0 || adviceData;
+  const bulk = advice ? bulkCandidates(advice.items ?? [], isCollected, dismissed) : [];
+  const pendingBytes = pendingAdvice.reduce((sum, item) => sum + item.reclaimableBytes, 0);
+  const pendingDecisions = pendingAdvice.filter((item) => !item.manual).length;
+
   return (
     <div className={"app-shell " + (chromeView === "result" ? "app-shell-result" : "app-shell-source") + (slide ? " is-sliding" : "") + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
       {/* One chrome row per page, like the reference: window buttons, navigation
@@ -3025,14 +3205,20 @@ export default function App() {
           <span className="drag-chip-size">{formatBytes(drag.size)}</span>
         </div>
       )}
-      {notice && <div className="notice" role="status">{notice}</div>}
+      <NoticeToast notice={notice} onDismiss={dismissNotice} onHold={holdNotice} onRelease={releaseNotice} />
 
       {/* The overlays are position: fixed, so they cannot ride the sliding
           track (a transformed ancestor would capture them). They sit out here
           and simply hold off until the slide is over. */}
+      {/* One dock, two sections (ADR-0066). 待确认 proposes, 已收集 stages, and
+          an object is in exactly one of them: collecting a suggestion moves it
+          down, taking it back out moves it up with a mark. The action bar at the
+          bottom is the only route to a deletion, and a suggestion reaches it the
+          same way an arc does -- through the snapshot, never by handing a path
+          straight to a delete. */}
       {view === "result" && !slide && <section
         ref={collectorRef}
-        className={"collector-dock" + (collectorOpen ? " is-open" : "")
+        className={"collector-dock"
           + (drag ? " is-target" : "")
           + (drag?.over && !drag.blocked ? " is-armed" : "")
           + (drag?.blocked ? " is-refused" : "")}
@@ -3040,296 +3226,347 @@ export default function App() {
         onDrop={handleCollectorDrop}
         data-testid="collector"
       >
-        {collector.length === 0 ? (
-          /* Nothing collected: the reference shows only the drop ring and one
-             line of instruction. */
-          <button className="collector-empty-state" onClick={() => setCollectorOpen((open) => !open)}>
-            <span className="collector-target" aria-hidden="true" />
-            {/* While a protected object is in the air the dock stops inviting the
-                drop and says why it will not take it -- the reference does the
-                same, and it does it for the whole drag rather than only once the
-                pointer is over the ring. */}
-            <span className="collector-caption">{drag?.blocked || "将文件拖放至此，以收集要删除的文件"}</span>
-          </button>
-        ) : (
-          /* With items the bar lives inside the panel as its last row: badge
-             straddling the left edge, amount, and the destructive action. */
-          <div className="collector-panel">
-            {countdown === null && <div className="collector-list">
-              {collector.map((item) => {
-                const node = entryNode(item);
-                return (
-                  <div
-                    className="collector-item"
-                    key={entryKey(item)}
-                    draggable={Boolean(node)}
-                    onDragStart={(event) => {
-                      if (!node) return;
-                      event.dataTransfer.setData("text/uri-list", "file://" + encodeURI(node.path));
-                      event.dataTransfer.setData("text/plain", node.path);
-                      event.dataTransfer.effectAllowed = "copy";
-                    }}
-                    onDragEnd={(event) => {
-                      if (event.dataTransfer.dropEffect !== "none") toggleCollector(item);
-                    }}
-                  >
-                    {/* The dot and the cross live *inside* the button rather than
-                        beside it. Stacked as siblings in one grid cell they were
-                        ambiguous about which one a press landed on, and the dot won
-                        -- measured: a press dead centre on the cross reported
-                        `collector-dot` as its target, so the cross did nothing. One
-                        element owns the cell now, and whatever is painted in it is
-                        a child of the thing being pressed.
-                        pointerdown rather than click, with preventDefault, because
-                        the row around it is draggable so it can go out to Finder and
-                        a press here would otherwise start that drag and eat the
-                        click. Deliberately not also on click: toggleCollector would
-                        run twice and put the item straight back, so Enter and Space
-                        are handled explicitly. */}
-                    <button
-                      className="collector-remove"
-                      draggable={false}
-                      onPointerDown={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        toggleCollector(item);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter" && event.key !== " ") return;
-                        event.preventDefault();
-                        toggleCollector(item);
-                      }}
-                      aria-label={"移除 " + item.name}
-                    >
-                      <span className="collector-dot" style={{ background: levelColors[entryKey(item)] ?? "#7fb96a" }} aria-hidden="true" />
-                      <span className="collector-cross" aria-hidden="true">×</span>
-                    </button>
-                    <strong>{item.name}</strong>
-                    <b>{formatBytes(item.ownedAllocated)}</b>
-                  </div>
-                );
-              })}
-            </div>}
+        {!dockHasPanel ? (
+          /* Nothing collected and nothing proposed: the reference shows only the
+             drop ring and one line of instruction. With an analysis folded away
+             the line also says how many suggestions are waiting, and reopens it. */
+          <div className="collector-panel is-empty">
             <div className="collector-bar">
-              <span
-                className={"collector-target is-filled"
-                  + (countdown !== null ? " is-counting" : "")
-                  + (cleanupAt ? " is-deleting" : "")}
-                aria-hidden="true"
+              <span className="collector-target" aria-hidden="true" />
+              <span className="collector-caption">{drag?.blocked || "将文件拖放至此，以收集要删除的文件"}</span>
+            </div>
+          </div>
+        ) : (
+          <div className="collector-panel">
+            {/* 待确认. Hidden with the other list during the countdown: nothing
+                may join the set the plan was built from. */}
+            {adviceData && countdown === null && (
+              <section
+                ref={pendingRef}
+                className={"dock-section dock-pending" + (adviceOpen && dockOpen ? "" : " is-folded")}
+                aria-label="待确认"
+                aria-hidden={!(adviceOpen && dockOpen) || undefined}
+                inert={!(adviceOpen && dockOpen)}
               >
-                {/* One ring, two phases, one expression. offset = C * (1 - f)
-                    draws the first f of the path clockwise from twelve o'clock, so
-                    a falling fraction retreats the arc anticlockwise and a rising
-                    one grows it clockwise. Nothing to keep in sync between them. */}
-                {(countdown !== null || cleanupAt) && (
-                  <svg className={"collector-ring" + (cleanupAt ? " is-deleting" : "")} viewBox="0 0 44 44">
-                    <circle
-                      cx="22"
-                      cy="22"
-                      r="20"
-                      strokeDasharray={2 * Math.PI * 20}
-                      strokeDashoffset={ringOffset(
-                        cleanupAt ? deleteFraction(cleanupAt.doneBytes, cleanupAt.totalBytes) : ringFraction,
-                        20,
-                      )}
-                    />
-                  </svg>
+                <header className="advice-head">
+                  <div>
+                    <p className="eyebrow">待确认</p>
+                    <h3>
+                      {adviceBusy
+                        ? "分析中…"
+                        : adviceError
+                          ? "分析失败"
+                          : pendingAdvice.length > 0
+                            ? pendingAdvice.length + " 项 · " + formatBytes(pendingBytes)
+                            : (advice?.items ?? []).length > 0 ? "都已在收集区" : "没有结果"}
+                    </h3>
+                  </div>
+                  <div className="advice-head-actions">
+                    {/* What left the machine, byte for byte (ADR-0061 §2). The
+                        run's shape rides on the tooltip; the pack's own header
+                        already states the evidence size and floor. */}
+                    {!adviceBusy && advice && (
+                      <button
+                        className="quiet-button"
+                        onClick={() => void showEvidence()}
+                        title={advice.rounds > 0
+                          ? "规则 " + advice.ruleItems + " 条 · AI " + advice.advisorItems + " 条 · " + advice.rounds + " 轮"
+                            + (advice.expanded > 0 ? "，深挖 " + advice.expanded + " 处" : "")
+                            + " · " + (advice.inputTokens + advice.outputTokens).toLocaleString() + " token"
+                          : "本轮全部来自本机规则，未联网"}
+                      >查看发送内容</button>
+                    )}
+                    {/* The bulk action for everything automatic staging left
+                        behind and the user has not since declined. Explicit, on
+                        a list already on screen -- which is the difference
+                        between this and pre-filling the cart. */}
+                    {bulk.length > 0 && (
+                      <button className="quiet-button" onClick={() => void stageRemainingAdvice()}>全部加入 {bulk.length} 项</button>
+                    )}
+                    {/* Only the advisor round is stoppable. The rule pass is under
+                        a second, so a stop button on it would be decoration. */}
+                    {advisorBusy
+                      ? <button className="quiet-button" onClick={stopAdvice}>停止 AI</button>
+                      : <button className="quiet-button dock-fold" onClick={() => setAdviceOpen(false)} aria-label="收起" title="收起">
+                          <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4.5 6 8.5 10 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                        </button>}
+                  </div>
+                </header>
+
+                {/* One line under the head, and only what changes a decision: what
+                    was staged for you, whether the model is still out, whether it
+                    failed. Run statistics live in the AI settings sheet -- the
+                    list is the point of this section, not its paperwork. */}
+                {!adviceBusy && advice && (advice.items ?? []).length > 0 && (
+                  <p className="advice-summary-line">
+                    {stageSummary(adviceStaged.added, formatBytes(adviceStaged.bytes), pendingDecisions)}
+                    {advisorBusy && <span className="advice-waiting"> AI 仍在分析，已 {advisorSeconds} 秒；上面这些来自本机规则，现在就可以用。</span>}
+                    {!advisorBusy && advisorFault && <span className="advice-fault"> AI 未完成：{advisorFault}</span>}
+                    {!advisorBusy && advice.advisorError && <span className="advice-fault"> {advice.advisorError}</span>}
+                    {(advice.rejected ?? []).length > 0 && <span title={advice.rejectedSummary}> · 已丢弃 {(advice.rejected ?? []).length} 条</span>}
+                    {advice.correctionSummary && <span className="advice-fault"> · {advice.correctionSummary}</span>}
+                  </p>
                 )}
-                <span className="collector-count">
-                  {cleanupAt
-                    ? Math.round(deleteFraction(cleanupAt.doneBytes, cleanupAt.totalBytes) * 100) + "%"
-                    : countdown !== null
-                      ? countdown
-                      : formatBytes(collectorBytes).split(" ")[0]}
-                </span>
-              </span>
-              <span className="collector-caption">
-                {drag?.blocked
-                  ? drag.blocked
-                  : countdown !== null
-                    ? <>秒后开始。选中的文件将被<strong className="destructive-note">直接删除，无法撤销</strong></>
-                    : cleanupAt
-                      ? `正在删除 ${cleanupAt.done + 1}/${cleanupAt.total}：${cleanupAt.current.split("/").pop()}`
-                      : plan?.state === "confirmed"
-                        ? "正在删除…（大目录要逐个文件删除，可能要几分钟）"
-                        : validation && !validation.valid
-                          ? "校验未通过，不能执行"
-                          : formatBytes(collectorBytes).split(" ")[1] + " 已收集"}
-              </span>
-              {/* One action, and it deletes outright -- the trash is on the same
-                  volume, so moving there reclaims nothing. Nothing is rerouted and
-                  nothing is undoable; the countdown is the whole confirmation. */}
-              {countdown === null
-                ? <button className="danger-button compact is-permanent" onClick={() => void createPlan()}>删除</button>
-                : <button className="quiet-button" onClick={stopCountdown}>停止</button>}
+
+                <div className="advice-list">
+                  {adviceBusy && <p className="advice-empty">正在读取扫描结果…</p>}
+                  {!adviceBusy && adviceError && <p className="advice-empty advice-fault">{adviceError}</p>}
+                  {!adviceBusy && !adviceError && advice && (advice.items ?? []).length === 0 && (
+                    <p className="advice-empty">没有找到可清理的对象。</p>
+                  )}
+                  {!adviceBusy && !adviceError && advice && (advice.items ?? []).length > 0 && pendingAdvice.length === 0 && (
+                    <p className="advice-empty">全部建议都已在收集区。</p>
+                  )}
+                  {!adviceBusy && pendingAdvice.map((item) => {
+                    const open = adviceDetail === item.nodeId;
+                    const wasDismissed = dismissed.has(item.path);
+                    return (
+                      <article
+                        key={item.nodeId}
+                        className={"advice-item risk-" + item.risk + (wasDismissed ? " is-dismissed" : "")}
+                        onPointerEnter={() => hoverAdviceNode(item.nodeId)}
+                        onPointerLeave={() => hoverAdviceNode(null)}
+                        onPointerDown={(event) => dragAdviceItem(item, event)}
+                      >
+                        <button
+                          className="advice-summary"
+                          onClick={() => {
+                            // The click that follows a drag belongs to the drag.
+                            if (dragSuppressesClick.current) return;
+                            setAdviceDetail(open ? null : item.nodeId);
+                          }}
+                          aria-expanded={open}
+                        >
+                          <span className="advice-risk" aria-hidden="true" />
+                          <span className="advice-text">
+                            <strong>{item.name}</strong>
+                            <span className="advice-path">{homePath(item.path)}</span>
+                          </span>
+                          <span className="advice-size">{formatBytes(item.reclaimableBytes)}</span>
+                        </button>
+                        <div className="advice-tags">
+                          <AdviceTags item={item} />
+                          {/* Back from the dock by the user's hand. The mark is
+                              what keeps 全部加入 from putting it straight back. */}
+                          {wasDismissed && <span className="advice-tag is-dismissed">已移出</span>}
+                          {item.manual
+                            ? <span className="advice-manual">需要管理员权限，本工具不执行</span>
+                            : <button className="advice-collect" onClick={() => void collectAdviceItem(item)}>加入</button>}
+                        </div>
+                        {open && <AdviceDetail item={item} />}
+                      </article>
+                    );
+                  })}
+                </div>
+
+              </section>
+            )}
+
+            {/* 已收集. The rows are the reference's plain run of lines; a row that
+                came from a suggestion keeps its tags and opens the same reasoning
+                the other section shows. A row dragged in by hand has none, which
+                is how the two kinds tell apart. */}
+            {countdown === null && collector.length > 0 && (
+              <section
+                className={"dock-section dock-staged" + (dockOpen ? "" : " is-folded")}
+                aria-label="已收集"
+                aria-hidden={!dockOpen || undefined}
+                inert={!dockOpen}
+              >
+                {adviceData && (
+                  <header className="dock-section-head"><span>已收集 · {collector.length} 项</span></header>
+                )}
+                <div className="collector-list">
+                  {collector.map((item) => {
+                    const node = entryNode(item);
+                    const path = node?.path ?? "";
+                    const suggestion = adviceByPath.get(path);
+                    const open = suggestion !== undefined && collectorDetail === path;
+                    return (
+                      <div
+                        className={"collector-item" + (suggestion ? " has-advice" : "") + (open ? " is-open" : "")}
+                        key={entryKey(item)}
+                        draggable={Boolean(node)}
+                        onDragStart={(event) => {
+                          if (!node) return;
+                          event.dataTransfer.setData("text/uri-list", "file://" + encodeURI(node.path));
+                          event.dataTransfer.setData("text/plain", node.path);
+                          event.dataTransfer.effectAllowed = "copy";
+                        }}
+                        onDragEnd={(event) => {
+                          if (event.dataTransfer.dropEffect !== "none") toggleCollector(item);
+                        }}
+                        onPointerEnter={() => { if (node) hoverAdviceNode(node.id); }}
+                        onPointerLeave={() => hoverAdviceNode(null)}
+                        onClick={() => { if (suggestion) setCollectorDetail(open ? null : path); }}
+                      >
+                        {/* The dot and the cross live *inside* the button rather than
+                            beside it. Stacked as siblings in one grid cell they were
+                            ambiguous about which one a press landed on, and the dot won
+                            -- measured: a press dead centre on the cross reported
+                            `collector-dot` as its target, so the cross did nothing. One
+                            element owns the cell now, and whatever is painted in it is
+                            a child of the thing being pressed.
+                            pointerdown rather than click, with preventDefault, because
+                            the row around it is draggable so it can go out to Finder and
+                            a press here would otherwise start that drag and eat the
+                            click. Deliberately not also on click: toggleCollector would
+                            run twice and put the item straight back, so Enter and Space
+                            are handled explicitly. */}
+                        <button
+                          className="collector-remove"
+                          draggable={false}
+                          onPointerDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            toggleCollector(item);
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return;
+                            event.preventDefault();
+                            toggleCollector(item);
+                          }}
+                          aria-label={"移除 " + item.name}
+                        >
+                          <span className="collector-dot" style={{ background: levelColors[entryKey(item)] ?? "#7fb96a" }} aria-hidden="true" />
+                          <span className="collector-cross" aria-hidden="true">×</span>
+                        </button>
+                        <span className="collector-name">
+                          <strong>{item.name}</strong>
+                          {suggestion && <span className="collector-tags"><AdviceTags item={suggestion} /></span>}
+                        </span>
+                        <b>{formatBytes(item.ownedAllocated)}</b>
+                        {open && suggestion && <AdviceDetail item={suggestion} />}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
+            {/* The action bar is the panel's last row: badge straddling the left
+                edge, amount, and the destructive action. With suggestions on
+                screen but nothing collected yet it is the empty state's ring and
+                line instead, so the panel still says how things get in here. */}
+            <div className="collector-bar">
+              {collector.length === 0 ? (
+                <>
+                  <span className="collector-target" aria-hidden="true" />
+                  <span className="collector-caption">{drag?.blocked || (adviceOpen ? "将文件拖放至此，或从上面加入" : "将文件拖放至此，以收集要删除的文件")}</span>
+                  {!adviceOpen && pendingAdvice.length > 0 && (
+                    <button className="quiet-button" onClick={() => { setAdviceOpen(true); setDockOpen(true); }}>待确认 {pendingAdvice.length} 项</button>
+                  )}
+                </>
+              ) : (
+                <>
+                  {/* The badge folds and unfolds the panel body. Not during a
+                      deletion: the ring is then a progress indicator, and a
+                      press on it should change nothing. */}
+                  <button
+                    type="button"
+                    className={"collector-target is-filled collector-badge"
+                      + (countdown !== null ? " is-counting" : "")
+                      + (cleanupAt ? " is-deleting" : "")}
+                    onClick={() => { if (!cleanupAt) setDockOpen((open) => !open); }}
+                    aria-label={dockOpen ? "收起收集区" : "展开收集区"}
+                    aria-expanded={dockOpen}
+                  >
+                    {/* One ring, two phases, one expression. offset = C * (1 - f)
+                        draws the first f of the path clockwise from twelve o'clock, so
+                        a falling fraction retreats the arc anticlockwise and a rising
+                        one grows it clockwise. Nothing to keep in sync between them. */}
+                    {(countdown !== null || cleanupAt) && (
+                      <svg className={"collector-ring" + (cleanupAt ? " is-deleting" : "")} viewBox="0 0 44 44">
+                        <circle
+                          cx="22"
+                          cy="22"
+                          r="20"
+                          strokeDasharray={2 * Math.PI * 20}
+                          strokeDashoffset={ringOffset(
+                            cleanupAt ? deleteFraction(cleanupAt.doneBytes, cleanupAt.totalBytes) : ringFraction,
+                            20,
+                          )}
+                        />
+                      </svg>
+                    )}
+                    <span className="collector-count">
+                      {cleanupAt
+                        ? Math.round(deleteFraction(cleanupAt.doneBytes, cleanupAt.totalBytes) * 100) + "%"
+                        : countdown !== null
+                          ? countdown
+                          : formatBytes(collectorBytes).split(" ")[0]}
+                    </span>
+                  </button>
+                  <span className="collector-caption">
+                    {drag?.blocked
+                      ? drag.blocked
+                      : countdown !== null
+                        ? <>秒后开始。选中的文件将被<strong className="destructive-note">直接删除，无法撤销</strong></>
+                        : cleanupAt
+                          ? `正在删除 ${cleanupAt.done + 1}/${cleanupAt.total}：${cleanupAt.current.split("/").pop()}`
+                          : plan?.state === "confirmed"
+                            ? "正在删除…（大目录要逐个文件删除，可能要几分钟）"
+                            : validation && !validation.valid
+                              ? "校验未通过，不能执行"
+                              : formatBytes(collectorBytes).split(" ")[1] + " 已收集"}
+                  </span>
+                  {/* A folded analysis stays reachable from the bar. */}
+                  {countdown === null && !adviceOpen && pendingAdvice.length > 0 && (
+                    <button className="quiet-button" onClick={() => { setAdviceOpen(true); setDockOpen(true); }}>待确认 {pendingAdvice.length} 项</button>
+                  )}
+                  {/* One action, and it deletes outright -- the trash is on the same
+                      volume, so moving there reclaims nothing. Nothing is rerouted and
+                      nothing is undoable; the countdown is the whole confirmation. */}
+                  {countdown === null
+                    ? <button className="danger-button compact is-permanent" onClick={() => void createPlan()}>删除</button>
+                    : <button className="quiet-button" onClick={stopCountdown}>停止</button>}
+                </>
+              )}
             </div>
           </div>
         )}
       </section>}
 
-      {/* The dock sits bottom-left (ADR-0018), so the advice entry takes the
-          opposite corner. The two are a pair: this side proposes, that side
-          stages, and a suggestion crosses between them the same way an arc does
-          -- through the snapshot, never by handing a path straight to a delete. */}
+      {/* The dock sits bottom-left (ADR-0018), so the analysis entry takes the
+          opposite corner -- buttons only, since ADR-0066: what they produce
+          lands in the dock's 待确认 section, not in a second panel here. */}
       {view === "result" && !slide && (
         <div className={"advice-corner" + (adviceOpen ? " is-open" : "")}>
-          {adviceOpen && (
-            <section className="advice-panel" aria-label="可清理项">
-              <header className="advice-head">
-                <div>
-                  <p className="eyebrow">可清理项</p>
-                  <h3>
-                    {adviceBusy
-                      ? "分析中…"
-                      : adviceError
-                        ? "分析失败"
-                        : advice
-                          ? formatBytes(advice.totalBytes) + " 可回收"
-                          : "没有结果"}
-                  </h3>
-                </div>
-                <div className="advice-head-actions">
-                  {/* Only the advisor round is stoppable. The rule pass is under a
-                      second, so a stop button on it would be decoration. */}
-                  {advisorBusy
-                    ? <button className="quiet-button" onClick={stopAdvice}>停止 AI</button>
-                    : <button className="quiet-button" onClick={() => setAdviceOpen(false)} aria-label="收起">收起</button>}
-                </div>
-              </header>
-
-              {!adviceBusy && advice && (advice.items ?? []).length > 0 && (
-                <div className="advice-stage">
-                  <span>
-                    {stageSummary(
-                      adviceStaged.added,
-                      formatBytes(adviceStaged.bytes),
-                      (advice.items ?? []).filter((item) => !item.manual && !isCollected(item)).length,
-                    )}
-                    {advisorBusy && (
-                      <><br /><span className="advice-waiting">
-                        AI 仍在分析（已 {advisorSeconds} 秒，上次实测约 235 秒）。上面这些来自本机规则，现在就可以用。
-                      </span></>
-                    )}
-                    {!advisorBusy && advisorFault && <><br /><span className="advice-fault">AI 未完成：{advisorFault}</span></>}
-                  </span>
-                  {(advice.items ?? []).some((item) => !item.manual && !isCollected(item)) && (
-                    <button className="quiet-button" onClick={() => void stageRemainingAdvice()}>
-                      加入其余 {(advice.items ?? []).filter((item) => !item.manual && !isCollected(item)).length} 项
-                    </button>
-                  )}
-                </div>
-              )}
-
-              <div className="advice-list">
-                {adviceBusy && <p className="advice-empty">正在读取扫描结果…</p>}
-                {!adviceBusy && adviceError && <p className="advice-empty advice-fault">{adviceError}</p>}
-                {!adviceBusy && !adviceError && advice && (advice.items ?? []).length === 0 && (
-                  <p className="advice-empty">没有找到可清理的对象。</p>
-                )}
-                {!adviceBusy && (advice?.items ?? []).map((item) => {
-                  const open = adviceDetail === item.nodeId;
-                  const collected = isCollected(item);
-                  return (
-                    <article key={item.nodeId} className={"advice-item risk-" + item.risk}>
-                      <button
-                        className="advice-summary"
-                        onClick={() => setAdviceDetail(open ? null : item.nodeId)}
-                        aria-expanded={open}
-                      >
-                        <span className="advice-risk" aria-hidden="true" />
-                        <span className="advice-text">
-                          <strong>{item.name}</strong>
-                          <span className="advice-path">{homePath(item.path)}</span>
-                        </span>
-                        <span className="advice-size">{formatBytes(item.reclaimableBytes)}</span>
-                      </button>
-                      <div className="advice-tags">
-                        <span className="advice-tag">{item.ruleName || item.category}</span>
-                        {item.source === "advisor" && <span className="advice-tag is-ai">AI · {Math.round(item.confidence * 100)}%</span>}
-                        {/* Recoverability leads. It is the axis that decides
-                            whether a suggestion is frightening: reinstalling a
-                            toolchain costs a download, losing a photo library
-                            costs the photos. Risk follows it. */}
-                        <span className={"advice-tag is-recovery recovery-" + item.recovery}>
-                          {recoveryLabels[item.recovery] ?? item.recovery}
-                        </span>
-                        <span className="advice-tag">{riskLabels[item.risk] ?? item.risk}</span>
-                        {item.manual
-                          ? <span className="advice-manual">需要管理员权限，本工具不执行</span>
-                          : <button
-                              className="advice-collect"
-                              disabled={collected}
-                              onClick={() => void collectAdviceItem(item)}
-                            >
-                              {collected ? "已收集" : "加入收集区"}
-                            </button>}
-                      </div>
-                      {open && (
-                        <dl className="advice-detail">
-                          <dt>依据</dt>
-                          <dd>{(item.evidence ?? []).join(" · ") || "—"}</dd>
-                          <dt>删除后</dt>
-                          <dd>{item.whatBreaks}</dd>
-                          <dt>如何恢复</dt>
-                          <dd>{item.howToRestore}</dd>
-                          {item.manual && <>
-                            <dt>手动执行</dt>
-                            {/* The command, verbatim and selectable. This app will
-                                not ask for admin rights to delete files: the blast
-                                radius of a cleanup tool running as root is in a
-                                different league (ADR-0065). */}
-                            <dd><code className="advice-command">{item.command}</code></dd>
-                          </>}
-                        </dl>
-                      )}
-                    </article>
-                  );
-                })}
-              </div>
-
-              {advice && !adviceBusy && (
-                <footer className="advice-foot">
-                  <span>
-                    {advice.rounds > 0
-                      ? <>规则 {advice.ruleItems} 条 · AI {advice.advisorItems} 条（{advice.rounds} 轮
-                        {advice.expanded > 0 ? "，深挖 " + advice.expanded + " 处" : ""}，
-                        {(advice.inputTokens + advice.outputTokens).toLocaleString()} token）</>
-                      : <>本轮全部来自本机规则，未联网。</>}
-                    {" "}证据 {advice.evidenceNodes} 个节点 / {formatBytes(advice.evidenceBytes)} · 下限{" "}
-                    {formatBytes(advice.floorBytes)}
-                    {advice.correctionSummary && <><br /><span className="advice-fault">{advice.correctionSummary}</span></>}
-                    {advice.rejectedSummary && <><br />已丢弃：{advice.rejectedSummary}</>}
-                    {advice.advisorError && <><br /><span className="advice-fault">{advice.advisorError}</span></>}
-                  </span>
-                  <button className="quiet-button" onClick={() => void showEvidence()}>查看发送内容</button>
-                </footer>
-              )}
-            </section>
-          )}
-
-          {/* Beside the corner button rather than inside the results panel:
-              opening settings must not require running an analysis first. It is
-              only on the result page because the source window is 151pt tall and
-              a sheet bounded by that window would be an unusable sliver. */}
-          <div className="advice-corner-actions">
-            <button
-              className="advice-button is-icon"
-              onClick={() => setAdvisorOpen(true)}
-              title={advisor?.configured ? "AI 设置 · " + advisor.description : "AI 设置（未连接）"}
-              aria-label="AI 设置"
-            >
-              <span className={"advice-gear" + (advisor?.configured ? " is-on" : "")} aria-hidden="true">AI</span>
-            </button>
+          {/* Beside the corner button rather than inside the dock: opening
+              settings must not require running an analysis first. It is only on
+              the result page because the source window is 151pt tall and a sheet
+              bounded by that window would be an unusable sliver. */}
+          <div className="advice-segment">
+            {/* This button only ever runs an analysis. Folding and unfolding the
+                result is the dock's job -- it has the chevron and the 待确认 N 项
+                chip -- so a second copy here would be the same control twice. */}
             <button
               className="advice-button"
-              onClick={() => (adviceOpen ? setAdviceOpen(false) : void runAdvice())}
+              onClick={() => void runAdvice()}
               disabled={adviceBusy || advisorBusy}
             >
               {adviceBusy
                 ? "读取中…"
                 : advisorBusy
                   ? "AI " + advisorSeconds + "s"
-                  : advisor?.configured ? "AI 分析" : "分析可清理项"}
+                  : advice || adviceError
+                    ? "重新分析"
+                    : advisor?.configured ? "AI 分析" : "分析可清理项"}
+            </button>
+            {/* Settings ride on the same control, past a divider, so the corner
+                is one object. It is here and not in the dock because opening
+                settings must not require running an analysis first. */}
+            <button
+              className="advice-button is-icon"
+              onClick={() => setAdvisorOpen(true)}
+              title={advisor?.configured ? "AI 设置 · " + advisor.description : "AI 设置（未连接）"}
+              aria-label="AI 设置"
+            >
+              <svg className={"advice-gear" + (advisor?.configured ? " is-on" : "")} viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+                <circle cx="6" cy="6" r="2" fill="none" stroke="currentColor" strokeWidth="1.4" />
+                <path d="M6 .8v1.7M6 9.5v1.7M.8 6h1.7M9.5 6h1.7M2.3 2.3l1.2 1.2M8.5 8.5l1.2 1.2M2.3 9.7l1.2-1.2M8.5 3.5l1.2-1.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+              </svg>
             </button>
           </div>
         </div>
@@ -3413,7 +3650,7 @@ export default function App() {
                 Key 加密保存在应用自己的目录里（AES-256-GCM，密钥绑定本机，
                 文件 0600），不写进日志或快照。同机上以你的身份运行的程序仍可解开它。
                 只有你点击「AI 分析」时才会发起网络请求，应用不做任何其他出网。
-                发送内容可在面板底部的「查看发送内容」中逐字节查看。
+                发送内容可在待确认区右上角的「查看发送内容」中逐字节查看。
               </p>
             </div>
             <footer className="advisor-foot">

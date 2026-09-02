@@ -306,19 +306,30 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .directory-hint { display: none; }
 .directory-footer { display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px 0; color: #808188; font-size: 8px; }
 
-.notice { position: fixed; right: 18px; bottom: 16px; z-index: 40; max-width: min(380px, calc(100% - 36px)); padding: 9px 12px; border: 1px solid #81704a; border-radius: 4px; background: #39352a; color: #e5cc91; font-size: 10px; box-shadow: 0 7px 18px rgba(0,0,0,.25); }
+/* The transient notice (notice.ts). Two tones: info confirms, error reports.
+   It leaves on its own, holds while hovered, and closes on click. */
+.notice { position: fixed; right: 18px; bottom: 16px; z-index: 40; max-width: min(380px, calc(100% - 36px)); padding: 9px 12px; border: 1px solid #81704a; border-radius: 4px; background: #39352a; color: #e5cc91; font-size: 10px; box-shadow: 0 7px 18px rgba(0,0,0,.25); cursor: pointer; animation: notice-in 160ms ease both; }
+.notice.is-error { border-color: #a0574c; background: #3c2a27; color: #f0b3a3; }
+@keyframes notice-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .notice { animation: none; } }
 
 .collector-dock { position: fixed; z-index: 25; }
-.app-shell-result .collector-dock { right: auto; bottom: 18px; left: 22px; width: auto; max-width: 420px; border: 0; background: transparent; box-shadow: none; }
+/* One geometry for every state of the dock: the page's 16px gutter, the map
+   column's share of the width. Folding 待确认 changes the height and nothing
+   else -- a fold that also moved the left edge and changed the width read as
+   the panel jumping (ADR-0066 修订). */
+.app-shell-result .collector-dock { right: auto; bottom: 16px; left: 28px; width: auto; max-width: none; border: 0; background: transparent; box-shadow: none; }
 .collector-target { position: relative; display: grid; place-items: center; width: 52px; height: 52px; flex: 0 0 auto; border: 3px solid #7c7d84; border-radius: 50%; box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #7c7d84; transition: border-color .12s ease, transform .12s ease; }
 /* A drag is in flight: the empty ring lifts to say it is a target, and turns
    blue once the pointer is inside the drop area. The caption comes up with it.
    Only the empty ring scales -- the filled badge is absolutely positioned off
    the action bar's left edge by a transform of its own, so it says the same
    thing with its border and the panel's outline instead. */
-.collector-dock.is-target .collector-empty-state .collector-target { border-color: #a3a4ab; transform: scale(1.06); }
+/* The ring in the bar is centred by translateY(-50%); the lift has to keep that
+   translation in the same transform or the ring drops half its height. */
+.collector-dock.is-target .collector-panel.is-empty .collector-target { border-color: #a3a4ab; transform: translateY(-50%) scale(1.06); }
 .collector-dock.is-target .collector-caption { color: #e4e4e8; }
-.collector-dock.is-armed .collector-empty-state .collector-target { border-color: #4c7cc4; transform: scale(1.14); box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #4c7cc4, 0 0 0 6px rgba(76, 124, 196, .18); }
+.collector-dock.is-armed .collector-panel.is-empty .collector-target { border-color: #4c7cc4; transform: translateY(-50%) scale(1.14); box-shadow: inset 0 0 0 4px #232429, inset 0 0 0 11px #4c7cc4, 0 0 0 6px rgba(76, 124, 196, .18); }
 .collector-dock.is-armed .collector-bar .collector-target { border-color: #6f9ede; }
 .collector-dock.is-armed .collector-panel { box-shadow: 0 10px 26px rgba(0, 0, 0, .35), 0 0 0 2px rgba(76, 124, 196, .55); }
 
@@ -332,14 +343,12 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    The ring itself stays neutral and the slash alone carries the refusal, the way
    the reference does it -- a red ring as well would read as something having
    gone wrong, and nothing has: this is a rule being stated. */
-.collector-dock.is-refused .collector-empty-state .collector-target,
 .collector-dock.is-refused .collector-bar .collector-target { border-color: #7c7d84; box-shadow: inset 0 0 0 4px #232429; }
-.collector-dock.is-refused .collector-empty-state .collector-target { transform: none; }
+.collector-dock.is-refused .collector-panel.is-empty .collector-target { transform: translateY(-50%); }
 /* The refusal is a sentence, not a label, and the dock's usual 420px wraps it to
    two lines -- where the drag chip, which follows the cursor at z-index 60, lands
    on top of the second one. The reference gives the message a wide bar, so this
    does too. */
-.app-shell-result .collector-dock.is-refused { max-width: min(62vw, 1060px); }
 .collector-dock.is-refused .collector-caption { line-height: 1.4; }
 .collector-dock.is-refused .collector-target::after {
   content: "";
@@ -364,7 +373,10 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    row against our 34px). What made ours look heavy was not this rule but a
    leftover one from an earlier drawer design that was still contributing a 1px
    border and a solid fill to every row. */
-.collector-list { display: grid; max-height: 150px; overflow: auto; padding: 4px 0 0; }
+/* min-height: 0 and flex are load-bearing: a grid inside a shrinking flex
+   column keeps its content height and runs under the action bar; with them it
+   gives way and scrolls, which is the only honest thing a capped list can do. */
+.collector-list { display: grid; min-height: 0; max-height: 26vh; flex: 1 1 auto; overflow: auto; padding: 4px 0 0; }
 .plan-review { display: grid; gap: 7px; margin-top: 10px; padding: 10px; border: 1px solid #5c625b; background: #333a35; }
 .plan-review > div:not(.plan-result) { display: flex; justify-content: space-between; gap: 10px; color: #aab0a8; font-size: 9px; }
 .plan-review strong { color: #e2e7df; font-weight: 500; }
@@ -475,10 +487,62 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Collector, matching the reference's two states.
    Empty: just the drop ring and one line. Filled: a panel of rows whose last
    row is the action bar, with the amount badge straddling its left edge. */
-.collector-empty-state { display: flex; align-items: center; gap: 14px; padding: 4px 6px; border: 0; background: transparent; color: #b9bac0; text-align: left; }
-.collector-empty-state:hover { color: #e4e4e8; }
+/* Empty: the same bar as the filled panel, in a panel with no paint. The ring
+   and the caption therefore sit exactly where they will be after the first
+   drop; only the background appears. The earlier empty state was its own row
+   with its own padding, and the ring moved 20px on the first drop. */
+.collector-panel.is-empty { background: transparent; box-shadow: none; }
+.collector-panel.is-empty .collector-bar .collector-caption { color: #b9bac0; }
+.collector-dock.is-target .collector-panel.is-empty .collector-caption { color: #e4e4e8; }
+/* The badge is a button now; nothing about it should say so beyond the cursor. */
+.collector-badge { padding: 0; appearance: none; color: inherit; }
+.collector-badge.is-deleting { cursor: default; }
 
-.collector-panel { width: min(58vw, 1060px); padding: 6px 6px 0; border: 0; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); }
+/* The badge hangs 14px past the panel's left edge, so the panel starts 12px in
+   from the page gutter to keep the badge off the window edge; the width gives
+   those 12px back so the right edge still meets the map column's. */
+.collector-panel { display: flex; width: calc((100vw - 32px) * .62 - 12px); max-height: calc(100vh - 54px); flex-direction: column; padding: 6px 6px 0; border: 0; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); }
+/* Two sections, one object in exactly one of them (ADR-0066). Each list has
+   its own ceiling rather than sharing the panel's: a 58-row 已收集 must not
+   push 待确认 down to a sliver, and the other way round. */
+.dock-section { display: flex; min-height: 0; flex: 0 1 auto; flex-direction: column; }
+.dock-section + .dock-section { margin-top: 4px; border-top: 1px solid #35363d; }
+/* 待确认 asks for the whole column and lets flex clamp it to what the panel has
+   left after 已收集 and the bar; folded, it goes to nothing. Both are lengths,
+   so the change between them is a transition rather than a re-layout, and the
+   dock -- bottom-anchored, height from content -- shrinks with it from the top. */
+.dock-pending { height: calc(100vh - 54px); flex: 0 1 auto; overflow: hidden; transition: height 240ms ease, margin 240ms ease; }
+.dock-pending.is-folded { height: 0; margin: 0; }
+.dock-pending.is-folded + .dock-section { margin-top: 0; border-top: 0; }
+@media (prefers-reduced-motion: reduce) { .dock-pending { transition: none; } }
+.dock-section-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 6px 2px; color: #9fa0a7; font-size: 9px; font-weight: 600; letter-spacing: .12em; }
+.dock-pending .advice-head { padding: 7px 6px 6px; }
+.dock-pending .advice-stage { padding: 6px 6px; }
+.dock-pending .advice-list { flex: 1 1 auto; min-height: 0; padding: 2px 0 0; }
+.advice-summary-line { margin: 0; padding: 0 6px 6px; color: #96979e; font-size: 9px; line-height: 1.6; }
+/* 已收集 folds with the badge. Its natural height is auto, which cannot
+   transition, so the ceiling stands in for it: content is never taller than the
+   list's own cap plus the head. */
+.dock-staged { flex: 0 0 auto; max-height: calc(26vh + 40px); overflow: hidden; transition: max-height 240ms ease, margin 240ms ease; }
+.dock-staged.is-folded { max-height: 0; margin: 0; border-top: 0; }
+@media (prefers-reduced-motion: reduce) { .dock-staged { transition: none; } }
+/* Fold is a glyph, not a word: it is the least important control in the row
+   and the only one that recurs, so it should read at a glance and take no
+   width from the actions beside it. */
+.dock-fold { display: grid; width: 26px; height: 26px; padding: 0; place-items: center; }
+/* A row that came back out of the dock. Quieter than its neighbours, and marked:
+   the mark is what keeps 全部加入 from putting it straight back. */
+.advice-item.is-dismissed .advice-text strong { color: #b6b7bd; }
+.advice-tag.is-dismissed { background: #3a3226; color: #e5cc91; }
+/* A collected row keeps the reasons it was proposed with; a hand-dragged row has
+   none, which is how the two kinds tell apart (ADR-0066 §1). The tags sit on the
+   name's line and give way to it: the name is what identifies the row. */
+.collector-name { display: flex; min-width: 0; align-items: center; gap: 7px; }
+.collector-name strong { flex: 0 1 auto; }
+.collector-tags { display: flex; flex: 0 0 auto; gap: 4px; }
+.collector-tags .advice-tag { padding: 1px 5px; font-size: 8px; }
+.collector-item.has-advice { cursor: default; }
+.collector-item .advice-detail { grid-column: 1 / -1; margin: 2px 0 6px 20px; }
 .collector-bar { position: relative; display: flex; align-items: center; gap: 8px; min-height: 46px; margin: 4px -6px 0; padding: 0 10px 0 60px; }
 .collector-bar .collector-target { position: absolute; left: -14px; top: 50%; transform: translateY(-50%); }
 .collector-bar .collector-caption { flex: 1 1 auto; color: #d6d7db; font-size: 12px; }
@@ -522,6 +586,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    by frame during a level change, and the two multiply instead of fighting, so a
    faded arc travels with everything else and stays faded while it does. */
 .sunburst-slice.is-collected { fill-opacity: .17; pointer-events: none; animation: none; }
+.sunburst-slice.is-collected.is-breathing { fill-opacity: .6; }
 
 /* The same object's row leaves the list with it: collapsed to nothing and slid
    to the right, towards the dock. The base max-height gives the collapse
@@ -579,9 +644,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .advice-button { padding: 8px 13px; border: 1px solid #5b5c63; border-radius: 6px; background: #2c2d33; color: #e4e4e8; font-size: 11px; box-shadow: 0 6px 16px rgba(0,0,0,.3); }
 .advice-button:hover:not(:disabled) { border-color: #a4a5ac; color: #fff; }
 .advice-button:disabled { color: #85868d; }
-.advice-corner.is-open .advice-button { border-color: #4c7cc4; }
 
-.advice-panel { display: flex; width: min(420px, calc(100vw - 44px)); max-height: min(58vh, 520px); flex-direction: column; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0,0,0,.35); }
 .advice-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 11px 12px 8px; border-bottom: 1px solid #35363d; }
 .advice-head h3 { margin: 0; color: #f1f1f3; font-size: 14px; font-weight: 500; }
 /* Between the header and the list: what was staged for you, and one button for
@@ -599,7 +662,8 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .advice-list { min-height: 0; flex: 1; padding: 4px 6px; overflow-y: auto; }
 .advice-empty { margin: 0; padding: 18px 8px; color: #96979e; font-size: 10px; text-align: center; }
 
-.advice-item { padding: 6px 6px 7px; border-radius: 6px; }
+.advice-item { padding: 6px 6px 7px; border-radius: 6px; cursor: default; }
+.advice-item:hover { background: rgba(255, 255, 255, .05); }
 .advice-item + .advice-item { border-top: 1px solid #33343a; }
 .advice-summary { display: flex; width: 100%; align-items: center; gap: 8px; padding: 0; border: 0; background: transparent; text-align: left; }
 /* Risk is a colour and a word, never a colour alone: the word is in the tag row
@@ -673,9 +737,16 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .advisor-note { margin: 2px 0 0; color: #8b8c93; font-size: 9px; line-height: 1.6; }
 .advisor-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid #35363d; }
 
-.advice-corner-actions { display: flex; align-items: center; gap: 6px; }
-.advice-button.is-icon { padding: 8px 10px; }
-.advice-gear { color: #85868d; font-size: 10px; font-weight: 600; letter-spacing: .04em; }
+/* One control, two halves: run on the left, settings past a divider. The halves
+   drop their own borders and shadows and the segment carries them, so the pair
+   reads as a single object. */
+.advice-segment { display: flex; align-items: stretch; overflow: hidden; border: 1px solid #5b5c63; border-radius: 6px; background: #2c2d33; box-shadow: 0 6px 16px rgba(0,0,0,.3); }
+.advice-segment .advice-button { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.advice-segment .advice-button + .advice-button { border-left: 1px solid #5b5c63; }
+.advice-segment .advice-button:hover:not(:disabled) { background: rgba(255,255,255,.06); }
+.advice-corner.is-open .advice-segment { border-color: #4c7cc4; }
+.advice-button.is-icon { display: grid; padding: 0 10px; place-items: center; }
+.advice-gear { color: #85868d; }
 .advice-gear.is-on { color: #6f9ede; }
 .advisor-fault { margin: 0; padding: 7px 9px; border-radius: 5px; background: #3a3226; color: #e5cc91; font-size: 9px; line-height: 1.6; }
 

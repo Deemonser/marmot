@@ -47,3 +47,29 @@ export function stageSummary(staged: number, stagedBytes: string, remaining: num
   const head = "已自动加入 " + staged + " 项可安全清理 · " + stagedBytes;
   return remaining > 0 ? head + "，其余 " + remaining + " 项需要你确认" : head;
 }
+
+// The dock has two sections and an object is in exactly one of them (ADR-0066
+// §2): a suggestion that has been collected leaves "待确认" for "已收集", and one
+// taken back out of the dock returns with a mark. The mark matters to the bulk
+// button: "全部加入" acting on a list the user can see is what separates it from
+// pre-filling the cart, and a list that quietly re-included what the user had
+// just removed would break that promise.
+export type PendingItem = StageableItem & { path: string };
+
+// bulkCandidates is what "全部加入 N 项" would add: not manual (it would fail),
+// not already collected (nothing to do), not dismissed (the user said no).
+export function bulkCandidates<T extends PendingItem>(
+  items: T[],
+  collected: (item: T) => boolean,
+  dismissed: Set<string>,
+): T[] {
+  return items.filter((item) => !item.manual && !collected(item) && !dismissed.has(item.path));
+}
+
+// sourceLabel names where a suggestion came from, in the words the row shows.
+// A rule is named by its rule; a model claim carries its confidence, because
+// that number is the only thing separating it from a rule in the user's eyes.
+export function sourceLabel(item: { source: string; ruleName: string; category: string; confidence: number }): string {
+  if (item.source === "advisor") return "AI · " + Math.round(item.confidence * 100) + "%";
+  return item.ruleName || item.category;
+}
