@@ -2589,7 +2589,7 @@ export default function App() {
       // The key is never read back, so it must not linger in the form either.
       setAdvisorForm((form) => ({ ...form, apiKey: "" }));
       setAdvisorOpen(false);
-      notify("已连接 " + next.description);
+      notify("已保存并启用 AI 分析：" + next.description);
     } catch (error) {
       notify("保存失败：" + String(error));
     } finally {
@@ -2616,7 +2616,7 @@ export default function App() {
     try {
       await MarmotService.ClearAdvisor();
       setAdvisor(await MarmotService.GetAdvisorStatus());
-      notify("已断开 AI，仅使用本机规则。");
+      notify("已删除 AI 配置和 key，仅使用本机规则。");
     } catch (error) {
       notify("清除失败：" + String(error));
     }
@@ -3746,11 +3746,13 @@ export default function App() {
         <div className="evidence-scrim" role="dialog" aria-modal="true" onClick={() => setAdvisorOpen(false)}>
           <div className="advisor-sheet" onClick={(event) => event.stopPropagation()}>
             <header>
-              <div>
-                <p className="eyebrow">AI 设置</p>
-                <h3>{advisor?.configured ? advisor.description : advisor?.saved && !advisor.enabled ? "已关闭" : "未连接"}</h3>
-              </div>
-              <button className="quiet-button" onClick={() => setAdvisorOpen(false)}>关闭</button>
+              {/* One title. The state -- which model, whether it is on -- is said
+                  once, in the switch row below; repeating it up here in the raw
+                  "model @ host" form was the same fact twice in two typefaces. */}
+              <h3>AI 设置</h3>
+              <button className="quiet-button sheet-close" onClick={() => setAdvisorOpen(false)} aria-label="关闭" title="关闭">
+                <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+              </button>
             </header>
             <div className="advisor-body">
               {/* The switch. Off keeps the endpoint and the key and installs no
@@ -3763,7 +3765,7 @@ export default function App() {
                     {!advisor?.saved
                       ? "保存配置后即可开启"
                       : advisor.configured
-                        ? "已连接 " + advisor.description
+                        ? "已启用 · " + advisor.description
                         : advisor.enabled
                           ? "未能启用，见下方原因"
                           : "已关闭，仅使用本机规则"}
@@ -3786,7 +3788,7 @@ export default function App() {
                   here: DeepSeek, Kimi, Qwen, OpenRouter, or a local vLLM/Ollama.
                   That is why there is no provider dropdown. */}
               <label>
-                <span>Endpoint</span>
+                <span>API 地址</span>
                 <input
                   value={advisorForm.baseUrl}
                   spellCheck={false}
@@ -3813,50 +3815,60 @@ export default function App() {
                   placeholder={advisor?.hasKey ? "已保存，留空则保持不变" : "sk-…"}
                 />
               </label>
-              <label>
-                <span>JSON 约束</span>
-                <select
-                  value={advisorForm.jsonMode}
-                  onChange={(event) => setAdvisorForm((form) => ({ ...form, jsonMode: event.target.value }))}
-                >
-                  <option value="json_object">json_object（DeepSeek 等多数服务）</option>
-                  <option value="json_schema">json_schema（部分服务，DeepSeek 不支持）</option>
-                  <option value="">不约束（仅靠提示词）</option>
-                </select>
-              </label>
-              <label>
-                <span>推理强度</span>
-                <select
-                  value={advisorForm.reasoningEffort}
-                  onChange={(event) => setAdvisorForm((form) => ({ ...form, reasoningEffort: event.target.value }))}
-                >
-                  {/* Reasoning models default to a high effort. This task is
-                      classification against a fixed output contract, and the
-                      measured cost of the default was 239s spent thinking and an
-                      answer cut off at the output cap. The numbers on each option
-                      are real: one identical pack, deepseek-v4-flash, R-063 §4e.
-                      They are here because the choice is a trade, and a trade
-                      cannot be made from a word like "low". */}
-                  <option value="disabled">关闭思考（实测 34s，AI 给出 22 条，更激进）</option>
-                  <option value="low">low（实测 118–191s，AI 给出 6–7 条，更保守）</option>
-                  <option value="high">high（服务端默认，更慢更贵）</option>
-                  <option value="max">max</option>
-                  <option value="omit">不发送该字段（非 DeepSeek 服务）</option>
-                </select>
-              </label>
+              {/* The two knobs most people never touch, folded. Both are about
+                  the request's shape, not about which service answers. */}
+              <details className="advisor-advanced">
+                <summary>高级选项</summary>
+                <label>
+                  <span>JSON 约束</span>
+                  <select
+                    value={advisorForm.jsonMode}
+                    onChange={(event) => setAdvisorForm((form) => ({ ...form, jsonMode: event.target.value }))}
+                  >
+                    <option value="json_object">json_object · 多数服务</option>
+                    <option value="json_schema">json_schema · 部分服务</option>
+                    <option value="">不约束，仅靠提示词</option>
+                  </select>
+                </label>
+                <label>
+                  <span>推理强度</span>
+                  <select
+                    value={advisorForm.reasoningEffort}
+                    onChange={(event) => setAdvisorForm((form) => ({ ...form, reasoningEffort: event.target.value }))}
+                  >
+                    {/* Reasoning models default to a high effort. This task is
+                        classification against a fixed output contract, and the
+                        measured cost of the default was 239s spent thinking and an
+                        answer cut off at the output cap. The choice is a trade, so
+                        the trade is stated -- in the hint below, in one line, not
+                        inside every option. Numbers: one identical pack,
+                        deepseek-v4-flash, R-063 §4e. */}
+                    <option value="disabled">关闭</option>
+                    <option value="low">低</option>
+                    <option value="high">高</option>
+                    <option value="max">最高</option>
+                    <option value="omit">不发送该字段</option>
+                  </select>
+                  <span className="advisor-hint">
+                    关闭最快、建议最多（实测 34 秒、22 条）；越高越慢越贵、建议越保守（低：约 2–3 分钟、6–7 条）。
+                    非 DeepSeek 服务若拒绝该字段，选「不发送」。
+                  </span>
+                </label>
+              </details>
               <p className="advisor-note">
-                Key 加密保存在应用自己的目录里（AES-256-GCM，密钥绑定本机，
-                文件 0600），不写进日志或快照。同机上以你的身份运行的程序仍可解开它。
-                只有你点击「AI 分析」时才会发起网络请求，应用不做任何其他出网。
-                发送内容可在待确认区右上角的「查看发送内容」中逐字节查看。
+                Key 以 AES-256-GCM 加密保存在应用目录（密钥绑定本机，文件 0600），不进日志和快照；同机上以你身份运行的程序仍可解开。
+                只有你点「AI 分析」时才会出网，发送内容可在待确认区的「查看发送内容」中逐字查看。
               </p>
             </div>
             <footer className="advisor-foot">
-              {advisor?.configured && (
-                <button className="quiet-button" onClick={() => void clearAdvisor()}>断开</button>
+              {/* There is no connection to break: every analysis is one request.
+                  This deletes the saved endpoint, model and key; pausing is the
+                  switch's job. */}
+              {advisor?.saved && (
+                <button className="quiet-button" onClick={() => void clearAdvisor()}>删除配置</button>
               )}
               <button className="advice-button" disabled={advisorSaving || !advisorForm.model.trim()} onClick={() => void saveAdvisor()}>
-                {advisorSaving ? "保存中…" : "保存并连接"}
+                {advisorSaving ? "保存中…" : "保存"}
               </button>
             </footer>
           </div>
@@ -3873,7 +3885,9 @@ export default function App() {
                 <p className="eyebrow">将要发送的内容</p>
                 <h3>{evidence.nodes} 个节点 · {formatBytes(evidence.bytes)} · 下限 {formatBytes(evidence.floorBytes)}</h3>
               </div>
-              <button className="quiet-button" onClick={() => setEvidence(null)}>关闭</button>
+              <button className="quiet-button sheet-close" onClick={() => setEvidence(null)} aria-label="关闭" title="关闭">
+                <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+              </button>
             </header>
             <pre className="evidence-text">{evidence.text}</pre>
           </div>

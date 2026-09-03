@@ -834,7 +834,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* The advisor sheet reuses the evidence scrim, so it inherits the pinned grid
    track and cannot stretch the window either. */
 .advisor-sheet { display: flex; width: min(460px, 100%); min-width: 0; max-width: 100%; max-height: 100%; flex-direction: column; border-radius: 9px; background: #2c2d33; box-shadow: 0 14px 40px rgba(0,0,0,.45); }
-.advisor-sheet header { display: flex; flex: 0 0 auto; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 12px 14px 10px; border-bottom: 1px solid #35363d; }
+.advisor-sheet header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px 10px; border-bottom: 1px solid #35363d; }
 .advisor-sheet h3 { margin: 0; overflow: hidden; color: #f1f1f3; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .advisor-body { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 10px; padding: 13px 14px; overflow-y: auto; }
 .advisor-body label { display: flex; flex-direction: column; gap: 4px; }
@@ -842,6 +842,19 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .advisor-body input, .advisor-body select { padding: 6px 8px; border: 1px solid #4a4b52; border-radius: 4px; background: #232429; color: #e4e4e8; font-size: 11px; }
 .advisor-body input:focus, .advisor-body select:focus { border-color: #4c7cc4; outline: none; }
 .advisor-note { margin: 2px 0 0; color: #8b8c93; font-size: 9px; line-height: 1.6; }
+/* Close is a glyph in both sheets: the least important control in the header
+   and the one that recurs, so it reads at a glance and takes no width. */
+.sheet-close { display: grid; width: 26px; height: 26px; padding: 0; place-items: center; color: #9fa0a7; }
+.sheet-close:hover { color: #f1f1f3; }
+/* The folded pair of request knobs. The summary is a row like the labels above
+   it; open, its children take the same spacing as the rest of the body. */
+.advisor-advanced { display: flex; flex-direction: column; gap: 10px; }
+.advisor-advanced summary { color: #8b8c93; font-size: 10px; cursor: pointer; list-style: none; user-select: none; }
+.advisor-advanced summary::-webkit-details-marker { display: none; }
+.advisor-advanced summary::before { content: ""; display: inline-block; width: 5px; height: 5px; margin: 0 7px 1px 1px; border-right: 1.4px solid currentColor; border-bottom: 1.4px solid currentColor; transform: rotate(-45deg); transition: transform .15s ease; }
+.advisor-advanced[open] summary::before { transform: rotate(45deg); }
+.advisor-advanced summary:hover { color: #c9cad0; }
+.advisor-hint { color: #8b8c93; font-size: 9px; line-height: 1.6; }
 .advisor-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 14px 12px; border-top: 1px solid #35363d; }
 
 /* One control, two halves: run on the left, settings past a divider. The halves

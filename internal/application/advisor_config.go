@@ -142,8 +142,8 @@ func keyOptional(baseURL string) bool {
 
 // ConfigureAdvisor validates, persists and installs the advisor. An empty key
 // keeps whatever is already stored, so re-saving the endpoint does not require
-// the user to paste the credential again. Saving is also switching on: the
-// button says 保存并连接, and a save that left the switch off would be a lie.
+// the user to paste the credential again. Saving is also switching on: a
+// configuration the user just filled in and saved is one they mean to use.
 func (s *Service) ConfigureAdvisor(settings AdvisorSettings, apiKey string) (AdvisorStatus, error) {
 	if s.credentials == nil || s.advisorFactory == nil {
 		return AdvisorStatus{}, errors.New("当前构建不支持配置 AI 分析")
@@ -176,7 +176,7 @@ func (s *Service) ConfigureAdvisor(settings AdvisorSettings, apiKey string) (Adv
 	}
 	s.setAdvisorFault("")
 	s.SetAdvisor(advisor)
-	log.Printf("advisor: 已连接 %s", advisor.Describe())
+	log.Printf("advisor: 已保存并启用 %s", advisor.Describe())
 	return s.GetAdvisorStatus(), nil
 }
 
@@ -342,7 +342,7 @@ func (s *Service) ClearAdvisor() error {
 	if err := s.credentials.DeleteCredential(advisorConfigAccount); err != nil {
 		return err
 	}
-	log.Printf("advisor: 已断开并删除配置，仅使用本机规则")
+	log.Printf("advisor: 已删除配置和 key，仅使用本机规则")
 	return nil
 }
 
