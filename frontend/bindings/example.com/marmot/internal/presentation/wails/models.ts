@@ -347,6 +347,7 @@ export interface StorageSourceOverview {
     "message": string;
     "scannable": boolean;
     "members": StorageVolumeMember[] | null;
+    "icon": string;
 }
 
 export interface StorageVolumeMember {

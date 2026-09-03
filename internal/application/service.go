@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -26,13 +27,17 @@ const (
 )
 
 type Service struct {
-	store            ports.SnapshotStore
-	scanner          ports.Scanner
-	files            ports.FileSystem
-	permissions      ports.PermissionProbe
-	trash            ports.Trash
-	volumes          ports.VolumeCatalog
-	preview          ports.PreviewPort
+	store       ports.SnapshotStore
+	scanner     ports.Scanner
+	files       ports.FileSystem
+	permissions ports.PermissionProbe
+	trash       ports.Trash
+	volumes     ports.VolumeCatalog
+	preview     ports.PreviewPort
+	// icons is optional: without it the source rows draw their built-in glyph.
+	icons            ports.VolumeIcons
+	iconMu           sync.Mutex
+	iconCache        map[string]string
 	legacyCacheDir   string
 	mu               sync.RWMutex
 	tasks            map[string]*scanTask
@@ -78,8 +83,11 @@ type Dependencies struct {
 	Trash          ports.Trash
 	Volumes        ports.VolumeCatalog
 	Preview        ports.PreviewPort
-	Credentials    ports.CredentialStore
-	ScanTotals     ports.ScanTotals
+	// Icons supplies the system's icon per mounted volume for the source page.
+	// Optional; nil leaves StorageSourceOverview.Icon empty.
+	Icons       ports.VolumeIcons
+	Credentials ports.CredentialStore
+	ScanTotals  ports.ScanTotals
 	// AdvisorFactory is injected rather than imported so the application layer
 	// stays free of transport code (PROJECT-STRUCTURE dependency rule).
 	AdvisorFactory AdvisorFactory
@@ -213,6 +221,10 @@ type StorageSourceOverview struct {
 	Message    string                `json:"message"`
 	Scannable  bool                  `json:"scannable"`
 	Members    []StorageVolumeMember `json:"members"`
+	// Icon is the system's icon for the source's mount point as a PNG data URL,
+	// or empty when no icon port is wired or the lookup failed. Presentation
+	// only: it is not part of the capacity or identity contract.
+	Icon string `json:"icon"`
 }
 
 type MapQuery struct {
@@ -360,7 +372,7 @@ func NewService(deps Dependencies) *Service {
 	if emit == nil {
 		emit = func(string, any) {}
 	}
-	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, credentials: deps.Credentials, scanTotals: deps.ScanTotals, advisorFactory: deps.AdvisorFactory, legacyCacheDir: deps.LegacyCacheDir, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
+	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, icons: deps.Icons, iconCache: make(map[string]string), credentials: deps.Credentials, scanTotals: deps.ScanTotals, advisorFactory: deps.AdvisorFactory, legacyCacheDir: deps.LegacyCacheDir, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
 }
 
 // BeginRecovery lets the Wails window become visible before large legacy cache
@@ -474,7 +486,37 @@ func (s *Service) GetStorageSources() ([]StorageSourceOverview, error) {
 	if err != nil {
 		return nil, err
 	}
-	return projectStorageSources(items), nil
+	sources := projectStorageSources(items)
+	for index := range sources {
+		sources[index].Icon = s.volumeIcon(sources[index].Path)
+	}
+	return sources, nil
+}
+
+// volumeIconPixels is the rendered size of a source row's icon: the row shows
+// it at 32pt, so 64px covers a Retina display without upscaling.
+const volumeIconPixels = 64
+
+// volumeIcon returns the data URL for a mount point's system icon, cached for
+// the life of the process: the icon changes about as often as the volume's
+// name does, and the source list is re-read after every scan.
+func (s *Service) volumeIcon(path string) string {
+	if s.icons == nil || path == "" {
+		return ""
+	}
+	s.iconMu.Lock()
+	defer s.iconMu.Unlock()
+	if icon, ok := s.iconCache[path]; ok {
+		return icon
+	}
+	png, err := s.icons.VolumeIcon(path, volumeIconPixels)
+	icon := ""
+	if err == nil && len(png) > 0 {
+		icon = "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	}
+	// A failure is cached too: retrying on every refresh would only repeat it.
+	s.iconCache[path] = icon
+	return icon
 }
 
 // RevealStorageSource shows a storage source in Finder. It takes the source's

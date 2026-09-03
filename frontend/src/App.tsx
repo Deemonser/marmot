@@ -1162,12 +1162,19 @@ function VolumeTile({
 	return (
 	  <article className={"volume-row" + (source.scannable ? "" : " is-disabled")}>
 	    <span className="volume-icon" aria-hidden="true">
-	      <svg viewBox="0 0 30 30">
-	        <rect className="disk-body" x="3.5" y="7" width="23" height="16" rx="2.6" />
-	        <rect className="disk-gloss" x="4.5" y="8" width="21" height="6.5" rx="1.8" />
-	        <circle className="disk-hub" cx="15" cy="15" r="4" />
-	        <circle className="disk-pin" cx="15" cy="15" r="1.1" />
-	      </svg>
+	      {/* The system's own icon for the volume, as Finder draws it: the boot
+	          drive with the Apple mark, the orange external disk, a custom icon.
+	          The drawn glyph is the fallback for a lookup that returned nothing. */}
+	      {source.icon ? (
+	        <img className="volume-icon-image" src={source.icon} alt="" draggable={false} />
+	      ) : (
+	        <svg viewBox="0 0 30 30">
+	          <rect className="disk-body" x="3.5" y="7" width="23" height="16" rx="2.6" />
+	          <rect className="disk-gloss" x="4.5" y="8" width="21" height="6.5" rx="1.8" />
+	          <circle className="disk-hub" cx="15" cy="15" r="4" />
+	          <circle className="disk-pin" cx="15" cy="15" r="1.1" />
+	        </svg>
+	      )}
 	    </span>
 	    <div className="volume-title">
 	      <strong>{source.name}</strong>

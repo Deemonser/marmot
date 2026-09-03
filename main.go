@@ -56,6 +56,7 @@ func main() {
 		Trash:          adapter,
 		Volumes:        adapter,
 		Preview:        adapter,
+		Icons:          adapter,
 		Credentials:    adapter,
 		ScanTotals:     adapter,
 		// The composition root is where a transport is chosen; the application
@@ -114,8 +115,8 @@ func main() {
 	// the browser preview — dragging across it would snap the layout
 	// (App.tsx minWindowWidth mirrors it — change them together).
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:    "Marmot",
-		Hidden:   true,
+		Title:  "Marmot",
+		Hidden: true,
 		// Mirrors App.tsx sourceWindowSize — the pages are scaled down from
 		// the reference's 968 so the app reads as a small tool.
 		Width:    860,

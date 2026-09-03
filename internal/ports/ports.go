@@ -149,6 +149,15 @@ type PreviewPort interface {
 	Reveal(string) (string, error)
 }
 
+// VolumeIcons returns the icon the system itself shows for a mounted volume,
+// as PNG bytes at the requested pixel size: the internal drive with the Apple
+// mark for the boot volume, the orange external-drive icon for a USB disk, a
+// user's own custom icon where one is set. These are the operating system's
+// icons, not a copy of any other application's artwork (SDD §5.2 rule 6).
+type VolumeIcons interface {
+	VolumeIcon(path string, pixels int) ([]byte, error)
+}
+
 // ScanTotals remembers, per scan root, how many bytes the last completed walk
 // counted. The progress numerator is lstat-allocated bytes, and no statfs
 // figure shares that basis — "volume used" runs ~6% high (purgeable, local

@@ -126,6 +126,7 @@ type StorageSourceOverview struct {
 	Message    string                `json:"message"`
 	Scannable  bool                  `json:"scannable"`
 	Members    []StorageVolumeMember `json:"members"`
+	Icon       string                `json:"icon"`
 }
 
 type ChildrenQuery struct {
@@ -468,6 +469,7 @@ func (s *Service) GetStorageSources() ([]StorageSourceOverview, error) {
 			Message:    source.Message,
 			Scannable:  source.Scannable,
 			Members:    members,
+			Icon:       source.Icon,
 		})
 	}
 	return result, nil

@@ -118,6 +118,9 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .volume-row.is-disabled { opacity: .55; }
 .volume-icon { display: grid; place-items: center; width: 34px; height: 34px; }
 .volume-icon svg { width: 30px; height: 30px; }
+/* The system icon is rendered at 64px and shown at 32pt, so it is sharp on a
+   Retina display and never upscaled. */
+.volume-icon-image { display: block; width: 32px; height: 32px; -webkit-user-drag: none; }
 .disk-body { fill: #9a9ca4; stroke: #6f7178; stroke-width: .7; }
 .disk-gloss { fill: #b9bbc2; }
 .disk-hub { fill: #7d7f87; }

@@ -167,6 +167,7 @@ StorageSourceOverview
   total_bytes / used_bytes / free_bytes
   usage_basis / permission / message / scannable
   members[]
+  icon                                  （PNG data URL，可为空）
 
 StorageVolumeMember
   id / name / path / role
@@ -183,6 +184,11 @@ StorageVolumeMember
    `volume_used` 只用于明细，禁止相加得到入口占用。容器数据缺失时必须保留明确的降级 `usage_basis`。
 5. StorageSource 只是产品投影，不改变 Scanner 的 `ScanScope`、挂载跳过规则、节点 `volume_id`
    或显式 Data 扫描能力。
+6. `icon` 是**操作系统为该挂载点提供的图标**（`ports.VolumeIcons`，Darwin 用 `NSWorkspace iconForFile:`
+   渲染成 64px PNG），启动盘因此是带苹果标的内置硬盘、外置盘是橙色外接盘、用户自定义的卷图标照常显示——
+   这正是参考产品"多种磁盘图标"的来源，参考产品的图标资源本身受版权保护，**不得复制**。该字段只作展示，
+   不进入容量、身份或扫描契约；端口未接入或查询失败时为空，前端退回内置图形。Application 按挂载路径缓存
+   到进程结束：源列表每次扫描后都会重读，而图标不会跟着变。
 
 该契约由 [R-018](research/R-018-APFS卷组与产品存储源映射.md) 和
 [ADR-0020](adr/0020-APFS卷组与产品存储源映射.md) 锁定。前端和 Wails 只消费
