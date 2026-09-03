@@ -565,18 +565,31 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    push 待确认 down to a sliver, and the other way round. */
 .dock-section { display: flex; min-height: 0; flex: 0 1 auto; flex-direction: column; }
 .dock-section + .dock-section { margin-top: 4px; border-top: 1px solid #35363d; }
-/* 待确认 asks for the whole column and lets flex clamp it to what the panel has
-   left after 已收集 and the bar; folded, it goes to nothing. Both are lengths,
-   so the change between them is a transition rather than a re-layout, and the
-   dock -- bottom-anchored, height from content -- shrinks with it from the top. */
-.dock-pending { height: calc(100vh - 54px); flex: 0 1 auto; overflow: hidden; transition: height 240ms ease, margin 240ms ease; }
-.dock-pending.is-folded { height: 0; margin: 0; }
+/* 待确认 folds the way 已收集 does below: a grid row from 1fr to 0fr, so both
+   sections start at their content's real height and reach zero together. An
+   earlier version asked for the whole column (height: calc(100vh - 54px)) and
+   let flex clamp it. That target was far above what the section could have,
+   so it hit the ceiling by ~100ms of the 240ms and then got squeezed back as
+   已收集 kept growing: the panel's edge stopped early and the lower list
+   looked late. For the fr fold to be exact, the content must fit without the
+   panel's max-height biting, so the list carries its own cap: the panel's
+   ceiling minus the 已收集 cap (26vh) and the fixed parts around both lists
+   (panel padding 6 + head 51 + summary 20 + list padding 2 + 已收集 divider 5,
+   head 22, padding 4 + bar 38 = 148px). flex-shrink stays as a guard: if the
+   sum ever exceeds the ceiling the fold is still safe, only less exact.
+   The column is minmax(0, 1fr), not auto: a grid item's min-width is its
+   min-content, and one unbreakable path would widen the row past the panel
+   and be clipped on the right. Same on 已收集 below. */
+.dock-pending { display: grid; flex: 0 1 auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; overflow: hidden; transition: grid-template-rows 240ms ease, margin 240ms ease; }
+.dock-pending.is-folded { grid-template-rows: 0fr; margin: 0; }
 .dock-pending.is-folded + .dock-section { margin-top: 0; border-top: 0; }
-@media (prefers-reduced-motion: reduce) { .dock-pending { transition: none; } .collector-target::before { animation: none !important; } .collector-bar .collector-count { animation: none; } }
+.dock-pending-body { display: flex; min-width: 0; min-height: 0; flex-direction: column; transition: opacity 160ms ease 40ms; }
+.dock-pending.is-folded .dock-pending-body { opacity: 0; transition: opacity 140ms ease; }
+@media (prefers-reduced-motion: reduce) { .dock-pending, .dock-pending-body { transition: none; } .collector-target::before { animation: none !important; } .collector-bar .collector-count { animation: none; } }
 .dock-section-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 6px 2px; color: #9fa0a7; font-size: 9px; font-weight: 600; letter-spacing: .12em; }
 .dock-pending .advice-head { padding: 7px 6px 6px; }
 .dock-pending .advice-stage { padding: 6px 6px; }
-.dock-pending .advice-list { flex: 1 1 auto; min-height: 0; padding: 2px 0 0; }
+.dock-pending .advice-list { flex: 1 1 auto; min-height: 0; max-height: calc(74vh - 202px); padding: 2px 0 0; }
 .advice-summary-line { margin: 0; padding: 0 6px 6px; color: #96979e; font-size: 9px; line-height: 1.6; }
 /* 已收集 folds with the badge. Its natural height is auto, which cannot
    transition, so the ceiling stands in for it: content is never taller than the
@@ -587,9 +600,9 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    see, then dropped.) The rows fade as they fold, and the panel's background
    waits for them -- see .collector-panel.is-bar-only -- so no text is ever
    left standing on the bare page. */
-.dock-staged { display: grid; flex: 0 0 auto; grid-template-rows: 1fr; overflow: hidden; transition: grid-template-rows 240ms ease, margin 240ms ease; }
+.dock-staged { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; overflow: hidden; transition: grid-template-rows 240ms ease, margin 240ms ease; }
 .dock-staged.is-folded { grid-template-rows: 0fr; margin: 0; border-top: 0; }
-.dock-staged-body { display: flex; min-height: 0; flex-direction: column; transition: opacity 160ms ease 40ms; }
+.dock-staged-body { display: flex; min-width: 0; min-height: 0; flex-direction: column; transition: opacity 160ms ease 40ms; }
 .dock-staged.is-folded .dock-staged-body { opacity: 0; transition: opacity 140ms ease; }
 @media (prefers-reduced-motion: reduce) { .dock-staged, .dock-staged-body { transition: none; } }
 /* Fold is a glyph, not a word: it is the least important control in the row

@@ -3367,6 +3367,10 @@ export default function App() {
                 aria-hidden={!(adviceOpen && dockOpen) || undefined}
                 inert={!(adviceOpen && dockOpen)}
               >
+                {/* One child for the section's single grid row, so the fold can
+                    animate the row from 1fr to 0fr -- the content's real height to
+                    nothing -- the same way 已收集 folds below. See .dock-pending. */}
+                <div className="dock-pending-body">
                 <header className="advice-head">
                   <div>
                     <p className="eyebrow">待确认</p>
@@ -3481,6 +3485,7 @@ export default function App() {
                       </article>
                     );
                   })}
+                </div>
                 </div>
 
               </section>
