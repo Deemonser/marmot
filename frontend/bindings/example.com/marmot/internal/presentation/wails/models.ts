@@ -59,6 +59,14 @@ export interface AdviceItem {
     "reclaimableBytes": number;
     "recovery": string;
     "risk": string;
+
+    /**
+     * RiskReasons are the codes behind the tier (ADR-0067); the frontend
+     * translates them. Activity and IdleDays name the signal, when there is one.
+     */
+    "riskReasons": string[] | null;
+    "activity": string;
+    "idleDays": number;
     "confidence": number;
     "evidence": string[] | null;
     "whatBreaks": string;

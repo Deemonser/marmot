@@ -3,7 +3,7 @@ import { paintMorph, clearMorphStyles, planMorph, arcPath, morphDuration, morphA
 import type { ArcGeom, MorphPlan } from "./morph";
 import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstHiddenSpace, sunburstEndAngle, previewDwellMs, previewLeaveMs } from "./sunburst";
 import type { HueBand } from "./sunburst";
-import { autoStageable, stageSummary, bulkCandidates, sourceLabel } from "./advice";
+import { autoStageable, bulkCandidates, inlineRiskReasons, riskReasonLabel, sourceLabel, stageSummary } from "./advice";
 import { countdownDigit, countdownFraction, deleteFraction, ringOffset } from "./countdown";
 import { useNotice, NoticeToast } from "./useNotice";
 import { meterColor } from "./meter";
@@ -339,6 +339,11 @@ function AdviceTags({ item }: { item: AdviceItem }) {
         {recoveryLabels[item.recovery] ?? item.recovery}
       </span>
       <span className="advice-tag">{riskLabels[item.risk] ?? item.risk}</span>
+      {/* Why the tier is what it is (ADR-0067 §5). Only the reasons that carry a
+          decision ride inline; the detail view lists them all. */}
+      {inlineRiskReasons(item.riskReasons).map((code) => (
+        <span key={code} className={"advice-tag is-reason reason-" + code}>{riskReasonLabel(code)}</span>
+      ))}
     </>
   );
 }
@@ -350,6 +355,10 @@ function AdviceDetail({ item }: { item: AdviceItem }) {
     <dl className="advice-detail">
       <dt>依据</dt>
       <dd>{(item.evidence ?? []).join(" · ") || "—"}</dd>
+      {(item.riskReasons ?? []).length > 0 && <>
+        <dt>判定依据</dt>
+        <dd>{(item.riskReasons ?? []).map(riskReasonLabel).join(" · ")}</dd>
+      </>}
       <dt>删除后</dt>
       <dd>{item.whatBreaks}</dd>
       <dt>如何恢复</dt>

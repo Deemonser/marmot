@@ -1,7 +1,6 @@
 package recommendation
 
 import (
-	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -39,6 +38,10 @@ type Rule struct {
 	// the following segment sequence at any depth; "*" matches one whole
 	// segment; a trailing "*" on a segment matches a prefix.
 	Pattern string
+	// FileOnly restricts a rule to file nodes. Patterns are segment matches, so
+	// `Downloads/*.dmg` would otherwise name a directory that happens to end in
+	// .dmg -- and everything the user put inside it.
+	FileOnly bool
 	// MinAgeDays makes a rule fire only on objects whose newest content is at
 	// least this old. Zero means no age condition.
 	//
@@ -62,10 +65,25 @@ type Rule struct {
 	// The risk is then adjusted from the project's source activity instead of the
 	// catalog carrying a cold and a warm copy of every such rule.
 	ProjectSensitive bool
-	Recovery         Recovery
-	Risk             Risk
-	WhatBreaks       string
-	HowToRestore     string
+	// Generic marks a rule that matches a container of many different things and
+	// cannot name the one it matched: `Library/Caches/*` fires on every app's
+	// cache and can only say "对应应用". Declared rather than inferred from the
+	// pattern, because segment counting gets it backwards -- `**/node_modules`
+	// is one segment and names its object exactly. A generic match reports a
+	// lower confidence and carries the reason, so the vague wording is explained
+	// rather than presented as certainty.
+	Generic bool
+	// AgeSensitive marks an object whose own newest mtime is its usage signal: an
+	// application writes its cache whenever it runs, so a cache unwritten for
+	// months belongs to an app nobody has run for months. Assess relaxes review
+	// to safe on that signal and never tightens on it (R-069 §4.2). Not to be
+	// confused with a build artifact's age, which says nothing about whether the
+	// artifact is about to be rebuilt.
+	AgeSensitive bool
+	Recovery     Recovery
+	Risk         Risk
+	WhatBreaks   string
+	HowToRestore string
 }
 
 // Catalog is ordered: the first match wins, so the specific entries come before
@@ -282,6 +300,26 @@ var Catalog = []Rule{
 		HowToRestore: "在壁纸设置中重新选择该素材，系统会重新下载。",
 	},
 
+	// Installers left in Downloads after the install. Not user content -- the app
+	// they installed is the thing being kept -- and not in any guard list, so
+	// until now every one of them was a question for the model. Files only, so
+	// the size floor decides which ones appear, and a 30-day age keeps this
+	// week's download out of the list. The age is the file's mtime: a browser
+	// download carries the time it landed, but `curl -R` and `wget` keep the
+	// server's timestamp, so a fresh download can look old. The cost of that
+	// is one `review` row too many, never a wrong recovery claim.
+	{
+		Name: "下载的安装镜像", Category: "安装包残留", FileOnly: true,
+		Pattern: "Downloads/*.dmg", MinAgeDays: 30, Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		WhatBreaks:   "没有影响。已安装的应用不在这里；这是安装时用过的磁盘镜像。若还没安装，需要重新下载。",
+		HowToRestore: "从原下载地址重新下载。",
+	},
+	{
+		Name: "下载的安装包", Category: "安装包残留", FileOnly: true,
+		Pattern: "Downloads/*.pkg", MinAgeDays: 30, Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		WhatBreaks:   "没有影响。已安装的软件不在这里；这是安装程序本身。若还没安装，需要重新下载。",
+		HowToRestore: "从原下载地址重新下载。",
+	},
 	{
 		Name: "Homebrew 下载缓存", Category: "包管理器缓存",
 		Pattern: "Library/Caches/Homebrew/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
@@ -307,25 +345,25 @@ var Catalog = []Rule{
 		HowToRestore: "下次 pod install 时重新下载。",
 	},
 	{
-		Name: "用户缓存", Category: "应用缓存",
+		Name: "用户缓存", Category: "应用缓存", Generic: true, AgeSensitive: true,
 		Pattern: "Library/Caches/*", Recovery: RecoveryRegenerable, Risk: RiskReview,
 		WhatBreaks:   "对应应用下次启动会慢一些，个别应用会丢失登录态或离线内容。",
 		HowToRestore: "应用自行重建；登录态需要重新登录。",
 	},
 	{
-		Name: "沙盒应用缓存", Category: "应用缓存",
+		Name: "沙盒应用缓存", Category: "应用缓存", Generic: true, AgeSensitive: true,
 		Pattern: "Library/Containers/*/Data/Library/Caches/*", Recovery: RecoveryRegenerable, Risk: RiskReview,
 		WhatBreaks:   "对应应用下次启动会慢一些，可能需要重新下载已缓存的内容。",
 		HowToRestore: "应用自行重建。",
 	},
 	{
-		Name: "应用组缓存", Category: "应用缓存",
+		Name: "应用组缓存", Category: "应用缓存", Generic: true, AgeSensitive: true,
 		Pattern: "Library/Group Containers/*/Library/Caches/*", Recovery: RecoveryRegenerable, Risk: RiskReview,
 		WhatBreaks:   "同一应用组内的应用下次启动会慢一些。",
 		HowToRestore: "应用自行重建。",
 	},
 	{
-		Name: "用户日志", Category: "日志",
+		Name: "用户日志", Category: "日志", Generic: true,
 		Pattern: "Library/Logs/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
 		WhatBreaks:   "失去历史诊断信息；如果正在排查某个应用的问题，先别删。",
 		HowToRestore: "无法恢复，但会继续产生新日志。",
@@ -523,6 +561,8 @@ var Catalog = []Rule{
 // about the path.
 type MatchContext struct {
 	Path string
+	// Kind is "file" or "directory", for rules that only make sense on one.
+	Kind string
 	// AgeDays is the age of the newest content in the object's own subtree.
 	AgeDays int64
 	// ProjectIdleDays is how long the surrounding project's source has been
@@ -597,7 +637,7 @@ var AbsoluteCatalog = []Rule{
 		HowToRestore: "系统更新时自动重新下载。",
 	},
 	{
-		Name: "根级用户缓存", Category: "应用缓存",
+		Name: "根级用户缓存", Category: "应用缓存", Generic: true,
 		Pattern: "/Library/Caches",
 		Manual:  true, Command: "sudo rm -rf /Library/Caches/*",
 		Recovery: RecoveryRegenerable, Risk: RiskReview,
@@ -605,7 +645,7 @@ var AbsoluteCatalog = []Rule{
 		HowToRestore: "多数自动重建。",
 	},
 	{
-		Name: "根级日志", Category: "日志",
+		Name: "根级日志", Category: "日志", Generic: true,
 		Pattern: "/Library/Logs", MinAgeDays: 30,
 		Manual: true, Command: "sudo rm -rf /Library/Logs/*",
 		Recovery: RecoveryIrreplaceable, Risk: RiskReview,
@@ -632,7 +672,23 @@ func (r Rule) Specificity() int {
 	return count
 }
 
+// GenericConfidence is what a container rule reports: it knows the directory,
+// not the object. Everything else in the catalog names its object and reports 1.
+const GenericConfidence = 0.7
+
+// Confidence is the certainty a match carries. A flat 1 told the user that
+// `Library/Caches/*` knew what it was looking at, which it does not.
+func (r Rule) Confidence() float64 {
+	if r.Generic {
+		return GenericConfidence
+	}
+	return 1
+}
+
 func (r Rule) conditionsMet(context MatchContext) bool {
+	if r.FileOnly && context.Kind != "file" {
+		return false
+	}
 	if r.MinAgeDays > 0 && context.AgeDays < r.MinAgeDays {
 		return false
 	}
@@ -746,28 +802,3 @@ const (
 	// cache costs nothing anyone will feel.
 	ProjectDormantDays = 180
 )
-
-// AdjustForProjectActivity rewrites the risk of a project-sensitive suggestion
-// from how live the surrounding work is. Recoverability is unchanged: the bytes
-// come back either way. What changes is whether their absence is felt.
-//
-// Returns the risk to use, plus a sentence to put in front of what_breaks, or ""
-// when nothing needed saying.
-func AdjustForProjectActivity(declared Risk, idleDays int64) (Risk, string) {
-	if idleDays < 0 {
-		return declared, ""
-	}
-	switch {
-	case idleDays <= ProjectActiveDays:
-		if declared == RiskSafe {
-			declared = RiskReview
-		}
-		return declared, fmt.Sprintf("这个项目 %d 天前还改过源码，正在使用中：删掉之后下一次构建要重新下载或重新编译。", idleDays)
-	case idleDays >= ProjectDormantDays:
-		if declared == RiskReview {
-			declared = RiskSafe
-		}
-		return declared, fmt.Sprintf("这个项目的源码已经 %d 天没有改动。", idleDays)
-	}
-	return declared, ""
-}

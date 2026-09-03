@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { autoStageable, stageSummary } from "./advice.ts";
+import { autoStageable, inlineRiskReasons, riskReasonLabel, stageSummary } from "./advice.ts";
 
 const item = (over: Partial<Parameters<typeof autoStageable>[0]> = {}) => ({
   source: "rule", risk: "safe", recovery: "regenerable", ...over,
@@ -80,4 +80,22 @@ test("source label names the rule, or the model with its confidence", () => {
   assert.equal(sourceLabel({ source: "rule", ruleName: "Xcode DerivedData", category: "cache", confidence: 0 }), "Xcode DerivedData");
   assert.equal(sourceLabel({ source: "rule", ruleName: "", category: "cache", confidence: 0 }), "cache");
   assert.equal(sourceLabel({ source: "advisor", ruleName: "", category: "cache", confidence: 0.874 }), "AI · 87%");
+});
+
+// A reason code the UI cannot translate is still a reason: shown as itself,
+// never dropped.
+test("every reason code reads as a sentence and unknown codes survive", () => {
+  for (const code of ["irreplaceable", "login_state", "partial_install", "project_active", "project_dormant",
+    "cache_cold", "generation_superseded", "redownload_cost", "advisor_uncertain", "generic_rule", "catalog"]) {
+    assert.notEqual(riskReasonLabel(code), code);
+  }
+  assert.equal(riskReasonLabel("something_new"), "something_new");
+});
+
+// Inline tags carry a decision; the two that only restate the rule's caution
+// stay in the detail view, and a missing list is an empty list.
+test("inline reasons leave out the restatements", () => {
+  assert.deepEqual(inlineRiskReasons(["project_active", "generic_rule", "catalog", "cache_cold"]), ["project_active", "cache_cold"]);
+  assert.deepEqual(inlineRiskReasons(null), []);
+  assert.deepEqual(inlineRiskReasons(undefined), []);
 });

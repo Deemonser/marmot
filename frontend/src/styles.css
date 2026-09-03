@@ -841,6 +841,9 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Recoverability is the axis a person actually decides on, so it is coloured and
    risk is not: everything regenerable costs at most a download, and only
    `irreplaceable` is a decision that cannot be walked back. */
+.advice-tag.is-reason { background: #3b3542; color: #cbbfd6; }
+.advice-tag.reason-project_active, .advice-tag.reason-login_state, .advice-tag.reason-irreplaceable { background: #46281f; color: #f0b3a3; }
+.advice-tag.reason-project_dormant, .advice-tag.reason-cache_cold, .advice-tag.reason-generation_superseded { background: #2b3a2e; color: #a6cfa8; }
 .advice-tag.is-recovery { font-weight: 600; }
 .advice-tag.recovery-regenerable, .advice-tag.recovery-redownloadable { background: #2b3a2e; color: #a6cfa8; }
 .advice-tag.recovery-irreplaceable { background: #46281f; color: #f0b3a3; }

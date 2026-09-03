@@ -80,7 +80,7 @@ func advisorNodes() []recommendation.EvidenceNode {
 func goodSuggestion(id int64, name string) recommendation.Verdict {
 	return recommendation.Verdict{
 		NodeID: id, Name: name, Verdict: recommendation.VerdictCleanable, Category: "应用缓存",
-		Recovery: string(recommendation.RecoveryRegenerable), Risk: string(recommendation.RiskReview),
+		Recovery:   string(recommendation.RecoveryRegenerable),
 		Confidence: 0.7, Evidence: []string{"占用 5GB"},
 		WhatBreaks: "应用要重新下载内容。", HowToRestore: "应用自行重建。",
 	}

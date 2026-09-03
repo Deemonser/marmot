@@ -148,34 +148,37 @@ func TestProjectActivityDecidesRiskNotTheArtifactAge(t *testing.T) {
 	if rule == nil || !rule.ProjectSensitive {
 		t.Fatalf("build output should be project-sensitive: %v", rule)
 	}
+	project := func(declared Risk, idle int64) Assessment {
+		return Assess(Facts{Source: SourceRule, Recovery: RecoveryRegenerable, Declared: declared, Activity: ActivityProject, IdleDays: idle})
+	}
 
 	// Live project: a `safe` declaration is raised, and the reason says why.
-	risk, note := AdjustForProjectActivity(RiskSafe, 0)
-	if risk != RiskReview {
-		t.Fatalf("an active project's build cache stayed %q", risk)
+	got := project(RiskSafe, 0)
+	if got.Risk != RiskReview {
+		t.Fatalf("an active project's build cache stayed %q", got.Risk)
 	}
-	if !strings.Contains(note, "正在使用") {
-		t.Fatalf("the note does not explain the disruption: %q", note)
+	if !strings.Contains(got.Note, "正在使用") || got.Reasons[0] != ReasonProjectActive {
+		t.Fatalf("the assessment does not explain the disruption: %#v", got)
 	}
 
 	// Dormant project: a cautious `review` may relax.
-	risk, note = AdjustForProjectActivity(RiskReview, 641)
-	if risk != RiskSafe {
-		t.Fatalf("a project idle 641 days stayed %q", risk)
+	got = project(RiskReview, 641)
+	if got.Risk != RiskSafe {
+		t.Fatalf("a project idle 641 days stayed %q", got.Risk)
 	}
-	if !strings.Contains(note, "641") {
-		t.Fatalf("the note does not state the idle time: %q", note)
+	if !strings.Contains(got.Note, "641") || got.Reasons[0] != ReasonProjectDormant {
+		t.Fatalf("the assessment does not state the idle time: %#v", got)
 	}
 
-	// In between: left exactly as declared, with nothing to say.
-	if risk, note = AdjustForProjectActivity(RiskReview, 90); risk != RiskReview || note != "" {
-		t.Fatalf("a 90-day project was adjusted to %q / %q", risk, note)
+	// In between: left exactly as declared, and the only reason is the catalog's.
+	if got = project(RiskReview, 90); got.Risk != RiskReview || got.Note != "" || len(got.Reasons) != 1 || got.Reasons[0] != ReasonCatalog {
+		t.Fatalf("a 90-day project was assessed as %#v", got)
 	}
 
 	// Outside any project there is no signal, and guessing is how an active
 	// project's cache gets called cold.
-	if risk, note = AdjustForProjectActivity(RiskSafe, NoProject); risk != RiskSafe || note != "" {
-		t.Fatalf("an object outside a project was adjusted to %q / %q", risk, note)
+	if got = project(RiskSafe, NoProject); got.Risk != RiskSafe || got.Note != "" || len(got.Reasons) != 0 {
+		t.Fatalf("an object outside a project was assessed as %#v", got)
 	}
 }
 

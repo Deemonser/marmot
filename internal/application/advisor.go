@@ -218,6 +218,13 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 
 	shown := indexLabelledNodes(pack)
 	system := recommendation.SystemPrompt()
+	// Project activity for every node the advisor may end up naming. Round two
+	// widens it, because the regions it opens up are exactly where an unknown
+	// build directory inside a live project turns up.
+	idle := make(map[int64]int64, len(pack.ProjectIdleDays))
+	for id, days := range pack.ProjectIdleDays {
+		idle[id] = days
+	}
 
 	candidates := pack.Candidates(advisorCandidateLimit)
 	if len(candidates) == 0 {
@@ -251,7 +258,10 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 	// Round two: the regions the advisor itself said it could not classify.
 	if focus := recommendation.LimitExpansions(round.Unresolved(), shown); len(focus) > 0 {
 		unresolved := expansionsFor(round.Unresolved(), focus)
-		evidence, expandedShown, expandErr := s.expansionEvidence(snapshotID, focus, shown)
+		evidence, expandedShown, expandedIdle, expandErr := s.expansionEvidence(snapshotID, focus, shown, idle)
+		for id, days := range expandedIdle {
+			idle[id] = days
+		}
 		if expandErr != nil {
 			advice.AdvisorError = "无法展开深挖区域：" + expandErr.Error()
 		} else {
@@ -283,6 +293,7 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 		advice.Expanded = len(focus)
 	}
 
+	attachProjectActivity(accepted, idle)
 	merged, dropped := mergeAdvisorItems(advice.Items, accepted, shown)
 	advice.Items = merged
 	advice.Rejected = append(advice.Rejected, dropped...)
@@ -297,6 +308,25 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 	advice.RejectedSummary = recommendation.RejectionSummary(advice.Rejected)
 	advice.CorrectionSummary = correctionSummary(advice.Corrections)
 	return advice, nil
+}
+
+// attachProjectActivity gives advisor items the one fact the domain could not
+// know at validation time: how live the surrounding project is. An unknown
+// build directory inside a project touched yesterday is the case §14.5a exists
+// for, and it is exactly the kind of object the catalog does not name. The map
+// covers round two as well, see expansionEvidence.
+func attachProjectActivity(accepted []recommendation.Recommendation, idle map[int64]int64) {
+	for index := range accepted {
+		item := &accepted[index]
+		days, known := idle[item.NodeID]
+		if !known || days < 0 {
+			continue
+		}
+		item.Activity, item.IdleDays = recommendation.ActivityProject, days
+		if note := item.Reassess(); note != "" {
+			item.WhatBreaks = note + " " + item.WhatBreaks
+		}
+	}
 }
 
 // mergeAdvisorItems puts advisor suggestions alongside the rule findings without
@@ -353,11 +383,17 @@ func overlapsAny(claimed []string, path string) bool {
 // and returns the widened set of nodes it may now refer to. The set is widened
 // rather than replaced: an advisor is allowed to revise a round-one judgement
 // once it has seen inside.
-func (s *Service) expansionEvidence(snapshotID int64, focus []int64, shown map[int64]recommendation.EvidenceNode) (string, map[int64]recommendation.EvidenceNode, error) {
+//
+// It also returns the project activity of the nodes it opened up. An expansion
+// pack is rooted at the region, so a project root ABOVE the region is not in
+// it; a node the region's own pack cannot place in a project inherits the
+// region's answer from round one, which saw the whole tree.
+func (s *Service) expansionEvidence(snapshotID int64, focus []int64, shown map[int64]recommendation.EvidenceNode, idle map[int64]int64) (string, map[int64]recommendation.EvidenceNode, map[int64]int64, error) {
 	widened := make(map[int64]recommendation.EvidenceNode, len(shown)+len(focus)*32)
 	for id, node := range shown {
 		widened[id] = node
 	}
+	expandedIdle := make(map[int64]int64, len(focus)*32)
 	var out strings.Builder
 	for _, id := range focus {
 		region, known := shown[id]
@@ -370,16 +406,22 @@ func (s *Service) expansionEvidence(snapshotID int64, focus []int64, shown map[i
 		}
 		pack, err := s.buildEvidencePackFor(snapshotID, id, floor, 0)
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
-		for id, node := range indexLabelledNodes(pack) {
-			widened[id] = node
+		inherited, hasInherited := idle[id]
+		for nodeID, node := range indexLabelledNodes(pack) {
+			widened[nodeID] = node
+			days, known := pack.ProjectIdleDays[nodeID]
+			if (!known || days < 0) && hasInherited {
+				days = inherited
+			}
+			expandedIdle[nodeID] = days
 		}
 		fmt.Fprintf(&out, "## id %d：%s\n\n", id, region.Path)
 		out.WriteString(pack.Text())
 		out.WriteString("\n")
 	}
-	return out.String(), widened, nil
+	return out.String(), widened, expandedIdle, nil
 }
 
 func expansionsFor(requested []recommendation.Verdict, focus []int64) []recommendation.Verdict {

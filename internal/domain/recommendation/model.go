@@ -63,10 +63,24 @@ type Recommendation struct {
 	// is never trusted here (ADR-0061 §7.4).
 	ReclaimableBytes int64
 	Recovery         Recovery
-	Risk             Risk
-	// Confidence in [0,1]. Rules report 1: they are not guessing, they are
-	// matching. It is the advisor whose confidence varies.
+	// Risk is a conclusion, never an input: Assess derives it from the fact
+	// fields below and is the only writer (ADR-0067, DDD invariant 10a).
+	Risk Risk
+	// RiskReasons are the codes Assess gave for the tier, so the UI can say why
+	// something is "需确认" instead of leaving the user to guess which of four
+	// different facts produced the same label.
+	RiskReasons []string
+	// Confidence in [0,1]. A rule that names its object reports 1; a rule the
+	// catalog declares Generic -- it knows the container, not the object, see
+	// Rule.Generic -- reports less. The advisor reports its own.
 	Confidence float64
+	// The facts Assess worked from, kept so a caller that learns one more --
+	// the application layer attaching an activity signal -- can reassess.
+	DeclaredRisk Risk
+	Activity     ActivityKind
+	IdleDays     int64
+	Guards       []string
+	Generic      bool
 	// Evidence is the facts the suggestion rests on, phrased so a user can check
 	// them against what the space map shows.
 	Evidence []string

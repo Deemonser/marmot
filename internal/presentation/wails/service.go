@@ -253,21 +253,26 @@ type CleanupValidation struct {
 // display; neither authorises anything, because CreateCleanupPlan re-checks
 // every path it is handed (ADR-0061 §1).
 type AdviceItem struct {
-	NodeID           int64    `json:"nodeId"`
-	Name             string   `json:"name"`
-	Path             string   `json:"path"`
-	Source           string   `json:"source"`
-	RuleName         string   `json:"ruleName"`
-	Category         string   `json:"category"`
-	ReclaimableBytes int64    `json:"reclaimableBytes"`
-	Recovery         string   `json:"recovery"`
-	Risk             string   `json:"risk"`
-	Confidence       float64  `json:"confidence"`
-	Evidence         []string `json:"evidence"`
-	WhatBreaks       string   `json:"whatBreaks"`
-	HowToRestore     string   `json:"howToRestore"`
-	Manual           bool     `json:"manual"`
-	Command          string   `json:"command"`
+	NodeID           int64  `json:"nodeId"`
+	Name             string `json:"name"`
+	Path             string `json:"path"`
+	Source           string `json:"source"`
+	RuleName         string `json:"ruleName"`
+	Category         string `json:"category"`
+	ReclaimableBytes int64  `json:"reclaimableBytes"`
+	Recovery         string `json:"recovery"`
+	Risk             string `json:"risk"`
+	// RiskReasons are the codes behind the tier (ADR-0067); the frontend
+	// translates them. Activity and IdleDays name the signal, when there is one.
+	RiskReasons  []string `json:"riskReasons"`
+	Activity     string   `json:"activity"`
+	IdleDays     int64    `json:"idleDays"`
+	Confidence   float64  `json:"confidence"`
+	Evidence     []string `json:"evidence"`
+	WhatBreaks   string   `json:"whatBreaks"`
+	HowToRestore string   `json:"howToRestore"`
+	Manual       bool     `json:"manual"`
+	Command      string   `json:"command"`
 }
 
 type Advice struct {
@@ -397,6 +402,8 @@ func adviceView(advice application.Advice) Advice {
 			Source: string(item.Source), RuleName: item.RuleName, Category: item.Category,
 			ReclaimableBytes: item.ReclaimableBytes,
 			Recovery:         string(item.Recovery), Risk: string(item.Risk),
+			RiskReasons: append([]string{}, item.RiskReasons...),
+			Activity:    string(item.Activity), IdleDays: item.IdleDays,
 			Confidence: item.Confidence, Evidence: append([]string{}, item.Evidence...),
 			WhatBreaks: item.WhatBreaks, HowToRestore: item.HowToRestore,
 			Manual: item.Manual, Command: item.Command,

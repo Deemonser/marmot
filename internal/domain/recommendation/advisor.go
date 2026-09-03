@@ -40,10 +40,13 @@ type Verdict struct {
 	Why string `json:"why"`
 	// The rest is required for cleanable and ignored otherwise. There is
 	// deliberately no size field: the snapshot's own figure is used, so a number
-	// that was never requested cannot disagree with the wheel.
+	// that was never requested cannot disagree with the wheel. And there is no
+	// risk field: R-063 §3.5 measured the model's risk label as its least stable
+	// output (8/20 drift against 1/20 on recovery), so the tier is derived by
+	// Assess from what the model IS stable about. A reply that still carries
+	// `risk` is not malformed; the field is simply not read (ADR-0067 §2).
 	Category     string   `json:"category"`
 	Recovery     string   `json:"recovery"`
-	Risk         string   `json:"risk"`
 	Confidence   float64  `json:"confidence"`
 	Evidence     []string `json:"evidence"`
 	WhatBreaks   string   `json:"what_breaks"`
@@ -207,47 +210,42 @@ func Validate(verdicts []Verdict, shown map[int64]EvidenceNode, snapshotID int64
 		}
 		accepted = append(accepted, item.node.Path)
 		recovery := Recovery(item.verdict.Recovery)
-		risk := Risk(item.verdict.Risk)
 		whatBreaks := strings.TrimSpace(item.verdict.WhatBreaks)
+		guards := GuardsFor(item.node.Path)
 		// A wrong recoverability claim is corrected, not believed and not thrown
 		// away. Being told the rule in the prompt is not the same as complying
 		// with it, and this is the one class of mistake that is permanent.
 		// A partial deletion inside a stamp-guarded install does come back, but
 		// only by reinstalling the whole toolchain -- so the claim is not wrong
 		// about recoverability, it is wrong about the cost. Corrected in place
-		// with the real route attached, and the risk raised out of `safe`.
-		if reason := PartialInstallReason(item.node.Path); reason != "" {
+		// with the real route attached; Assess keeps it out of `safe`.
+		if hasGuard(guards, PartialInstall) {
 			result.Corrections = append(result.Corrections, Correction{
 				NodeID: item.node.ID, Path: item.node.Path,
-				ClaimedRecovery: item.verdict.Recovery, Reason: reason,
+				ClaimedRecovery: item.verdict.Recovery, Reason: PartialInstall,
 			})
 			recovery = RecoveryRedownloadable
-			if risk == RiskSafe {
-				risk = RiskReview
-			}
 			whatBreaks = strings.TrimSpace(PartialInstallMessage() + " " + whatBreaks)
 		}
 		// Login state is recoverable -- you can sign in again -- so the correction
-		// is on the risk and the wording, not on the recoverability. Calling it
+		// is on the wording, and Assess puts the tier at risky. Calling it
 		// irreplaceable would be a lie in the cautious direction.
-		if reason := LoginStateReason(item.node.Path); reason != "" {
+		if hasGuard(guards, LoginState) {
 			result.Corrections = append(result.Corrections, Correction{
 				NodeID: item.node.ID, Path: item.node.Path,
-				ClaimedRecovery: item.verdict.Recovery, Reason: reason,
+				ClaimedRecovery: item.verdict.Recovery, Reason: LoginState,
 			})
-			risk = RiskRisky
 			whatBreaks = strings.TrimSpace(LoginStateMessage() + " " + whatBreaks)
 		}
-		if reason := IrreplaceableReason(item.node.Path); reason != "" && recovery != RecoveryIrreplaceable {
+		if reason := irreplaceableGuard(guards); reason != "" && recovery != RecoveryIrreplaceable {
 			result.Corrections = append(result.Corrections, Correction{
 				NodeID: item.node.ID, Path: item.node.Path,
 				ClaimedRecovery: item.verdict.Recovery, Reason: reason,
 			})
 			recovery = RecoveryIrreplaceable
-			risk = RiskRisky
 			whatBreaks = strings.TrimSpace(IrreplaceableMessage(reason) + " " + whatBreaks)
 		}
-		result.Accepted = append(result.Accepted, Recommendation{
+		verdict := Recommendation{
 			SnapshotID: snapshotID,
 			NodeID:     item.node.ID,
 			Source:     SourceAdvisor,
@@ -256,12 +254,16 @@ func Validate(verdicts []Verdict, shown map[int64]EvidenceNode, snapshotID int64
 			// one, so there is nothing to reconcile.
 			ReclaimableBytes: item.node.OwnedAllocated,
 			Recovery:         recovery,
-			Risk:             risk,
 			Confidence:       item.verdict.Confidence,
+			Guards:           guards,
 			Evidence:         trimAll(item.verdict.Evidence),
 			WhatBreaks:       whatBreaks,
 			HowToRestore:     strings.TrimSpace(item.verdict.HowToRestore),
-		})
+		}
+		// No activity signal here: that is the application layer's knowledge,
+		// and it reassesses once it has attached one.
+		verdict.Reassess()
+		result.Accepted = append(result.Accepted, verdict)
 	}
 	sort.SliceStable(result.Accepted, func(left, right int) bool {
 		return result.Accepted[left].ReclaimableBytes > result.Accepted[right].ReclaimableBytes
@@ -321,11 +323,6 @@ func validEnums(verdict Verdict) bool {
 	default:
 		return false
 	}
-	switch Risk(verdict.Risk) {
-	case RiskSafe, RiskReview, RiskRisky:
-	default:
-		return false
-	}
 	if verdict.Confidence < 0 || verdict.Confidence > 1 {
 		return false
 	}
@@ -335,11 +332,9 @@ func validEnums(verdict Verdict) bool {
 	if strings.TrimSpace(verdict.WhatBreaks) == "" || strings.TrimSpace(verdict.HowToRestore) == "" {
 		return false
 	}
-	// Nothing irreplaceable is safe. The model is told this; the rule is enforced
-	// here because being told is not the same as complying.
-	if Recovery(verdict.Recovery) == RecoveryIrreplaceable && Risk(verdict.Risk) == RiskSafe {
-		return false
-	}
+	// "Nothing irreplaceable is safe" used to be checked here. It no longer
+	// needs to be: the model does not produce a tier, and Assess cannot produce
+	// that pairing (ADR-0067 §1).
 	return true
 }
 

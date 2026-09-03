@@ -73,3 +73,36 @@ export function sourceLabel(item: { source: string; ruleName: string; category: 
   if (item.source === "advisor") return "AI · " + Math.round(item.confidence * 100) + "%";
   return item.ruleName || item.category;
 }
+
+// Why a suggestion sits at its tier. Risk is derived from facts on the Go side
+// (ADR-0067) and each conclusion carries the codes that produced it, so
+// "需确认" can say which of several very different facts it stands for: a
+// project in use, a generic rule that cannot name the object, login state, a
+// model that was not sure. Unknown codes are shown as themselves rather than
+// dropped -- a reason the UI cannot translate is still a reason.
+const riskReasonLabels: Record<string, string> = {
+  irreplaceable: "删除后无法恢复",
+  login_state: "包含登录状态",
+  partial_install: "工具链内部目录",
+  project_active: "项目正在使用",
+  project_dormant: "项目已停摆",
+  cache_cold: "缓存长期未使用",
+  generation_superseded: "已有更新版本",
+  redownload_cost: "需要重新下载",
+  advisor_uncertain: "AI 把握不足",
+  generic_rule: "泛规则匹配",
+  catalog: "规则标注需确认",
+};
+
+export function riskReasonLabel(code: string): string {
+  return riskReasonLabels[code] ?? code;
+}
+
+// The tags shown inline are the ones that carry a decision. `catalog` and
+// `generic_rule` only restate that the rule was cautious, which the tier
+// already says, so they stay in the detail view.
+const detailOnlyReasons = new Set(["catalog", "generic_rule"]);
+
+export function inlineRiskReasons(reasons: string[] | null | undefined): string[] {
+  return (reasons ?? []).filter((code) => !detailOnlyReasons.has(code));
+}

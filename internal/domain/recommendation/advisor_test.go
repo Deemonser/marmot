@@ -1,6 +1,7 @@
 package recommendation
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -20,7 +21,7 @@ func node(id int64, path, name string, bytes int64) EvidenceNode {
 func goodSuggestion(id int64, name string) Verdict {
 	return Verdict{
 		NodeID: id, Name: name, Verdict: VerdictCleanable, Category: "缓存",
-		Recovery: string(RecoveryRegenerable), Risk: string(RiskSafe), Confidence: 0.9,
+		Recovery: string(RecoveryRegenerable), Confidence: 0.9,
 		Evidence:   []string{"占用 6GB", "90 天未改动"},
 		WhatBreaks: "应用下次启动会慢一些。", HowToRestore: "自动重建。",
 	}
@@ -85,17 +86,9 @@ func TestValidateRejectsMalformedItems(t *testing.T) {
 	shown := shownNodes(node(1, "/Users/a/x", "x", 100))
 	cases := map[string]func(Verdict) Verdict{
 		"unknown recovery":     func(s Verdict) Verdict { s.Recovery = "maybe"; return s },
-		"unknown risk":         func(s Verdict) Verdict { s.Risk = "probably"; return s },
 		"confidence above one": func(s Verdict) Verdict { s.Confidence = 1.7; return s },
 		"no what breaks":       func(s Verdict) Verdict { s.WhatBreaks = "  "; return s },
 		"no how to restore":    func(s Verdict) Verdict { s.HowToRestore = ""; return s },
-		// The one combination that turns a suggestion into a trap. The model is
-		// told not to; being told is not the same as complying.
-		"irreplaceable and safe": func(s Verdict) Verdict {
-			s.Recovery = string(RecoveryIrreplaceable)
-			s.Risk = string(RiskSafe)
-			return s
-		},
 	}
 	for name, mutate := range cases {
 		result := Validate([]Verdict{mutate(goodSuggestion(1, "x"))}, shown, 7)
@@ -105,6 +98,41 @@ func TestValidateRejectsMalformedItems(t *testing.T) {
 		if len(result.Rejected) != 1 || result.Rejected[0].Reason != RejectMalformed {
 			t.Fatalf("%s: expected malformed, got %#v", name, result.Rejected)
 		}
+	}
+}
+
+// "irreplaceable and safe" used to be the one malformed combination. The model
+// no longer produces a tier, so the pairing cannot arrive; what must hold instead
+// is that an irreplaceable claim is concluded as risky whatever else is true.
+func TestValidateConcludesIrreplaceableAsRisky(t *testing.T) {
+	claim := goodSuggestion(1, "x")
+	claim.Recovery = string(RecoveryIrreplaceable)
+	claim.Confidence = 1
+	result := Validate([]Verdict{claim}, shownNodes(node(1, "/Users/a/x", "x", 100)), 7)
+	if len(result.Accepted) != 1 {
+		t.Fatalf("an honest irreplaceable claim should survive: %#v", result.Rejected)
+	}
+	if got := result.Accepted[0]; got.Risk != RiskRisky || len(got.RiskReasons) == 0 || got.RiskReasons[0] != ReasonIrreplaceable {
+		t.Fatalf("irreplaceable concluded as %q / %v", got.Risk, got.RiskReasons)
+	}
+}
+
+// A reply that still carries the old `risk` field is not malformed: the field
+// is not read, and the tier comes from Assess.
+func TestValidateIgnoresARiskFieldTheModelStillSends(t *testing.T) {
+	var verdict Verdict
+	raw := `{"node_id":1,"name":"x","verdict":"cleanable","category":"缓存","recovery":"regenerable","risk":"safe","confidence":0.3,"evidence":["占用 6GB"],"what_breaks":"慢一些。","how_to_restore":"自动重建。"}`
+	if err := json.Unmarshal([]byte(raw), &verdict); err != nil {
+		t.Fatal(err)
+	}
+	result := Validate([]Verdict{verdict}, shownNodes(node(1, "/Users/a/x", "x", 100)), 7)
+	if len(result.Accepted) != 1 {
+		t.Fatalf("a reply with a stray risk field was refused: %#v", result.Rejected)
+	}
+	// Low confidence, so the derived tier is review -- not the `safe` the model
+	// wrote and the program never read.
+	if got := result.Accepted[0]; got.Risk != RiskReview {
+		t.Fatalf("tier %q came from somewhere other than Assess", got.Risk)
 	}
 }
 
@@ -244,7 +272,6 @@ func TestValidateCorrectsWrongRecoverabilityClaims(t *testing.T) {
 		target := node(1, path, "thing", 5_000_000_000)
 		suggestion := goodSuggestion(1, "thing")
 		suggestion.Recovery = string(RecoveryRegenerable)
-		suggestion.Risk = string(RiskSafe)
 
 		result := Validate([]Verdict{suggestion}, shownNodes(target), 7)
 		if len(result.Accepted) != 1 {
@@ -319,7 +346,7 @@ func TestValidateCorrectsPartialToolchainDeletion(t *testing.T) {
 	inside := node(1, "/Users/a/dev/flutter/bin/cache/dart-sdk/bin/snapshots", "snapshots", 350_000_000)
 	claim := goodSuggestion(1, "snapshots")
 	claim.Recovery = string(RecoveryRedownloadable)
-	claim.Risk = string(RiskSafe)
+	claim.Confidence = 1
 
 	result := Validate([]Verdict{claim}, shownNodes(inside), 7)
 	if len(result.Accepted) != 1 {

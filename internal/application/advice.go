@@ -138,16 +138,25 @@ func (s *Service) buildEvidencePackFor(snapshotID, rootID, floor int64, share fl
 	now := time.Now()
 	idle := projectIdleDays(result.Nodes, now)
 	hits := make(map[int64]*recommendation.Rule, 32)
+	settled := make(map[int64]bool, 32)
 	for _, node := range result.Nodes {
 		rule := recommendation.Match(recommendation.MatchContext{
-			Path: node.Path, AgeDays: node.AgeDays(now), ProjectIdleDays: idle[node.ID],
+			Path: node.Path, Kind: node.Kind, AgeDays: node.AgeDays(now), ProjectIdleDays: idle[node.ID],
 		})
-		if rule != nil {
-			hits[node.ID] = rule
+		if rule == nil {
+			continue
+		}
+		hits[node.ID] = rule
+		// Folding follows the CONCLUSION, not the catalog's declared tier: an
+		// active project's `target/debug` is declared safe and concluded review,
+		// and review is exactly where a person may want to pick from inside
+		// (ADR-0061 §2b). Judging the fold on the declaration would close it.
+		if ruleAssessment(rule, node, idle[node.ID], now).Risk == recommendation.RiskSafe {
+			settled[node.ID] = true
 		}
 	}
 	generations, notes := generationHits(result.Nodes, now)
-	nodes := foldUnderSettledRules(result.Nodes, hits)
+	nodes := foldUnderSettledRules(result.Nodes, hits, settled)
 	return EvidencePack{
 		SnapshotID:       snapshotID,
 		Root:             result.Root,
@@ -188,13 +197,7 @@ func (s *Service) buildEvidencePackFor(snapshotID, rootID, floor int64, share fl
 // the full histogram. It is still far more representative than the ancestor's
 // own residue profile, which describes only the handful of bytes that did not
 // belong to any kept child.
-func foldUnderSettledRules(nodes []recommendation.EvidenceNode, hits map[int64]*recommendation.Rule) []recommendation.EvidenceNode {
-	settled := make(map[int64]bool, len(hits))
-	for id, rule := range hits {
-		if rule.Risk == recommendation.RiskSafe {
-			settled[id] = true
-		}
-	}
+func foldUnderSettledRules(nodes []recommendation.EvidenceNode, hits map[int64]*recommendation.Rule, settled map[int64]bool) []recommendation.EvidenceNode {
 	if len(settled) == 0 {
 		return nodes
 	}
@@ -424,40 +427,64 @@ func (p EvidencePack) RuleFindings() []AdviceItem {
 			continue
 		}
 		rule := p.RuleHits[node.ID]
-		risk := rule.Risk
-		whatBreaks := rule.WhatBreaks
-		if rule.ProjectSensitive {
-			adjusted, note := recommendation.AdjustForProjectActivity(risk, p.idleFor(node.ID))
-			risk = adjusted
-			if note != "" {
-				whatBreaks = note + " " + whatBreaks
-			}
+		item := recommendation.Recommendation{
+			SnapshotID:       p.SnapshotID,
+			NodeID:           node.ID,
+			Source:           recommendation.SourceRule,
+			RuleName:         rule.Name,
+			Category:         rule.Category,
+			ReclaimableBytes: node.OwnedAllocated,
+			Recovery:         rule.Recovery,
+			DeclaredRisk:     rule.Risk,
+			Confidence:       rule.Confidence(),
+			Generic:          rule.Generic,
+			Evidence:         nodeEvidence(node, p.GeneratedAt),
+			WhatBreaks:       rule.WhatBreaks,
+			HowToRestore:     rule.HowToRestore,
+			Manual:           rule.Manual,
+			Command:          rule.Command,
 		}
-		findings = append(findings, AdviceItem{
-			Recommendation: recommendation.Recommendation{
-				SnapshotID:       p.SnapshotID,
-				NodeID:           node.ID,
-				Source:           recommendation.SourceRule,
-				RuleName:         rule.Name,
-				Category:         rule.Category,
-				ReclaimableBytes: node.OwnedAllocated,
-				Recovery:         rule.Recovery,
-				Risk:             risk,
-				Confidence:       1,
-				Evidence:         nodeEvidence(node, p.GeneratedAt),
-				WhatBreaks:       whatBreaks,
-				HowToRestore:     rule.HowToRestore,
-				Manual:           rule.Manual,
-				Command:          rule.Command,
-			},
-			Name: node.Name,
-			Path: node.Path,
-		})
+		// No Guards on a rule finding, on purpose. The location guards exist to
+		// catch a model misreading what an object is -- anything it claims under
+		// ~/Documents is treated as user content. A rule has named the object
+		// exactly: `__pycache__` under ~/Documents is still bytecode, and a
+		// project kept in ~/Documents would otherwise see every build artifact
+		// in it turn risky.
+		item.Activity, item.IdleDays = ruleActivity(rule, node, p.idleFor(node.ID), p.GeneratedAt)
+		if note := item.Reassess(); note != "" {
+			item.WhatBreaks = note + " " + item.WhatBreaks
+		}
+		findings = append(findings, AdviceItem{Recommendation: item, Name: node.Name, Path: node.Path})
 	}
 	sort.Slice(findings, func(left, right int) bool {
 		return findings[left].ReclaimableBytes > findings[right].ReclaimableBytes
 	})
 	return findings
+}
+
+// ruleActivity is the activity signal a rule is sensitive to, if any. A rule is
+// one or the other: a build artifact's own age says nothing about whether it is
+// about to be rebuilt (R-063 §4b.1), and a cache has no surrounding project.
+// Outside any recognised project there is no signal, and the item says so
+// rather than carrying a -1 under a signal's name.
+func ruleActivity(rule *recommendation.Rule, node recommendation.EvidenceNode, idleDays int64, now time.Time) (recommendation.ActivityKind, int64) {
+	switch {
+	case rule.ProjectSensitive && idleDays >= 0:
+		return recommendation.ActivityProject, idleDays
+	case rule.AgeSensitive:
+		return recommendation.ActivityArtifact, node.AgeDays(now)
+	}
+	return recommendation.ActivityNone, 0
+}
+
+// ruleAssessment is the tier a rule match will be concluded at, computed from
+// the same facts RuleFindings uses, so the fold and the finding cannot disagree.
+func ruleAssessment(rule *recommendation.Rule, node recommendation.EvidenceNode, idleDays int64, now time.Time) recommendation.Assessment {
+	activity, days := ruleActivity(rule, node, idleDays, now)
+	return recommendation.Assess(recommendation.Facts{
+		Source: recommendation.SourceRule, Recovery: rule.Recovery, Declared: rule.Risk,
+		Confidence: rule.Confidence(), Activity: activity, IdleDays: days, Generic: rule.Generic,
+	})
 }
 
 // idleFor is the surrounding project's idle days, or NoProject.
@@ -867,24 +894,24 @@ func (p EvidencePack) generationFinding(node recommendation.EvidenceNode, genera
 	if note := p.generationNote[node.ID]; note != "" {
 		evidence = append(evidence, note)
 	}
-	return AdviceItem{
-		Recommendation: recommendation.Recommendation{
-			SnapshotID:       p.SnapshotID,
-			NodeID:           node.ID,
-			Source:           recommendation.SourceRule,
-			RuleName:         generation.Name,
-			Category:         generation.Category,
-			ReclaimableBytes: node.OwnedAllocated,
-			Recovery:         generation.Recovery,
-			Risk:             generation.Risk,
-			Confidence:       1,
-			Evidence:         evidence,
-			WhatBreaks:       generation.WhatBreaks,
-			HowToRestore:     generation.HowToRestore,
-		},
-		Name: node.Name,
-		Path: node.Path,
+	item := recommendation.Recommendation{
+		SnapshotID:       p.SnapshotID,
+		NodeID:           node.ID,
+		Source:           recommendation.SourceRule,
+		RuleName:         generation.Name,
+		Category:         generation.Category,
+		ReclaimableBytes: node.OwnedAllocated,
+		Recovery:         generation.Recovery,
+		DeclaredRisk:     generation.Risk,
+		Confidence:       1,
+		Activity:         recommendation.ActivityGeneration,
+		IdleDays:         node.AgeDays(p.GeneratedAt),
+		Evidence:         evidence,
+		WhatBreaks:       generation.WhatBreaks,
+		HowToRestore:     generation.HowToRestore,
 	}
+	item.Reassess()
+	return AdviceItem{Recommendation: item, Name: node.Name, Path: node.Path}
 }
 
 // generationHits finds version-partitioned directories and decides which of

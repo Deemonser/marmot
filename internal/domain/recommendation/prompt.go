@@ -42,7 +42,7 @@ id | 名称 | 类型 | 占用 | residue | 文件数 | 目录数 | 最近改动�
 
 每条判定的 ` + "`verdict`" + ` 只能是三者之一：
 
-- ` + "`cleanable`" + `：建议清理。必须同时给出 category / recovery / risk / confidence /
+- ` + "`cleanable`" + `：建议清理。必须同时给出 category / recovery / confidence /
   evidence / what_breaks / how_to_restore。
 - ` + "`keep`" + `：不建议清理。必须在 ` + "`why`" + ` 里说明原因（用户原创数据、系统必需、正在使用等）。
   **这是完全正当的结论**，不要为了显得有用而把该保留的东西判成可清理。
@@ -65,9 +65,10 @@ id | 名称 | 类型 | 占用 | residue | 文件数 | 目录数 | 最近改动�
    **"最近改动天数"是规则清单结构上没有的概念，这一类只有你能判断。**
    同样是 build/intermediates，13 天没动的该留，617 天没动的该删。
 
-# 最重要的一件事：` + "`recovery`" + ` 比 ` + "`risk`" + ` 重要
+# 最重要的一件事：` + "`recovery`" + ` 是你输出里最重要的字段
 
-使用者的判断依据不是"危不危险"，是**"删了还能不能回来"**。
+使用者的判断依据不是"危不危险"，是**"删了还能不能回来"**。风险等级由程序从你的 recovery、
+本机护栏和活跃度信号推导，你不输出它；所以 recovery 填错，等级就错。
 重新下载一次 Flutter 引擎或 Rust 文档只是等几分钟；删掉照片库就是永久损失。
 
 所以 ` + "`recovery`" + ` 这个字段你必须极其认真地填：
@@ -111,9 +112,9 @@ Kotlin/Native 按 platform lib），就照实说可恢复；如果你知道它�
 
 - **不得判为 cleanable**：系统目录、家目录本身、卷根、用户原创内容（文档、照片、视频、源代码本身）。
   这些一律 ` + "`keep`" + `。
-- **` + "`irreplaceable`" + ` 绝不能配 ` + "`safe`" + `**。删掉就找不回来的东西，风险不可能是"安全"。
-- **拿不准就给 ` + "`review`" + `，不要给 ` + "`safe`" + `。**
-  ` + "`safe`" + ` 只留给"系统或应用会自动重建、且不含任何用户原创数据"的对象。
+- **你不输出风险等级。** 程序根据 recovery、本机护栏和活跃度信号推导风险等级，你只负责事实。
+- **` + "`confidence`" + ` 表达你对这条判定的把握**：0.8 以上表示你确定这是什么、确定它怎么回来；
+  拿不准就诚实地给低一些，程序会据此让用户多看一眼。不要用高置信度掩盖猜测。
 - **evidence 必须引用输入里的具体数字**（体积、文件数、天数、扩展名），不许写泛泛的判断。
 - **what_breaks 要说删了之后用户会实际遇到什么**，how_to_restore 要说具体怎么恢复。两者都不能为空。
 - 你**不需要**报告可回收字节数，程序会用快照的真实数值。不要在输出里编造体积。
@@ -132,7 +133,6 @@ Kotlin/Native 按 platform lib），就照实说可恢复；如果你知道它�
       "why": "<keep 和 unknown 必填；cleanable 可省略>",
       "category": "<cleanable 必填，简短类别>",
       "recovery": "regenerable" | "redownloadable" | "irreplaceable",
-      "risk": "safe" | "review" | "risky",
       "confidence": <0 到 1 的小数>,
       "evidence": ["<引用输入数字的事实>", "..."],
       "what_breaks": "<删除后用户会遇到什么>",
@@ -160,9 +160,9 @@ const examplesPrompt = `# 示例
   evidence 要写"单文件 440MB"、"扩展名 .bin"这类输入里的事实。
 - ` + "`7788`" + ` → ` + "`keep`" + `：.heic/.mov 为主、最早改动 3400 天，这是用户的照片和视频。
   why 写"用户原创媒体内容，不可再生"。**哪怕它是全盘最大的一项，也不能判 cleanable。**
-- ` + "`9001`" + ` → 如果你认得 LunaCacheV2 是某个应用的缓存，可以判 ` + "`cleanable`" + ` + ` + "`review`" + `；
-  如果不认得，判 ` + "`unknown`" + `，why 写"需要看内部结构判断是缓存还是用户数据"。
-  **不要因为名字里有 Cache 就直接判 safe。**`
+- ` + "`9001`" + ` → 如果你认得 LunaCacheV2 是某个应用的缓存，可以判 ` + "`cleanable`" + `，
+  confidence 按你认得的程度给；如果不认得，判 ` + "`unknown`" + `，why 写"需要看内部结构判断是缓存还是用户数据"。
+  **不要因为名字里有 Cache 就给高置信度。**`
 
 // SystemPrompt is the fixed instruction block. It is deliberately constant: it
 // is the cacheable prefix, and a timestamp or per-run id in here would silently

@@ -926,6 +926,9 @@ ports.Advisor:
 第二段对这些节点从快照取子树、按该块体积的 `1%` 重设下限，再提交一次。深度固定 `1` 层，不递归。
 深挖由模型声明触发，不由后端按体积判定——最大的残余块往往恰好不需要深挖（R-062 §3.3）。
 
+模型的输出契约里**没有 `risk`**（ADR-0067）。模型只报事实：`verdict`、`recovery`、`category`、`confidence`、
+`evidence`、`what_breaks`、`how_to_restore`。风险等级由 §14.5h 的推导函数从这些事实与本机信号得出。
+
 ### 14.5a 干扰度：可恢复性不是标准
 
 **判断一条建议好不好的标准不是"能不能恢复"，而是"删掉会不会打断使用者正在做的事"。**
@@ -955,6 +958,43 @@ ports.Advisor:
    使其 `547 MB` 产物停留在 `review`。源码活跃度只能取自源码文件，目录只从子节点继承。
 
 阈值 `30` / `180` 是未经验证的整数，见 R-063 §6。
+
+### 14.5h 事实与结论分层：风险等级是推导出来的
+
+由 [ADR-0067](adr/0067-清理建议的事实与结论分层.md) 锁定。此前 `Risk` 在三处被写入（规则声明、活跃度改写、
+护栏改写、模型主张），没有一处看得到全部事实；用户看到一个"需确认"分不清原因。R-063 §3.5 又测得模型的风险
+漂移 `8/20`、恢复性漂移 `1/20`。
+
+领域层 `recommendation.Facts` 收齐事实，`Assess(Facts)` 是**唯一**产出 `Risk` 的地方，规则来源与模型来源共用：
+
+| 事实 | 来源 |
+| :-- | :-- |
+| `Recovery` | 规则声明 / 模型主张，经护栏纠正 |
+| `Declared` | 规则作者声明的基线风险；模型来源为空 |
+| `Confidence` | 规则：`Generic` 的容器规则报 0.7，其余报 1；模型自报 |
+| `Activity` / `IdleDays` | `project_source`（§14.5a）、`artifact_age`（应用缓存自身最新 mtime）、`generation`（§14.5c） |
+| `Guards` | `IrreplaceableReason` / `LoginStateReason` / `PartialInstallReason` 的命中码 |
+| `Generic` | 规则作者声明"只认识容器、认不出对象"（`Library/Caches/*` 一类）；不按段数推断，`**/node_modules` 一段却精确 |
+
+推导顺序固定，见 ADR-0067 §1。要点：
+
+- 不可恢复：护栏命中或模型主张 → `risky`；规则声明 `irreplaceable` 取声明等级且不低于 `review`
+  （废纸篓 `review`、设备备份 `risky`，与此前一致）。登录态 → `risky`。`irreplaceable` 绝不配 `safe` 由结构保证。
+- `partial_install` 是下限，在活跃度之后施加，并抑制活跃度说明句。模型置信度 < 0.8 时项目停摆不放宽。
+- 证据包折叠按推导后的等级判"整块 safe"（§14.5c-1），不按规则声明。规则建议不带位置护栏：
+  护栏拦的是模型认错对象，规则已经命名了对象。
+- 模型来源的基线：`redownloadable → review`；`regenerable` 且 `confidence ≥ 0.8 → safe`；其余 `review`。
+- `project_source` ≤ 30 天：`safe → review`；≥ 180 天：`review → safe`。与旧 `AdjustForProjectActivity` 等价。
+- `artifact_age` ≥ 180 天：`review → safe`，理由 `cache_cold`。**只放宽不抬高**：热缓存不因为在用而升级，
+  删掉正在用的缓存的代价就是重建，那正是 `safe` 的定义。标记 `Rule.AgeSensitive` 的规则才参与：
+  `用户缓存`、`沙盒应用缓存`、`应用组缓存`。属主应用信号经 R-069 §4.1 实测不进本轮。
+- 每条建议携带 `RiskReasons`（机器码）：`irreplaceable`、`login_state`、`partial_install`、`project_active`、
+  `project_dormant`、`cache_cold`、`generation_superseded`、`redownload_cost`、`advisor_uncertain`、
+  `generic_rule`、`catalog`。UI 把它们译成标签跟在风险标签后面，详情里有"判定依据"一行。
+- 活跃度产生的一句说明前置到 `what_breaks`，与此前一致。
+
+验收：规则层在无活跃度信号时的输出与 ADR-0067 之前逐字相同；模型回复里的 `risk` 被忽略；
+R-063 风险漂移探针的读数只能来自 `recovery` 漂移或 `confidence` 跨过 0.8 阈值，不再有独立的风险漂移。
 
 ### 14.5b 浏览器：能做到目录级，做不到按站点
 
@@ -1413,7 +1453,8 @@ ADR-0063 之后删除是真删，同一个减法从谎报变成准确陈述—�
 2. `cleanup.DeleteBlock(path)` 为空，否则降级为"仅说明"并标注拒绝原因；
 3. 建议之间无父子重叠（`cleanup.HasOverlappingPaths`）；
 4. 可回收字节一律以快照 `owned_allocated` 覆盖模型给的数字；
-5. 未通过的丢弃并计数，UI 显示被丢弃的条数。
+5. 未通过的丢弃并计数，UI 显示被丢弃的条数；
+6. 模型回复里若带 `risk` 字段，忽略而非拒绝；风险等级只由 §14.5h 推导（ADR-0067）。
 
 ### 14.7 用例接口
 
@@ -1440,9 +1481,11 @@ ADR-0063 之后删除是真删，同一个减法从谎报变成准确陈述—�
 现在**只有左下一个面板**，右下角只留"AI 分析"和"AI 设置"两个按钮。面板自上而下：
 
 1. **待确认**——`advice.items` 中不在收集区的项，含 `manual` 项。每行两行高：第一行风险色点、名字，
-   **标签紧跟名字**（来源：规则名或 `AI · 置信度`；恢复代价；风险；`manual` 项多一枚"需管理员权限"），
+   **标签紧跟名字**（来源：规则名或 `AI · 置信度`；恢复代价；风险；风险之后是**判定理由**标签——
+   只显示带决定性的理由码，`catalog`/`generic_rule` 这两条只是复述规则谨慎、留在详情里，§14.5h；
+   `manual` 项多一枚"需管理员权限"），
    第二行路径；右侧是大小和"加入"（`manual` 项没有）。标签曾单占第三行，同样高度下只能看一半的条目。
-   行可展开"依据 / 删除后 / 如何恢复"，
+   行可展开"依据 / 判定依据 / 删除后 / 如何恢复"，
    可按指针路径拖到面板上收集（与弧、目录行同一条 `beginEntryDrag`）。标题下只有**一行**摘要：
    自动放入了几项、AI 是否仍在分析（秒数）、AI 是否失败、**被丢弃了几条**（§14.6 第 5 条；悬停给出摘要）、
    更正摘要。**没有页脚**——使用方反馈页脚的文字和按钮让这个区"无法体现重点"，列表才是重点

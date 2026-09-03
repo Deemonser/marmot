@@ -100,8 +100,13 @@ func TestRuleFindingsCollapseOverlapsToTheOutermost(t *testing.T) {
 	if findings[0].ReclaimableBytes != 600<<20 {
 		t.Fatalf("reclaimable is %d, expected the snapshot's own 600 MB figure", findings[0].ReclaimableBytes)
 	}
-	if findings[0].Source != recommendation.SourceRule || findings[0].Confidence != 1 {
-		t.Fatalf("a catalog match is not a guess: %#v", findings[0])
+	// A container rule knows the directory, not the object, and says so: a
+	// lower confidence and the generic_rule reason (ADR-0067 §4).
+	if findings[0].Source != recommendation.SourceRule || findings[0].Confidence != recommendation.GenericConfidence {
+		t.Fatalf("a generic catalog match should report its own confidence: %#v", findings[0])
+	}
+	if !slices.Contains(findings[0].RiskReasons, recommendation.ReasonGenericRule) {
+		t.Fatalf("a generic match did not explain itself: %v", findings[0].RiskReasons)
 	}
 }
 
