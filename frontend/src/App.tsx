@@ -1618,7 +1618,7 @@ export default function App() {
   // back to its folded default rather than staying open on nothing. Not while
   // 待确认 is showing: emptying 已收集 by moving a row back up must not fold the
   // list it moved to.
-  const pendingShowing = (adviceBusy || Boolean(adviceError) || advice !== null) && adviceOpen;
+  const pendingShowing = (Boolean(adviceError) || advice !== null) && adviceOpen;
   useEffect(() => {
     if (collector.length === 0 && !pendingShowing) setDockOpen(false);
   }, [collector.length, pendingShowing]);
@@ -2487,24 +2487,32 @@ export default function App() {
       notify("请先完成一次扫描。");
       return;
     }
-    setAdviceOpen(true);
     setAdviceError("");
     setAdvisorFault("");
     setAdviceStaged({ added: 0, bytes: 0 });
     // A fresh analysis is a fresh start: what was declined last time is not held
     // against the new list.
     setDismissed(new Set());
-    setDockOpen(true);
     setAdviceBusy(true);
     try {
       const rules = await MarmotService.GetCleanupAdvice(snapshotId);
       setAdvice(rules);
+      // Only now. The rule pass is well under a second, and opening the dock on
+      // the click put an empty 分析中… card on screen for that moment -- a state
+      // with nothing in it, saying what the button already said. The dock opens
+      // when it has something to show. A re-analysis keeps the previous list up
+      // meanwhile, so nothing flashes empty either.
+      setAdviceOpen(true);
+      setDockOpen(true);
       // The deterministic half of the answer needs no further decision from the
       // user, so it does not wait for one.
       setAdviceStaged(await stageAdviceItems((rules.items ?? []).filter(autoStageable), rules.snapshotId));
     } catch (error) {
       setAdviceError(String(error));
       notify("分析失败：" + String(error));
+      // A failure is something to show, so the panel opens for it.
+      setAdviceOpen(true);
+      setDockOpen(true);
       return;
     } finally {
       setAdviceBusy(false);
@@ -3309,7 +3317,7 @@ export default function App() {
   // The dock's own state, named once (ADR-0066 §1). 待确认 shows while an
   // analysis is open -- running, failed or done; the panel exists if either
   // section has something to say.
-  const adviceData = adviceBusy || Boolean(adviceError) || advice !== null;
+  const adviceData = Boolean(adviceError) || advice !== null;
   // The section stays mounted while there is a result, folded or not, so that
   // folding is a height transition and not a re-layout: unmounting it snapped
   // the dock from full height to its compact form in one frame.
@@ -3399,20 +3407,18 @@ export default function App() {
                   <div>
                     <p className="eyebrow">待确认</p>
                     <h3>
-                      {adviceBusy
-                        ? "分析中…"
-                        : adviceError
-                          ? "分析失败"
-                          : pendingAdvice.length > 0
-                            ? pendingAdvice.length + " 项 · " + formatBytes(pendingBytes)
-                            : (advice?.items ?? []).length > 0 ? "都已在收集区" : "没有结果"}
+                      {adviceError
+                        ? "分析失败"
+                        : pendingAdvice.length > 0
+                          ? pendingAdvice.length + " 项 · " + formatBytes(pendingBytes)
+                          : (advice?.items ?? []).length > 0 ? "都已在收集区" : "没有结果"}
                     </h3>
                   </div>
                   <div className="advice-head-actions">
                     {/* What left the machine, byte for byte (ADR-0061 §2). The
                         run's shape rides on the tooltip; the pack's own header
                         already states the evidence size and floor. */}
-                    {!adviceBusy && advice && (
+                    {advice && (
                       <button
                         className="quiet-button"
                         onClick={() => void showEvidence()}
@@ -3448,10 +3454,10 @@ export default function App() {
                 {/* The AI was meant to run and did not. Said here, on the list it
                     would have contributed to, not only two clicks away in the
                     settings sheet. */}
-                {advisorFaulted && !adviceBusy && (
+                {advisorFaulted && (
                   <p className="advice-summary-line advice-fault">AI 未启用：{advisor?.fault}</p>
                 )}
-                {!adviceBusy && advice && (advice.items ?? []).length > 0 && (
+                {advice && (advice.items ?? []).length > 0 && (
                   <p className="advice-summary-line">
                     {/* Whole sentences, the AI's state first while it is out. Numbers
                         already on screen -- the timer by 停止 AI, the counts on the
@@ -3479,15 +3485,14 @@ export default function App() {
                 )}
 
                 <div className="advice-list">
-                  {adviceBusy && <p className="advice-empty">正在读取扫描结果…</p>}
-                  {!adviceBusy && adviceError && <p className="advice-empty advice-fault">{adviceError}</p>}
-                  {!adviceBusy && !adviceError && advice && (advice.items ?? []).length === 0 && (
+                  {adviceError && <p className="advice-empty advice-fault">{adviceError}</p>}
+                  {!adviceError && advice && (advice.items ?? []).length === 0 && (
                     <p className="advice-empty">没有找到可清理的对象。</p>
                   )}
-                  {!adviceBusy && !adviceError && advice && (advice.items ?? []).length > 0 && pendingAdvice.length === 0 && (
+                  {!adviceError && advice && (advice.items ?? []).length > 0 && pendingAdvice.length === 0 && (
                     <p className="advice-empty">全部建议都已在收集区。</p>
                   )}
-                  {!adviceBusy && pendingAdvice.map((item) => {
+                  {pendingAdvice.map((item) => {
                     const open = adviceDetail === item.nodeId;
                     const wasDismissed = dismissed.has(item.path);
                     return (
@@ -3531,9 +3536,6 @@ export default function App() {
                                 <strong>{item.name}</strong>
                                 <span className="advice-tags">
                                   <AdviceTags item={item} />
-                                  {/* Back from the dock by the user's hand. The mark is
-                                      what keeps 全部加入 from putting it straight back. */}
-                                  {wasDismissed && <span className="advice-tag is-dismissed">已移出</span>}
                                   {/* Needs admin rights; this tool will not take them
                                       (ADR-0065). The command is in the detail. */}
                                   {item.manual && <span className="advice-tag is-manual">需管理员权限</span>}

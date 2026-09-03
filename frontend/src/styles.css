@@ -619,8 +619,14 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .dock-fold { display: grid; width: 26px; height: 26px; padding: 0; place-items: center; }
 /* A row that came back out of the dock. Quieter than its neighbours, and marked:
    the mark is what keeps 全部加入 from putting it straight back. */
-.advice-item.is-dismissed .advice-text strong { color: #b6b7bd; }
-.advice-tag.is-dismissed { background: #3a3226; color: #e5cc91; }
+/* Taken back out of the dock by hand. 全部加入 skips it -- acting on a list the
+   user can see is what separates that button from pre-filling the cart -- and
+   the row says so by going quiet rather than by wearing a word: it is the one
+   state the user put the row in themselves, so it needs recognising, not
+   explaining. The whole row dims, not just the name, which the earlier tag made
+   too subtle to notice on its own. */
+.advice-item.is-dismissed .advice-text strong { color: #a9aab1; }
+.advice-item.is-dismissed .advice-tags, .advice-item.is-dismissed .advice-path, .advice-item.is-dismissed .advice-size { opacity: .55; }
 /* A collected row keeps the reasons it was proposed with; a hand-dragged row has
    none, which is how the two kinds tell apart (ADR-0066 §1). The tags sit on the
    name's line and give way to it: the name is what identifies the row. */
