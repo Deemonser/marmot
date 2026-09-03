@@ -1709,6 +1709,18 @@ export default function App() {
   // unmounted at 20% because the digit stopped at 1 and never showed 0. Both now
   // come off the same clock.
   const countdownLeft = useRef(1);
+  // The plan is confirmed and Execute has not come back yet: the whole deletion,
+  // not just the part of it that has progress events. cleanupAt is only the ticks
+  // in between -- null before the first one arrives and null again after the
+  // last -- so a locked state built out of it let the panel come back to life
+  // mid-run: both lists returned, the badge dropped its ring for the byte count,
+  // and a live 删除 button sat there offering to delete a set already being
+  // deleted.
+  const deleting = plan?.state === "confirmed";
+  // Nothing may join, leave or be re-analysed while the set is being acted on.
+  // The countdown runs against the exact set the plan was built from, and the
+  // deletion is that set going away.
+  const dockLocked = countdown !== null || deleting;
   const [ringFraction, setRingFraction] = useState(1);
   const collectorRef = useRef<HTMLElement | null>(null);
   const pendingRef = useRef<HTMLElement | null>(null);
@@ -1976,7 +1988,11 @@ export default function App() {
       data: { done: number; total: number; current: string; doneBytes: number; totalBytes: number };
     }) => {
       const { done, total, current, doneBytes, totalBytes } = event.data;
-      setCleanupAt(done >= total ? null : { done, total, current, doneBytes, totalBytes });
+      // Kept at the final tick rather than cleared: the ring reads 100% until
+      // Execute returns. Clearing here dropped it back to a bare badge for the
+      // last stretch of a long delete, which is exactly when the user is
+      // watching it. runCleanup clears it when the run is over.
+      setCleanupAt({ done, total, current, doneBytes, totalBytes });
     });
     // A disk was plugged in, ejected or renamed: re-read the list, the way the
     // reference's disk list follows the desktop. The event is a signal; the
@@ -2395,9 +2411,9 @@ export default function App() {
   // armed state, which is what the original shows.
   function beginEntryDrag(source: DragSource, event: ReactPointerEvent) {
     if (event.button !== 0) return;
-    // The countdown is running against the set the plan was built from, so
-    // nothing may join it: the drop would look accepted and not be deleted.
-    if (countdown !== null) return;
+    // The set the plan was built from is being acted on, so nothing may join it:
+    // the drop would look accepted and not be deleted.
+    if (dockLocked) return;
     // Draggable means "there is an object here to talk about", not "it may be
     // collected". A protected object has to be draggable so the dock can say why
     // it is refused -- that is the whole point of the refusal (ADR-0015). A
@@ -3045,6 +3061,11 @@ export default function App() {
       }
     } catch (error) {
       setCleanupAt(null);
+      // The plan stays "confirmed" until Execute answers, and that is what locks
+      // the dock. A throw is an answer: without this the panel would never come
+      // back.
+      setPlan(null);
+      setValidation(null);
       notify(String(error));
     }
   }
@@ -3324,8 +3345,8 @@ export default function App() {
   const dockHasPanel = collector.length > 0 || adviceData;
   // Nothing unfolded above the bar: the panel is then the reference's pill
   // rather than a card, with the badge clear of its left end.
-  const barOnly = !(adviceData && countdown === null && adviceOpen && dockOpen)
-    && !(countdown === null && collector.length > 0 && dockOpen);
+  const barOnly = !(adviceData && !dockLocked && adviceOpen && dockOpen)
+    && !(!dockLocked && collector.length > 0 && dockOpen);
   const bulk = advice ? bulkCandidates(advice.items ?? [], isCollected, dismissed) : [];
   const pendingBytes = pendingAdvice.reduce((sum, item) => sum + item.reclaimableBytes, 0);
   const pendingDecisions = pendingAdvice.filter((item) => !item.manual).length;
@@ -3389,9 +3410,9 @@ export default function App() {
           </div>
         ) : (
           <div className={"collector-panel" + (barOnly ? " is-bar-only" : "")}>
-            {/* 待确认. Hidden with the other list during the countdown: nothing
+            {/* 待确认. Hidden with the other list while the set is being acted on: nothing
                 may join the set the plan was built from. */}
-            {adviceData && countdown === null && (
+            {adviceData && !dockLocked && (
               <section
                 ref={pendingRef}
                 className={"dock-section dock-pending" + (adviceOpen && dockOpen ? "" : " is-folded")}
@@ -3560,7 +3581,7 @@ export default function App() {
                 came from a suggestion keeps its tags and opens the same reasoning
                 the other section shows. A row dragged in by hand has none, which
                 is how the two kinds tell apart. */}
-            {countdown === null && collector.length > 0 && (
+            {!dockLocked && collector.length > 0 && (
               <section
                 className={"dock-section dock-staged" + (dockOpen ? "" : " is-folded")}
                 aria-label="已收集"
@@ -3674,32 +3695,32 @@ export default function App() {
                     type="button"
                     className={"collector-target is-filled collector-badge"
                       + (countdown !== null ? " is-counting" : "")
-                      + (cleanupAt ? " is-deleting" : "")}
-                    onClick={() => { if (!cleanupAt) setDockOpen((open) => !open); }}
-                    aria-label={dockOpen ? "收起收集区" : "展开收集区"}
+                      + (deleting ? " is-deleting" : "")}
+                    onClick={() => { if (!deleting) setDockOpen((open) => !open); }}
+                    aria-label={deleting ? "正在删除" : dockOpen ? "收起收集区" : "展开收集区"}
                     aria-expanded={dockOpen}
                   >
                     {/* One ring, two phases, one expression. offset = C * (1 - f)
                         draws the first f of the path clockwise from twelve o'clock, so
                         a falling fraction retreats the arc anticlockwise and a rising
                         one grows it clockwise. Nothing to keep in sync between them. */}
-                    {(countdown !== null || cleanupAt) && (
-                      <svg className={"collector-ring" + (cleanupAt ? " is-deleting" : "")} viewBox="0 0 44 44">
+                    {dockLocked && (
+                      <svg className={"collector-ring" + (deleting ? " is-deleting" : "")} viewBox="0 0 44 44">
                         <circle
                           cx="22"
                           cy="22"
                           r="20"
                           strokeDasharray={2 * Math.PI * 20}
                           strokeDashoffset={ringOffset(
-                            cleanupAt ? deleteFraction(cleanupAt.doneBytes, cleanupAt.totalBytes) : ringFraction,
+                            deleting ? deleteFraction(cleanupAt?.doneBytes ?? 0, cleanupAt?.totalBytes ?? 0) : ringFraction,
                             20,
                           )}
                         />
                       </svg>
                     )}
                     <span className="collector-count">
-                      {cleanupAt
-                        ? Math.round(deleteFraction(cleanupAt.doneBytes, cleanupAt.totalBytes) * 100) + "%"
+                      {deleting
+                        ? Math.round(deleteFraction(cleanupAt?.doneBytes ?? 0, cleanupAt?.totalBytes ?? 0) * 100) + "%"
                         : countdown !== null
                           ? countdown
                           : formatBytes(collectorBytes).split(" ")[0]}
@@ -3712,22 +3733,22 @@ export default function App() {
                         ? <>秒后开始。选中的文件将被<strong className="destructive-note">直接删除，无法撤销</strong></>
                         : cleanupAt
                           ? `正在删除 ${cleanupAt.done + 1}/${cleanupAt.total}：${cleanupAt.current.split("/").pop()}`
-                          : plan?.state === "confirmed"
+                          : deleting
                             ? "正在删除…（大目录要逐个文件删除，可能要几分钟）"
                             : validation && !validation.valid
                               ? "校验未通过，不能执行"
                               : <><span className="collector-unit">{formatBytes(collectorBytes).split(" ")[1]}</span> <span className="collector-dim">已收集</span></>}
                   </span>
                   {/* A folded analysis stays reachable from the bar. */}
-                  {countdown === null && !adviceOpen && pendingAdvice.length > 0 && (
+                  {!dockLocked && !adviceOpen && pendingAdvice.length > 0 && (
                     <button className="quiet-button" onClick={() => { setAdviceOpen(true); setDockOpen(true); }}>待确认 {pendingAdvice.length} 项</button>
                   )}
                   {/* One action, and it deletes outright -- the trash is on the same
                       volume, so moving there reclaims nothing. Nothing is rerouted and
                       nothing is undoable; the countdown is the whole confirmation. */}
-                  {countdown === null
-                    ? <button className="danger-button compact is-permanent" onClick={() => void createPlan()}>删除</button>
-                    : <button className="quiet-button" onClick={stopCountdown}>停止</button>}
+                  {countdown !== null
+                    ? <button className="quiet-button" onClick={stopCountdown}>停止</button>
+                    : <button className="danger-button compact is-permanent" onClick={() => void createPlan()} disabled={deleting}>删除</button>}
                 </>
               )}
             </div>
@@ -3751,7 +3772,7 @@ export default function App() {
             <button
               className="advice-button"
               onClick={() => void runAdvice()}
-              disabled={adviceBusy || advisorBusy}
+              disabled={adviceBusy || advisorBusy || dockLocked}
             >
               {/* Working states carry the same turning ring as the list's own
                   waiting line, so one vocabulary says "still going" wherever the
