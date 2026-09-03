@@ -33,8 +33,9 @@ test("safe plus irreplaceable is refused rather than trusted", () => {
 });
 
 test("the summary says what was withheld, not only what was taken", () => {
-  assert.match(stageSummary(12, "33.9 GB", 46), /12 项.*33\.9 GB.*46 项需要你确认/);
-  assert.equal(stageSummary(0, "", 0), "");
+  assert.equal(stageSummary(12, 46), "已自动加入 12 项安全项。");
+  assert.equal(stageSummary(0, 5), "没有可自动加入的项，都需要你确认。");
+  assert.equal(stageSummary(0, 0), "");
   assert.match(stageSummary(0, "", 9), /都需要你确认/);
   assert.doesNotMatch(stageSummary(12, "33.9 GB", 0), /需要你确认/);
 });
@@ -96,6 +97,12 @@ test("every reason code reads as a sentence and unknown codes survive", () => {
 // stay in the detail view, and a missing list is an empty list.
 test("inline reasons leave out the restatements", () => {
   assert.deepEqual(inlineRiskReasons(["project_active", "generic_rule", "catalog", "cache_cold"]), ["project_active", "cache_cold"]);
+  // A reason that restates a tag already on the row does not get a tag of its
+  // own: 不可恢复 / 可重新下载 are the recovery tag, and the confidence is the AI
+  // tag's own number.
+  assert.deepEqual(inlineRiskReasons(["irreplaceable", "login_state"]), ["login_state"]);
+  assert.deepEqual(inlineRiskReasons(["redownload_cost", "advisor_uncertain"]), []);
+  assert.deepEqual(inlineRiskReasons(["partial_install", "project_dormant"]), ["partial_install", "project_dormant"]);
   assert.deepEqual(inlineRiskReasons(null), []);
   assert.deepEqual(inlineRiskReasons(undefined), []);
 });

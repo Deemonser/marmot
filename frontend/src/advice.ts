@@ -41,11 +41,13 @@ export function autoStageable(item: StageableItem): boolean {
 
 // stageSummary phrases what was staged and what deliberately was not, so the
 // pre-filled cart is never a surprise the user has to discover in the dock.
-export function stageSummary(staged: number, stagedBytes: string, remaining: number): string {
+// One short sentence about what the app did on the user's behalf. It does not
+// repeat what is already on screen: the staged count is the 已收集 header, the
+// bytes are the badge, the remaining count is the 全部加入 button.
+export function stageSummary(staged: number, remaining: number): string {
   if (staged === 0 && remaining === 0) return "";
-  if (staged === 0) return "这些都需要你确认，没有自动加入的项。";
-  const head = "已自动加入 " + staged + " 项可安全清理 · " + stagedBytes;
-  return remaining > 0 ? head + "，其余 " + remaining + " 项需要你确认" : head;
+  if (staged === 0) return "没有可自动加入的项，都需要你确认。";
+  return "已自动加入 " + staged + " 项安全项。";
 }
 
 // The dock has two sections and an object is in exactly one of them (ADR-0066
@@ -98,10 +100,26 @@ export function riskReasonLabel(code: string): string {
   return riskReasonLabels[code] ?? code;
 }
 
-// The tags shown inline are the ones that carry a decision. `catalog` and
-// `generic_rule` only restate that the rule was cautious, which the tier
-// already says, so they stay in the detail view.
-const detailOnlyReasons = new Set(["catalog", "generic_rule"]);
+// The tags shown inline are the ones that carry a decision. A reason that only
+// restates a tag already on the row is not one of them -- a row wearing
+// 不可恢复, 高风险 and 删除后无法恢复 says one thing three times, and the reader
+// stops reading tags. Each of these has exactly one other tag that already
+// carries it:
+//   irreplaceable    -> the recovery tag is 不可恢复
+//   redownload_cost  -> the recovery tag is 可重新下载 (Assess only adds this
+//                       reason when recovery is redownloadable)
+//   advisor_uncertain-> the AI tag shows the confidence, and goes grey below
+//                       the threshold that produced this code
+//   catalog, generic_rule -> only say the rule was cautious, which the tier says
+// All of them stay in the detail view, which is the place that lists every
+// reason rather than the ones that change a decision.
+const detailOnlyReasons = new Set([
+  "catalog",
+  "generic_rule",
+  "irreplaceable",
+  "redownload_cost",
+  "advisor_uncertain",
+]);
 
 export function inlineRiskReasons(reasons: string[] | null | undefined): string[] {
   return (reasons ?? []).filter((code) => !detailOnlyReasons.has(code));

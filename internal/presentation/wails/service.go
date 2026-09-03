@@ -286,8 +286,11 @@ type Advice struct {
 	// trust than one that quietly shows fewer rows.
 	RejectedSummary string `json:"rejectedSummary"`
 	// CorrectionSummary reports recoverability claims that were overridden --
-	// the one error class that cannot be undone by waiting.
+	// the one error class that cannot be undone by waiting. Corrections is how
+	// many: the list says the count and carries the wording on its tooltip,
+	// because a paragraph of prose above a list nobody reads is not a report.
 	CorrectionSummary string `json:"correctionSummary"`
+	Corrections       int    `json:"corrections"`
 	// AdvisorError is a failed round trip. The rule findings still stand.
 	AdvisorError string `json:"advisorError"`
 	Rounds       int    `json:"rounds"`
@@ -435,6 +438,7 @@ func adviceView(advice application.Advice) Advice {
 		SnapshotID: advice.SnapshotID, Items: items, TotalBytes: advice.TotalBytes,
 		RuleItems: advice.RuleItems, AdvisorItems: advice.AdvisorItems, Rejected: rejected,
 		RejectedSummary: advice.RejectedSummary, CorrectionSummary: advice.CorrectionSummary,
+		Corrections:  len(advice.Corrections),
 		AdvisorError: advice.AdvisorError,
 		Rounds:       advice.Rounds, Expanded: advice.Expanded,
 		InputTokens: advice.InputTokens, OutputTokens: advice.OutputTokens,

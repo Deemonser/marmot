@@ -17,9 +17,12 @@ export interface Advice {
 
     /**
      * CorrectionSummary reports recoverability claims that were overridden --
-     * the one error class that cannot be undone by waiting.
+     * the one error class that cannot be undone by waiting. Corrections is how
+     * many: the list says the count and carries the wording on its tooltip,
+     * because a paragraph of prose above a list nobody reads is not a report.
      */
     "correctionSummary": string;
+    "corrections": number;
 
     /**
      * AdvisorError is a failed round trip. The rule findings still stand.

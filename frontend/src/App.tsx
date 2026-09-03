@@ -329,16 +329,21 @@ function homePath(path: string): string {
 // leads: it is the axis that decides whether a suggestion is frightening --
 // reinstalling a toolchain costs a download, losing a photo library costs the
 // photos. Risk follows it.
+// Both lists draw the tier as a coloured dot on the row's left mark, so the word
+// for it is only worth its space at 高风险 -- the one tier that should be loud.
 function AdviceTags({ item }: { item: AdviceItem }) {
+  // The code Assess adds when the model was below its confidence threshold. The
+  // threshold itself stays on the Go side: this reads its conclusion.
+  const unsure = (item.riskReasons ?? []).includes("advisor_uncertain");
   return (
     <>
       {item.source === "advisor"
-        ? <><span className="advice-tag">{item.category}</span><span className="advice-tag is-ai">{sourceLabel(item)}</span></>
+        ? <><span className="advice-tag">{item.category}</span><span className={"advice-tag is-ai" + (unsure ? " is-unsure" : "")} title={unsure ? "AI 对这一条把握不足" : undefined}>{sourceLabel(item)}</span></>
         : <span className="advice-tag">{sourceLabel(item)}</span>}
       <span className={"advice-tag is-recovery recovery-" + item.recovery}>
         {recoveryLabels[item.recovery] ?? item.recovery}
       </span>
-      <span className="advice-tag">{riskLabels[item.risk] ?? item.risk}</span>
+      {item.risk === "risky" && <span className="advice-tag is-tier tier-risky">{riskLabels.risky}</span>}
       {/* Why the tier is what it is (ADR-0067 §5). Only the reasons that carry a
           decision ride inline; the detail view lists them all. */}
       {inlineRiskReasons(item.riskReasons).map((code) => (
@@ -3415,6 +3420,7 @@ export default function App() {
                           ? "规则 " + advice.ruleItems + " 条 · AI " + advice.advisorItems + " 条 · " + advice.rounds + " 轮"
                             + (advice.expanded > 0 ? "，深挖 " + advice.expanded + " 处" : "")
                             + " · " + (advice.inputTokens + advice.outputTokens).toLocaleString() + " token"
+                            + ((advice.rejected ?? []).length > 0 ? "\n已丢弃 " + (advice.rejected ?? []).length + " 条：" + advice.rejectedSummary : "")
                           : "本轮全部来自本机规则，未联网"}
                       >查看发送内容</button>
                     )}
@@ -3447,12 +3453,28 @@ export default function App() {
                 )}
                 {!adviceBusy && advice && (advice.items ?? []).length > 0 && (
                   <p className="advice-summary-line">
-                    {stageSummary(adviceStaged.added, formatBytes(adviceStaged.bytes), pendingDecisions)}
-                    {advisorBusy && <span className="advice-waiting"> AI 仍在分析，已 {advisorSeconds} 秒；上面这些来自本机规则，现在就可以用。</span>}
-                    {!advisorBusy && advisorFault && <span className="advice-fault"> AI 未完成：{advisorFault}</span>}
-                    {!advisorBusy && advice.advisorError && <span className="advice-fault"> {advice.advisorError}</span>}
-                    {(advice.rejected ?? []).length > 0 && <span title={advice.rejectedSummary}> · 已丢弃 {(advice.rejected ?? []).length} 条</span>}
-                    {advice.correctionSummary && <span className="advice-fault"> · {advice.correctionSummary}</span>}
+                    {/* Whole sentences, the AI's state first while it is out. Numbers
+                        already on screen -- the timer by 停止 AI, the counts on the
+                        headers and the bulk button -- are not repeated here; the
+                        advisor's discarded count rides on the evidence tooltip. */}
+                    {advisorBusy && (
+                      <span className="advice-waiting">
+                        <span className="advice-spinner" aria-hidden="true" />
+                        AI 仍在分析（{advisorSeconds} 秒），先列出本机规则的结果。
+                      </span>
+                    )}
+                    {!advisorBusy && advisorFault && <span className="advice-fault">AI 未完成：{advisorFault}</span>}
+                    {!advisorBusy && !advisorFault && advice.advisorError && <span className="advice-fault">{advice.advisorError}</span>}
+                    {stageSummary(adviceStaged.added, pendingDecisions)}
+                    {/* The app overrode the model on recoverability -- the one
+                        error class waiting cannot undo. The count belongs here;
+                        the per-case wording is on the tooltip, and every affected
+                        row already wears its corrected tag. */}
+                    {advice.corrections > 0 && (
+                      <span className="advice-corrected" data-tip={advice.correctionSummary}>
+                        已修正 {advice.corrections} 条 AI 的恢复判断。
+                      </span>
+                    )}
                   </p>
                 )}
 
@@ -3477,6 +3499,24 @@ export default function App() {
                         onPointerDown={(event) => dragAdviceItem(item, event)}
                       >
                         <div className="advice-row">
+                          {/* The row's left mark is also its action, the way a
+                              collected row's dot is: the tier dot becomes a +
+                              under the pointer, and pressing it collects. One
+                              gesture in the same place in both lists, and the
+                              加入 button's width goes back to the path. A row
+                              needing admin rights cannot be collected, so there
+                              the mark stays a mark. */}
+                          {item.manual
+                            ? <span className="advice-mark"><span className="advice-risk" aria-hidden="true" /></span>
+                            : <button
+                                className="advice-add"
+                                onClick={() => void collectAdviceItem(item)}
+                                aria-label={"加入 " + item.name}
+                                title="加入"
+                              >
+                                <span className="advice-risk" aria-hidden="true" />
+                                <span className="advice-plus" aria-hidden="true">+</span>
+                              </button>}
                           <button
                             className="advice-summary"
                             onClick={() => {
@@ -3486,7 +3526,6 @@ export default function App() {
                             }}
                             aria-expanded={open}
                           >
-                            <span className="advice-risk" aria-hidden="true" />
                             <span className="advice-text">
                               <span className="advice-title">
                                 <strong>{item.name}</strong>
@@ -3504,7 +3543,6 @@ export default function App() {
                             </span>
                             <span className="advice-size">{formatBytes(item.reclaimableBytes)}</span>
                           </button>
-                          {!item.manual && <button className="advice-collect" onClick={() => void collectAdviceItem(item)}>加入</button>}
                         </div>
                         {open && <AdviceDetail item={item} />}
                       </article>
@@ -3543,7 +3581,14 @@ export default function App() {
                     const open = suggestion !== undefined && collectorDetail === path;
                     return (
                       <div
-                        className={"collector-item" + (suggestion ? " has-advice" : "") + (open ? " is-open" : "")}
+                        /* risk-*: the dot is the tier, the same palette the 待确认 list
+                           uses. It used to be the wheel's level colour, falling back to
+                           #7fb96a when the object was not on the current level -- exactly
+                           the green that means 安全 one list above, so a 需确认 row
+                           arrived here looking safe. Two colour languages in one panel
+                           means neither can be read. A row dragged in by hand has no
+                           assessment and gets the neutral dot. */
+                        className={"collector-item" + (suggestion ? " has-advice risk-" + suggestion.risk : "") + (open ? " is-open" : "")}
                         key={entryKey(item)}
                         draggable={Boolean(node)}
                         onDragStart={(event) => {
@@ -3588,7 +3633,7 @@ export default function App() {
                           }}
                           aria-label={"移除 " + item.name}
                         >
-                          <span className="collector-dot" style={{ background: levelColors[entryKey(item)] ?? "#7fb96a" }} aria-hidden="true" />
+                          <span className="collector-dot" aria-hidden="true" />
                           <span className="collector-cross" aria-hidden="true">×</span>
                         </button>
                         <span className="collector-name">
@@ -3706,10 +3751,13 @@ export default function App() {
               onClick={() => void runAdvice()}
               disabled={adviceBusy || advisorBusy}
             >
+              {/* Working states carry the same turning ring as the list's own
+                  waiting line, so one vocabulary says "still going" wherever the
+                  user happens to be looking. */}
               {adviceBusy
-                ? "读取中…"
+                ? <><span className="advice-spinner" aria-hidden="true" />读取中…</>
                 : advisorBusy
-                  ? "AI " + advisorSeconds + "s"
+                  ? <><span className="advice-spinner" aria-hidden="true" />AI {advisorSeconds}s</>
                   : advice || adviceError
                     ? "重新分析"
                     : advisor?.configured ? "AI 分析" : "分析可清理项"}

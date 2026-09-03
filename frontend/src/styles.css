@@ -596,7 +596,9 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .dock-pending .advice-head { padding: 7px 6px 6px; }
 .dock-pending .advice-stage { padding: 6px 6px; }
 .dock-pending .advice-list { flex: 1 1 auto; min-height: 0; max-height: calc(74vh - 202px); padding: 2px 0 0; }
-.advice-summary-line { margin: 0; padding: 0 6px 6px; color: #96979e; font-size: 9px; line-height: 1.6; }
+/* Sentences, spaced as sentences: each child is one, and the gap between them
+   is the pause. */
+.advice-summary-line { position: relative; display: flex; flex-wrap: wrap; gap: 0 8px; margin: 0; padding: 0 6px 6px; color: #96979e; font-size: 9px; line-height: 1.6; }
 /* 已收集 folds with the badge. Its natural height is auto, which cannot
    transition, so the ceiling stands in for it: content is never taller than the
    list's own cap plus the head. */
@@ -667,7 +669,11 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 
 /* Colour dot by default, cross on hover. The name never shifts, because the two
    faces share the button's cell and the button's size never changes. */
-.collector-dot { width: 8px; height: 8px; border-radius: 50%; }
+/* Nothing known about the object -- dragged in by hand, never assessed. */
+.collector-dot { width: 8px; height: 8px; border-radius: 50%; background: #6b6c73; }
+.risk-safe .collector-dot { background: #7fb96a; }
+.risk-review .collector-dot { background: #d3a44b; }
+.risk-risky .collector-dot { background: #d0453a; }
 .collector-item:hover .collector-dot, .collector-item:focus-within .collector-dot { opacity: 0; }
 .collector-item:hover .collector-cross, .collector-item:focus-within .collector-cross { opacity: 1; }
 
@@ -742,7 +748,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    so the two never sit on top of each other. */
 .app-shell-result .notice { bottom: 62px; }
 
-.advice-button { padding: 8px 13px; border: 1px solid #5b5c63; border-radius: 6px; background: #2c2d33; color: #e4e4e8; font-size: 11px; box-shadow: 0 6px 16px rgba(0,0,0,.3); }
+.advice-button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 13px; border: 1px solid #5b5c63; border-radius: 6px; background: #2c2d33; color: #e4e4e8; font-size: 11px; box-shadow: 0 6px 16px rgba(0,0,0,.3); }
 .advice-button:hover:not(:disabled) { border-color: #a4a5ac; color: #fff; }
 .advice-button:disabled { color: #85868d; }
 
@@ -756,7 +762,37 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .danger-button.is-permanent { border-color: #c2503f; background: #6d2b21; color: #ffdcd4; }
 
 .advice-stage span { min-width: 0; }
-.advice-waiting { color: #85868d; }
+.advice-waiting { display: inline-flex; align-items: center; gap: 5px; color: #85868d; }
+/* A correction is the tool working, not a failure, so it is not coral -- coral
+   is reserved for something that went wrong. Brighter than the line around it,
+   with the hover-for-detail hint spelled out by the dotted rule. */
+.advice-corrected { color: #c9cad0; text-decoration: underline dotted rgba(201, 202, 208, .45); text-underline-offset: 2px; }
+/* An instant tooltip. The native title attribute waits about a second before it
+   appears and cannot be styled, and a hint that arrives after the pointer has
+   moved on is not a hint.
+   It is positioned against the nearest positioned ancestor -- the caller marks
+   one, and here that is the summary line -- and stretched across it, so the text
+   wraps inside the panel instead of running out through the edge that clips it.
+   A max-content box anchored to the span's own right edge did exactly that. */
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute; z-index: 30; top: calc(100% + 5px); right: 0; left: 0;
+  padding: 6px 8px;
+  border: 1px solid #4a4b52; border-radius: 5px; background: #232429;
+  color: #d6d7db; font-size: 9px; font-weight: 400; line-height: 1.6;
+  text-align: left; text-decoration: none; white-space: normal;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .4);
+  opacity: 0; pointer-events: none;
+}
+[data-tip]:hover::after { opacity: 1; }
+/* The AI is still out. A ring with one bright quarter, turning: motion is what
+   says "not stuck", which no number can. The elapsed seconds ride beside it --
+   a spinner alone cannot tell a slow round from a hung one. */
+.advice-spinner { display: inline-block; width: 9px; height: 9px; flex: none; border: 1.4px solid rgba(143, 180, 240, .28); border-top-color: #8fb4f0; border-radius: 50%; animation: advice-spin 800ms linear infinite; }
+@keyframes advice-spin { to { transform: rotate(360deg); } }
+/* Not animation: none -- a still ring would say nothing at all. Slowed to where
+   it no longer reads as motion in the corner of the eye. */
+@media (prefers-reduced-motion: reduce) { .advice-spinner { animation-duration: 2.6s; } }
 .advice-command { display: block; padding: 5px 7px; border-radius: 4px; background: #23242a; color: #cfd2d8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; overflow-x: auto; white-space: pre; user-select: all; }
 .advice-stage .quiet-button { flex: none; }
 .advice-list { min-height: 0; flex: 1; padding: 4px 6px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
@@ -774,7 +810,23 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .advice-title strong { min-width: 0; flex: 0 1 auto; }
 /* Risk is a colour and a word, never a colour alone: the word is in the tag row
    below, so the dot is a scanning aid rather than the only statement. */
+/* The left mark carries the tier and, where the row can be collected, the action.
+   Both faces sit in one cell and neither takes a hit of its own: the button is
+   the target, whichever face shows. The + keeps the tier's colour -- this dot is
+   the only thing in 待确认 that says how risky a row is, and swapping it for a
+   neutral glyph would take the safety signal away at the moment of the click. */
+.advice-add, .advice-mark { display: grid; width: 16px; height: 16px; flex: 0 0 auto; padding: 0; border: 0; background: transparent; place-items: center; -webkit-user-drag: none; }
+.advice-add > span, .advice-mark > span { grid-area: 1 / 1; pointer-events: none; }
 .advice-risk { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; }
+.advice-plus { font-size: 14px; line-height: 1; opacity: 0; }
+.risk-safe .advice-plus { color: #7fb96a; }
+.risk-review .advice-plus { color: #d3a44b; }
+.risk-risky .advice-plus { color: #d0453a; }
+.advice-item:hover .advice-risk, .advice-item:focus-within .advice-risk { opacity: 0; }
+.advice-item:hover .advice-plus, .advice-item:focus-within .advice-plus { opacity: 1; }
+/* A row that cannot be collected keeps its dot under the pointer: there is no
+   action to offer, and a + that did nothing would be worse than none. */
+.advice-item:hover .advice-mark .advice-risk, .advice-item:focus-within .advice-mark .advice-risk { opacity: 1; }
 .risk-safe .advice-risk { background: #7fb96a; }
 .risk-review .advice-risk { background: #d3a44b; }
 .risk-risky .advice-risk { background: #d0453a; }
@@ -792,9 +844,6 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .advice-tags { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
 .advice-tag { padding: 1px 5px; border-radius: 3px; background: #383941; color: #b6b7bd; font-size: 8px; line-height: 1.4; white-space: nowrap; }
 .advice-tag.is-manual { background: #3a3226; color: #e5cc91; }
-.advice-collect { flex: 0 0 auto; padding: 2px 8px; border: 1px solid #5b5c63; border-radius: 3px; background: transparent; color: #d0d0d5; font-size: 9px; }
-.advice-collect:hover:not(:disabled) { border-color: #a4a5ac; color: #fff; }
-.advice-collect:disabled { border-color: #3f4047; color: #7b7c83; }
 
 .advice-detail { display: grid; margin: 7px 0 2px; padding: 8px 9px; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; border-radius: 5px; background: #26272c; }
 .advice-detail dt { color: #8b8c93; font-size: 9px; white-space: nowrap; }
@@ -829,6 +878,9 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 
 .advice-head-actions { display: flex; align-items: center; gap: 5px; }
 .advice-tag.is-ai { background: #2f3a4c; color: #a8c2e8; }
+/* Below the confidence threshold the number keeps its place and loses its
+   authority: grey, not amber -- it is a weaker claim, not a warning. */
+.advice-tag.is-ai.is-unsure { background: #34353c; color: #9b9ca3; }
 .advice-fault { color: #e8948d; }
 
 /* The advisor sheet reuses the evidence scrim, so it inherits the pinned grid
@@ -902,3 +954,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .advice-tag.is-recovery { font-weight: 600; }
 .advice-tag.recovery-regenerable, .advice-tag.recovery-redownloadable { background: #2b3a2e; color: #a6cfa8; }
 .advice-tag.recovery-irreplaceable { background: #46281f; color: #f0b3a3; }
+/* The tier, now shown only where it is an exception rather than the list's own
+   default, so it can look like one. */
+.advice-tag.is-tier { font-weight: 600; }
+.advice-tag.tier-risky { background: #46281f; color: #f0b3a3; }
