@@ -298,16 +298,22 @@ function formatBytes(value: number): string {
 // deliberately separate from risk: a 40 GB build directory is regenerable and
 // deleting it still costs an hour of rebuilding, and the user is entitled to
 // know which of the two they are being asked to accept.
+// Formal wording, on request: the first cut ("删了就没了") read as chat, not as a
+// label on a tool that deletes things for good. Each label names the fact
+// without softening it: whether it comes back, and how much scrutiny it needs.
 const recoveryLabels: Record<string, string> = {
-  regenerable: "会自动重建",
+  regenerable: "可自动重建",
   redownloadable: "可重新下载",
-  irreplaceable: "删了就没了",
+  irreplaceable: "不可恢复",
 };
 
+// Settled with the user after two rounds: "安全" says there is nothing to
+// weigh (a "低风险" grade still reads as a warning), "需确认" names the action,
+// and only the last one carries the word 风险.
 const riskLabels: Record<string, string> = {
   safe: "安全",
   review: "需确认",
-  risky: "有风险",
+  risky: "高风险",
 };
 
 // Home paths are shown the way the shell writes them. Only the display is
