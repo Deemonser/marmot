@@ -304,6 +304,7 @@ export interface ScanProgress {
     "countedBytes": number;
     "volumeUsedBytes": number;
     "expectedTotalBytes": number;
+    "expectedTotalNodes": number;
 }
 
 export interface ScanStatus {
@@ -332,6 +333,7 @@ export interface ScanStatus {
      * Zero on the first-ever scan of a root.
      */
     "expectedTotalBytes": number;
+    "expectedTotalNodes": number;
 }
 
 export interface StorageSourceOverview {

@@ -486,6 +486,7 @@ function statusFromProgress(progress: ScanProgress): ScanStatus {
     countedBytes: progress.countedBytes,
     volumeUsedBytes: progress.volumeUsedBytes,
     expectedTotalBytes: progress.expectedTotalBytes,
+    expectedTotalNodes: progress.expectedTotalNodes,
     bytes: progress.bytes,
     issues: progress.issues ?? [],
     error: progress.error,
@@ -1125,6 +1126,7 @@ function VolumeTile({
 	// 94% and makes the result page appear "early" (R-067 §2.4). History first;
 	// statfs only for the first-ever scan of a root.
 	const learnedTotal = scanStatus?.expectedTotalBytes ?? 0;
+	const learnedNodes = scanStatus?.expectedTotalNodes ?? 0;
 	const scanDenominator = learnedTotal > 0
 		? learnedTotal
 		: sourceUsed > 0 ? sourceUsed : (scanStatus?.volumeUsedBytes ?? 0);
@@ -1148,7 +1150,20 @@ function VolumeTile({
 	// only true thing to show. Capped at 99% either way: only the terminal
 	// event may fill the bar — a bar reading 100% while the walk still has
 	// seconds to run is a lie the user notices (R-067 §2.3).
-	const rawFraction = scanDenominator > 0 ? (scanStatus?.countedBytes ?? 0) / scanDenominator : null;
+	const bytesFraction = scanDenominator > 0 ? (scanStatus?.countedBytes ?? 0) / scanDenominator : null;
+	// Bytes and nodes, half each, when the previous walk left both behind. The
+	// walk is breadth-first, so its tail is the file-dense, byte-poor leaves:
+	// on a byte-only bar that tail is a stall at the cap while the node count
+	// is still climbing fast (measured: the last 4% of bytes, and every file
+	// after them, arrived with the bar pinned at 99%). Each half is clamped
+	// before averaging so an overshoot in one cannot hide the other
+	// (ADR-0053 second amendment).
+	const nodesFraction = learnedNodes > 0 ? (scanStatus?.nodes ?? 0) / learnedNodes : null;
+	const rawFraction = bytesFraction === null
+		? null
+		: nodesFraction === null
+			? bytesFraction
+			: (Math.min(1, bytesFraction) + Math.min(1, nodesFraction)) / 2;
 	// Bytes grown since the last scan overshoot a learned denominator honestly
 	// — that is real data, absorbed by the 99% cap, not broken accounting — so
 	// the indeterminate escape applies only to the statfs fallback.
@@ -1156,9 +1171,13 @@ function VolumeTile({
 	const scanFraction = rawFraction === null || scanOvershot
 		? null
 		: Math.max(0, Math.min(0.99, rawFraction));
+	// The basis is named, as ADR-0053 §4 requires: the reader must be able to
+	// tell what the percentage is a percentage of.
 	const scanProgressLabel = scanFraction === null
 		? scanLabel
-		: `${scanLabel}；已统计 ${formatBytes(scanStatus?.countedBytes ?? 0)}，占卷已用 ${formatBytes(scanDenominator)} 的 ${(scanFraction * 100).toFixed(0)}%`;
+		: nodesFraction === null
+			? `${scanLabel}；已统计 ${formatBytes(scanStatus?.countedBytes ?? 0)}，占卷已用 ${formatBytes(scanDenominator)} 的 ${(scanFraction * 100).toFixed(0)}%`
+			: `${scanLabel}；已统计 ${formatBytes(scanStatus?.countedBytes ?? 0)}、${(scanStatus?.nodes ?? 0).toLocaleString()} 项，按上次扫描的字节与项数各半计 ${(scanFraction * 100).toFixed(0)}%`;
 	return (
 	  <article className={"volume-row" + (source.scannable ? "" : " is-disabled")}>
 	    <span className="volume-icon" aria-hidden="true">
@@ -1187,8 +1206,8 @@ function VolumeTile({
 	        aria-label={finishing ? "正在整理结果" : scanning ? scanProgressLabel : capacityLabel}
 	        aria-valuetext={busy ? (finishing ? "正在整理结果" : scanProgressLabel) : undefined}
 	        aria-valuemin={scanning && scanFraction !== null ? 0 : undefined}
-	        aria-valuemax={scanning && scanFraction !== null ? scanDenominator : undefined}
-	        aria-valuenow={scanning && scanFraction !== null ? (scanStatus?.countedBytes ?? 0) : undefined}
+	        aria-valuemax={scanning && scanFraction !== null ? 100 : undefined}
+	        aria-valuenow={scanning && scanFraction !== null ? Math.round(scanFraction * 100) : undefined}
 	      >
 	        {/* Two elements rather than one with two meanings. The capacity fill and
 	            the scan progress are different quantities, and driving both from a

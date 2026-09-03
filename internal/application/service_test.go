@@ -963,22 +963,22 @@ func TestGroupVolumesInRootKeepsNestedMountWhenRootIsTheOuterVolume(t *testing.T
 
 type memoryScanTotals struct {
 	mu     sync.Mutex
-	totals map[string]int64
+	totals map[string]ports.ScanTotal
 }
 
-func (m *memoryScanTotals) LoadScanTotal(root string) int64 {
+func (m *memoryScanTotals) LoadScanTotal(root string) ports.ScanTotal {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.totals[root]
 }
 
-func (m *memoryScanTotals) StoreScanTotal(root string, bytes int64) error {
+func (m *memoryScanTotals) StoreScanTotal(root string, total ports.ScanTotal) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.totals == nil {
-		m.totals = map[string]int64{}
+		m.totals = map[string]ports.ScanTotal{}
 	}
-	m.totals[root] = bytes
+	m.totals[root] = total
 	return nil
 }
 
@@ -1005,8 +1005,8 @@ func TestCompletedScanTeachesTheNextScanItsDenominator(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if started.ExpectedTotalBytes != totals.LoadScanTotal(started.Root) {
-			t.Fatalf("the very first status should already carry the history: got %d", started.ExpectedTotalBytes)
+		if history := totals.LoadScanTotal(started.Root); started.ExpectedTotalBytes != history.Bytes || started.ExpectedTotalNodes != history.Nodes {
+			t.Fatalf("the very first status should already carry the history: got %d/%d, want %+v", started.ExpectedTotalBytes, started.ExpectedTotalNodes, history)
 		}
 		status := started
 		for i := 0; i < 400 && status.State == "running"; i++ {
@@ -1026,8 +1026,8 @@ func TestCompletedScanTeachesTheNextScanItsDenominator(t *testing.T) {
 	if first.ExpectedTotalBytes != 0 {
 		t.Fatalf("a root never scanned before has no history, got %d", first.ExpectedTotalBytes)
 	}
-	if recorded := totals.LoadScanTotal(first.Root); recorded != first.Bytes {
-		t.Fatalf("the completed walk should have recorded its final count: recorded %d, walked %d", recorded, first.Bytes)
+	if recorded := totals.LoadScanTotal(first.Root); recorded.Bytes != first.Bytes || recorded.Nodes != first.Nodes {
+		t.Fatalf("the completed walk should have recorded its final counts: recorded %+v, walked %d bytes / %d nodes", recorded, first.Bytes, first.Nodes)
 	}
 
 	second := runScan()
@@ -1039,7 +1039,7 @@ func TestCompletedScanTeachesTheNextScanItsDenominator(t *testing.T) {
 // A cancelled walk counted less than the truth: it must not overwrite the
 // history a completed walk left behind.
 func TestCancelledScanDoesNotTeachATotal(t *testing.T) {
-	totals := &memoryScanTotals{totals: map[string]int64{}}
+	totals := &memoryScanTotals{totals: map[string]ports.ScanTotal{}}
 	store := memtree.OpenStore()
 	t.Cleanup(func() { store.Close() })
 	adapter := platform.Adapter{}
@@ -1051,7 +1051,7 @@ func TestCancelledScanDoesNotTeachATotal(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	totals.totals[root] = 12345
+	totals.totals[root] = ports.ScanTotal{Bytes: 12345}
 
 	started, err := service.StartScan(ScanOptions{Root: root})
 	if err != nil {
@@ -1068,7 +1068,7 @@ func TestCancelledScanDoesNotTeachATotal(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := totals.LoadScanTotal(root); got != 12345 {
-		t.Fatalf("a %s scan overwrote the learned total: %d", status.State, got)
+	if got := totals.LoadScanTotal(root); got.Bytes != 12345 {
+		t.Fatalf("a %s scan overwrote the learned total: %+v", status.State, got)
 	}
 }

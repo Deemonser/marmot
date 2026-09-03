@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"example.com/marmot/internal/ports"
 )
 
 // Scan totals live in a plain JSON file in the app's support directory: they
@@ -19,33 +21,43 @@ func scanTotalsPath() (string, error) {
 	return filepath.Join(base, "marmot", scanTotalsFile), nil
 }
 
-func readScanTotals(path string) map[string]int64 {
+func readScanTotals(path string) map[string]ports.ScanTotal {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return map[string]int64{}
+		return map[string]ports.ScanTotal{}
 	}
-	totals := map[string]int64{}
-	if json.Unmarshal(raw, &totals) != nil {
-		// A corrupt history file downgrades the next bar to the statfs
-		// denominator; it must never fail a scan.
-		return map[string]int64{}
+	totals := map[string]ports.ScanTotal{}
+	if json.Unmarshal(raw, &totals) == nil {
+		return totals
 	}
-	return totals
+	// The first format was a bare byte count per root. Read it as bytes with
+	// no node history rather than as "no history": the byte denominator is
+	// still good, only the node half is missing until the next completed walk.
+	legacy := map[string]int64{}
+	if json.Unmarshal(raw, &legacy) == nil {
+		for root, bytes := range legacy {
+			totals[root] = ports.ScanTotal{Bytes: bytes}
+		}
+		return totals
+	}
+	// A corrupt history file downgrades the next bar to the statfs
+	// denominator; it must never fail a scan.
+	return map[string]ports.ScanTotal{}
 }
 
-// LoadScanTotal returns the last completed walk's final counted bytes for this
-// root, or 0 when there is no history.
-func (a Adapter) LoadScanTotal(root string) int64 {
+// LoadScanTotal returns the last completed walk's final counts for this root,
+// or the zero value when there is no history.
+func (a Adapter) LoadScanTotal(root string) ports.ScanTotal {
 	path, err := scanTotalsPath()
 	if err != nil {
-		return 0
+		return ports.ScanTotal{}
 	}
 	return readScanTotals(path)[root]
 }
 
-// StoreScanTotal records a completed walk's final counted bytes for its root.
-func (a Adapter) StoreScanTotal(root string, bytes int64) error {
-	if root == "" || bytes <= 0 {
+// StoreScanTotal records a completed walk's final counts for its root.
+func (a Adapter) StoreScanTotal(root string, total ports.ScanTotal) error {
+	if root == "" || total.Bytes <= 0 {
 		return nil
 	}
 	path, err := scanTotalsPath()
@@ -53,7 +65,7 @@ func (a Adapter) StoreScanTotal(root string, bytes int64) error {
 		return err
 	}
 	totals := readScanTotals(path)
-	totals[root] = bytes
+	totals[root] = total
 	encoded, err := json.Marshal(totals)
 	if err != nil {
 		return err

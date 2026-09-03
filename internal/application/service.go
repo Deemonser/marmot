@@ -122,14 +122,20 @@ type scanTask struct {
 	// instead of taking a 12-point jump when they are attached at the end
 	// (ADR-0053 §1). It feeds the bar only — never the persisted summary, which
 	// must keep matching the nodes actually written.
-	// expectedTotal is the previous completed walk's final counted bytes for
-	// this root — the only denominator on the same scale as the numerator
-	// (R-067 §2.4). Zero when this root has never completed a walk.
-	volumeUsed      uint64
-	preCounted      int64
-	expectedTotal   int64
-	cancel          context.CancelFunc
-	affectedParents map[int64]struct{}
+	// expectedTotal is the previous completed walk's final counts for this
+	// root — the only denominators on the numerator's own scale (R-067 §2.4;
+	// nodes added by ADR-0053's second amendment). Zero when this root has
+	// never completed a walk.
+	volumeUsed    uint64
+	preCounted    int64
+	expectedTotal ports.ScanTotal
+	// startedAt and progressLoggedAt drive the throttled progress line in the
+	// log (ADR-0053 second amendment): one line every progressLogEvery, so a
+	// slow walk can be read back phase by phase instead of as one total.
+	startedAt        time.Time
+	progressLoggedAt time.Time
+	cancel           context.CancelFunc
+	affectedParents  map[int64]struct{}
 }
 
 type ScanOptions struct {
@@ -159,6 +165,9 @@ type ScanStatus struct {
 	// root: the one denominator on the numerator's own scale. Zero on the
 	// first-ever scan of a root (R-067 §2.4).
 	ExpectedTotalBytes int64 `json:"expectedTotalBytes"`
+	// ExpectedTotalNodes is the previous completed walk's final node count, the
+	// other half of the progress fraction; 0 when there is no node history.
+	ExpectedTotalNodes int64 `json:"expectedTotalNodes"`
 }
 
 // ProjectedEntry is one arc below the current level. It carries only what the
@@ -195,6 +204,7 @@ type ScanProgress struct {
 	CountedBytes       int64  `json:"countedBytes"`
 	VolumeUsedBytes    uint64 `json:"volumeUsedBytes"`
 	ExpectedTotalBytes int64  `json:"expectedTotalBytes"`
+	ExpectedTotalNodes int64  `json:"expectedTotalNodes"`
 }
 
 type PermissionStatus struct {
@@ -1022,7 +1032,7 @@ func (s *Service) StartScan(options ScanOptions) (ScanStatus, error) {
 		cancel()
 		return ScanStatus{}, err
 	}
-	task := &scanTask{taskID: taskID, snapshotID: snapshotID, root: root, state: "running", phase: string(scan.PhaseCatalog), cancel: cancel, affectedParents: make(map[int64]struct{})}
+	task := &scanTask{taskID: taskID, snapshotID: snapshotID, root: root, state: "running", phase: string(scan.PhaseCatalog), cancel: cancel, affectedParents: make(map[int64]struct{}), startedAt: time.Now()}
 	if s.scanTotals != nil {
 		task.expectedTotal = s.scanTotals.LoadScanTotal(root)
 	}
@@ -1472,7 +1482,7 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 	// A completed walk's final count becomes the next scan's denominator; a
 	// cancelled or failed walk counted less than the truth and teaches nothing.
 	if s.scanTotals != nil && (finalState == "completed" || finalState == "completed_with_issues") {
-		if err := s.scanTotals.StoreScanTotal(task.root, status.Bytes); err != nil {
+		if err := s.scanTotals.StoreScanTotal(task.root, ports.ScanTotal{Bytes: status.Bytes, Nodes: status.Nodes}); err != nil {
 			log.Printf("scan total for %s not stored: %v", task.root, err)
 		}
 	}
@@ -1850,7 +1860,39 @@ func (s *Service) emitProgress(task *scanTask) {
 	}
 	task.affectedParents = make(map[int64]struct{})
 	task.mu.Unlock()
-	s.emit("scan-progress", ScanProgress{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: status.Issues, Error: status.Error, SnapshotVersion: version, AffectedParentIDs: affected, CountedBytes: status.CountedBytes, VolumeUsedBytes: status.VolumeUsedBytes, ExpectedTotalBytes: status.ExpectedTotalBytes})
+	s.logProgress(task, status)
+	s.emit("scan-progress", ScanProgress{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: status.Issues, Error: status.Error, SnapshotVersion: version, AffectedParentIDs: affected, CountedBytes: status.CountedBytes, VolumeUsedBytes: status.VolumeUsedBytes, ExpectedTotalBytes: status.ExpectedTotalBytes, ExpectedTotalNodes: status.ExpectedTotalNodes})
+}
+
+// progressLogEvery throttles the progress line: the emitter runs at up to 5 Hz,
+// the log wants a readable trace, not a hundred lines per scan.
+const progressLogEvery = 2 * time.Second
+
+// logProgress writes one line per progressLogEvery while a scan runs: elapsed,
+// phase, counts, and the two fractions the bar is built from. It exists because
+// the one "finished" line could not say where a slow walk spent its time.
+func (s *Service) logProgress(task *scanTask, status ScanStatus) {
+	task.mu.Lock()
+	now := time.Now()
+	due := task.progressLoggedAt.IsZero() || now.Sub(task.progressLoggedAt) >= progressLogEvery
+	if due {
+		task.progressLoggedAt = now
+	}
+	started := task.startedAt
+	task.mu.Unlock()
+	if !due || status.State != "running" {
+		return
+	}
+	bytesPct, nodesPct := -1.0, -1.0
+	if status.ExpectedTotalBytes > 0 {
+		bytesPct = 100 * float64(status.CountedBytes) / float64(status.ExpectedTotalBytes)
+	}
+	if status.ExpectedTotalNodes > 0 {
+		nodesPct = 100 * float64(status.Nodes) / float64(status.ExpectedTotalNodes)
+	}
+	log.Printf("scan %s progress: elapsed=%s phase=%s nodes=%d files=%d bytes=%d counted=%d bytes%%=%.1f nodes%%=%.1f issues=%d",
+		task.taskID, now.Sub(started).Round(100*time.Millisecond), status.Phase, status.Nodes, status.Files, status.Bytes,
+		status.CountedBytes, bytesPct, nodesPct, len(status.Issues))
 }
 
 func (t *scanTask) status() ScanStatus {
@@ -1870,7 +1912,7 @@ func (t *scanTask) countedBytesLocked() int64 {
 }
 
 func (t *scanTask) statusLocked() ScanStatus {
-	return ScanStatus{TaskID: t.taskID, SnapshotID: t.snapshotID, Root: t.root, State: t.state, Phase: t.phase, Nodes: t.nodes, Files: t.files, Directories: t.directories, Bytes: t.bytes, Issues: append([]string(nil), t.issues...), Error: t.error, CountedBytes: t.countedBytesLocked(), VolumeUsedBytes: t.volumeUsed, ExpectedTotalBytes: t.expectedTotal}
+	return ScanStatus{TaskID: t.taskID, SnapshotID: t.snapshotID, Root: t.root, State: t.state, Phase: t.phase, Nodes: t.nodes, Files: t.files, Directories: t.directories, Bytes: t.bytes, Issues: append([]string(nil), t.issues...), Error: t.error, CountedBytes: t.countedBytesLocked(), VolumeUsedBytes: t.volumeUsed, ExpectedTotalBytes: t.expectedTotal.Bytes, ExpectedTotalNodes: t.expectedTotal.Nodes}
 }
 
 func mapResult(result scan.MapResult) MapResult {

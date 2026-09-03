@@ -175,8 +175,20 @@ type VolumeWatcher interface {
 // (R-067 §2.4). History, not configuration: losing the file only means the
 // next scan falls back to the statfs denominator once.
 type ScanTotals interface {
-	// LoadScanTotal returns the last completed walk's final counted bytes for
-	// this root, or 0 when there is no history.
-	LoadScanTotal(root string) int64
-	StoreScanTotal(root string, bytes int64) error
+	// LoadScanTotal returns the last completed walk's final counts for this
+	// root, or the zero value when there is no history.
+	LoadScanTotal(root string) ScanTotal
+	StoreScanTotal(root string, total ScanTotal) error
+}
+
+// ScanTotal is what a completed walk leaves behind for the next one's progress
+// bar: its final counted bytes and its final node count. Both are needed. Bytes
+// alone pin the bar early -- the walk is breadth-first, so its tail is the
+// file-dense, byte-poor leaves (node_modules, caches, .git objects), where the
+// byte fraction stops moving while the node fraction still climbs
+// (ADR-0053 second amendment). Nodes is 0 for history written before it was
+// recorded; the bar then falls back to bytes alone.
+type ScanTotal struct {
+	Bytes int64 `json:"bytes"`
+	Nodes int64 `json:"nodes"`
 }

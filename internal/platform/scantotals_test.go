@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"example.com/marmot/internal/ports"
 )
 
 func TestScanTotalsRoundTrip(t *testing.T) {
@@ -11,20 +13,20 @@ func TestScanTotalsRoundTrip(t *testing.T) {
 	t.Setenv("HOME", home)
 
 	adapter := Adapter{}
-	if got := adapter.LoadScanTotal("/"); got != 0 {
-		t.Fatalf("no history yet, got %d", got)
+	if got := adapter.LoadScanTotal("/"); got != (ports.ScanTotal{}) {
+		t.Fatalf("no history yet, got %+v", got)
 	}
-	if err := adapter.StoreScanTotal("/", 187_628_670_976); err != nil {
+	if err := adapter.StoreScanTotal("/", ports.ScanTotal{Bytes: 187_628_670_976, Nodes: 2_415_814}); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.StoreScanTotal("/Volumes/Work", 42); err != nil {
+	if err := adapter.StoreScanTotal("/Volumes/Work", ports.ScanTotal{Bytes: 42, Nodes: 3}); err != nil {
 		t.Fatal(err)
 	}
-	if got := adapter.LoadScanTotal("/"); got != 187_628_670_976 {
-		t.Fatalf("stored total lost: %d", got)
+	if got := adapter.LoadScanTotal("/"); got != (ports.ScanTotal{Bytes: 187_628_670_976, Nodes: 2_415_814}) {
+		t.Fatalf("stored total lost: %+v", got)
 	}
-	if got := adapter.LoadScanTotal("/Volumes/Work"); got != 42 {
-		t.Fatalf("second root clobbered: %d", got)
+	if got := adapter.LoadScanTotal("/Volumes/Work"); got != (ports.ScanTotal{Bytes: 42, Nodes: 3}) {
+		t.Fatalf("second root clobbered: %+v", got)
 	}
 
 	// A corrupt file downgrades to "no history"; it must never error a scan.
@@ -35,13 +37,38 @@ func TestScanTotalsRoundTrip(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := adapter.LoadScanTotal("/"); got != 0 {
-		t.Fatalf("corrupt history should read as none, got %d", got)
+	if got := adapter.LoadScanTotal("/"); got != (ports.ScanTotal{}) {
+		t.Fatalf("corrupt history should read as none, got %+v", got)
 	}
-	if err := adapter.StoreScanTotal("/", 7); err != nil {
+	if err := adapter.StoreScanTotal("/", ports.ScanTotal{Bytes: 7, Nodes: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if got := adapter.LoadScanTotal("/"); got != 7 {
-		t.Fatalf("store over a corrupt file failed: %d", got)
+	if got := adapter.LoadScanTotal("/"); got != (ports.ScanTotal{Bytes: 7, Nodes: 1}) {
+		t.Fatalf("store over a corrupt file failed: %+v", got)
+	}
+}
+
+// History written by the first release is a bare byte count per root. It must
+// keep working as the byte denominator, with no node history, until the next
+// completed walk rewrites it in the new shape.
+func TestScanTotalsReadTheLegacyBareByteFormat(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, "Library", "Application Support", "marmot", "scan-totals.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"/":198002835456}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapter := Adapter{}
+	if got := adapter.LoadScanTotal("/"); got != (ports.ScanTotal{Bytes: 198002835456}) {
+		t.Fatalf("legacy history misread: %+v", got)
+	}
+	if err := adapter.StoreScanTotal("/", ports.ScanTotal{Bytes: 5, Nodes: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if got := adapter.LoadScanTotal("/"); got != (ports.ScanTotal{Bytes: 5, Nodes: 2}) {
+		t.Fatalf("rewrite after legacy read failed: %+v", got)
 	}
 }
