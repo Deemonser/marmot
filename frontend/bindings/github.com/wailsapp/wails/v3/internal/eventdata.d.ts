@@ -14,6 +14,7 @@ declare module "@wailsio/runtime" {
         interface CustomEvents {
             "cleanup-progress": wails$0.CleanupProgress;
             "scan-progress": wails$0.ScanProgress;
+            "storage-sources-changed": void;
             "volume-menu": wails$0.VolumeMenuAction;
         }
     }

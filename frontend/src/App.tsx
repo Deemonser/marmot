@@ -1469,6 +1469,10 @@ export default function App() {
   // Before the first Window.Show there is nothing visible to animate, so the
   // view snaps and the layout effect sizes the still-hidden window.
   const windowShown = useRef(false);
+  // The result page is sized once per visit. Its window is the user's to resize,
+  // and the sizing effect also depends on the source row count, which a mount
+  // event can now change at any time -- that must not snap the window back.
+  const sizedForResult = useRef(false);
   const [hoveredEntry, setHoveredEntry] = useState<MapEntry | null>(null);
   // What the pointer is over, on any ring. Kept apart from hoveredEntry, which
   // only ever holds a current-level entry.
@@ -1666,6 +1670,10 @@ export default function App() {
   const collectorRef = useRef<HTMLElement | null>(null);
   const pendingRef = useRef<HTMLElement | null>(null);
   const mapRequest = useRef(0);
+  // Same guard for the source list: a mount event can start a second read while
+  // a slow first one (diskutil per never-seen volume) is still out, and the
+  // slow one must not land on top of the fresh one.
+  const sourcesRequest = useRef(0);
   const refreshTimer = useRef<number | undefined>(undefined);
   const mapRef = useRef<MapResult | null>(null);
   const pageRef = useRef<Page | null>(null);
@@ -1795,8 +1803,11 @@ export default function App() {
   storageSourcesRef.current = storageSources;
 
   async function loadStorageSources() {
+    const serial = ++sourcesRequest.current;
     try {
-      setStorageSources((await MarmotService.GetStorageSources()) ?? []);
+      const sources = (await MarmotService.GetStorageSources()) ?? [];
+      if (serial !== sourcesRequest.current) return;
+      setStorageSources(sources);
     } catch (error) {
       notify(String(error));
     } finally {
@@ -1924,12 +1935,23 @@ export default function App() {
       const { done, total, current, doneBytes, totalBytes } = event.data;
       setCleanupAt(done >= total ? null : { done, total, current, doneBytes, totalBytes });
     });
+    // A disk was plugged in, ejected or renamed: re-read the list, the way the
+    // reference's disk list follows the desktop. The event is a signal; the
+    // list itself comes from the same call that fills it at launch.
+    // Not while a scan runs: the scanning row carries the progress bar and the
+    // only cancel control, and an eject mid-walk would take it off the page.
+    // The finish handler below re-reads the list anyway, so nothing is lost.
+    const offSources = Events.On("storage-sources-changed", () => {
+      if (statusRef.current?.state === "running") return;
+      void loadStorageSources();
+    });
     const offMenu = Events.On("volume-menu", (event: { data: { sourceId: string; action: string } }) => {
       void runVolumeMenuAction(event.data.sourceId, event.data.action);
     });
     return () => {
       off();
       offCleanup();
+      offSources();
       offMenu();
       if (refreshTimer.current !== undefined) window.clearTimeout(refreshTimer.current);
     };
@@ -2065,6 +2087,12 @@ export default function App() {
   useEffect(() => {
     if (inTransition.current) return;
     const isResult = view === "result";
+    if (isResult) {
+      if (sizedForResult.current) return;
+      sizedForResult.current = true;
+    } else {
+      sizedForResult.current = false;
+    }
     if (!isResult && !layoutReady) return;
     const height = isResult ? resultWindowSize.height : sourcePageHeight;
     // All of it happens before Show(), so the first visible geometry is the

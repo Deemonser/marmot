@@ -35,9 +35,16 @@ type Service struct {
 	volumes     ports.VolumeCatalog
 	preview     ports.PreviewPort
 	// icons is optional: without it the source rows draw their built-in glyph.
-	icons            ports.VolumeIcons
-	iconMu           sync.Mutex
-	iconCache        map[string]string
+	icons     ports.VolumeIcons
+	iconMu    sync.Mutex
+	iconCache map[string]string
+	// volumeWatcher is optional: without it the source list is what it was at
+	// launch and after each scan.
+	volumeWatcher    ports.VolumeWatcher
+	volumeWatchMu    sync.Mutex
+	volumeWatchStop  func()
+	volumeWatchTimer *time.Timer
+	volumeWatchArmed bool
 	legacyCacheDir   string
 	mu               sync.RWMutex
 	tasks            map[string]*scanTask
@@ -85,9 +92,11 @@ type Dependencies struct {
 	Preview        ports.PreviewPort
 	// Icons supplies the system's icon per mounted volume for the source page.
 	// Optional; nil leaves StorageSourceOverview.Icon empty.
-	Icons       ports.VolumeIcons
-	Credentials ports.CredentialStore
-	ScanTotals  ports.ScanTotals
+	Icons ports.VolumeIcons
+	// VolumeWatcher tells the service when the mounted set changes. Optional.
+	VolumeWatcher ports.VolumeWatcher
+	Credentials   ports.CredentialStore
+	ScanTotals    ports.ScanTotals
 	// AdvisorFactory is injected rather than imported so the application layer
 	// stays free of transport code (PROJECT-STRUCTURE dependency rule).
 	AdvisorFactory AdvisorFactory
@@ -372,7 +381,7 @@ func NewService(deps Dependencies) *Service {
 	if emit == nil {
 		emit = func(string, any) {}
 	}
-	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, icons: deps.Icons, iconCache: make(map[string]string), credentials: deps.Credentials, scanTotals: deps.ScanTotals, advisorFactory: deps.AdvisorFactory, legacyCacheDir: deps.LegacyCacheDir, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
+	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, icons: deps.Icons, iconCache: make(map[string]string), volumeWatcher: deps.VolumeWatcher, credentials: deps.Credentials, scanTotals: deps.ScanTotals, advisorFactory: deps.AdvisorFactory, legacyCacheDir: deps.LegacyCacheDir, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
 }
 
 // BeginRecovery lets the Wails window become visible before large legacy cache
@@ -493,6 +502,89 @@ func (s *Service) GetStorageSources() ([]StorageSourceOverview, error) {
 	return sources, nil
 }
 
+// StorageSourcesChangedEvent is emitted, without a payload (nil: it is
+// registered as a Void event, and Wails drops a Void event carrying data), when
+// the set of mounted volumes changed; the frontend answers by calling
+// GetStorageSources again. A signal rather than the list, so there is one
+// shape for the list.
+const StorageSourcesChangedEvent = "storage-sources-changed"
+
+// volumeChangeDebounce coalesces the burst a single disk produces: a mount
+// notification, then diskutil settling, sometimes a rename. A var so tests can
+// shorten it.
+var volumeChangeDebounce = 350 * time.Millisecond
+
+// StartVolumeWatch subscribes to mount changes for the life of the process.
+// Without a watcher this is a no-op: the reference updates its disk list live
+// when a drive is plugged in, and so does this, but the source page is still
+// correct at launch and after each scan without it.
+func (s *Service) StartVolumeWatch() {
+	if s.volumeWatcher == nil {
+		return
+	}
+	s.volumeWatchMu.Lock()
+	defer s.volumeWatchMu.Unlock()
+	if s.volumeWatchStop != nil {
+		return
+	}
+	stop, err := s.volumeWatcher.WatchVolumes(s.volumesChanged)
+	if err != nil {
+		log.Printf("volume watch unavailable: %v", err)
+		return
+	}
+	s.volumeWatchStop = stop
+}
+
+// StopVolumeWatch unregisters the observer and drops a pending notification.
+// Wired to the app's OnShutdown. A notification already in flight when the
+// observer is removed finds the watch disarmed and does nothing.
+func (s *Service) StopVolumeWatch() {
+	s.volumeWatchMu.Lock()
+	defer s.volumeWatchMu.Unlock()
+	s.volumeWatchArmed = false
+	if s.volumeWatchTimer != nil {
+		s.volumeWatchTimer.Stop()
+	}
+	if s.volumeWatchStop != nil {
+		s.volumeWatchStop()
+		s.volumeWatchStop = nil
+	}
+}
+
+// volumesChanged is the watcher's callback: it (re)arms the debounce. One
+// timer for the life of the service, reset per notification.
+func (s *Service) volumesChanged() {
+	s.volumeWatchMu.Lock()
+	defer s.volumeWatchMu.Unlock()
+	if s.volumeWatchStop == nil {
+		return // stopped; a late notification changes nothing
+	}
+	s.volumeWatchArmed = true
+	if s.volumeWatchTimer == nil {
+		s.volumeWatchTimer = time.AfterFunc(volumeChangeDebounce, s.flushVolumeChange)
+		return
+	}
+	s.volumeWatchTimer.Reset(volumeChangeDebounce)
+}
+
+// flushVolumeChange runs once the burst is over: the icon cache goes (a
+// re-inserted disk may carry a different icon, and a path that failed while
+// unmounted may work now) and one event is emitted -- unless the watch was
+// stopped while the timer was pending.
+func (s *Service) flushVolumeChange() {
+	s.volumeWatchMu.Lock()
+	armed := s.volumeWatchArmed
+	s.volumeWatchArmed = false
+	s.volumeWatchMu.Unlock()
+	if !armed {
+		return
+	}
+	s.iconMu.Lock()
+	s.iconCache = make(map[string]string)
+	s.iconMu.Unlock()
+	s.emit(StorageSourcesChangedEvent, nil)
+}
+
 // volumeIconPixels is the rendered size of a source row's icon: the row shows
 // it at 32pt, so 64px covers a Retina display without upscaling.
 const volumeIconPixels = 64
@@ -505,17 +597,23 @@ func (s *Service) volumeIcon(path string) string {
 		return ""
 	}
 	s.iconMu.Lock()
-	defer s.iconMu.Unlock()
-	if icon, ok := s.iconCache[path]; ok {
+	icon, ok := s.iconCache[path]
+	s.iconMu.Unlock()
+	if ok {
 		return icon
 	}
+	// The lookup runs outside the lock: one stalled mount (a dead network share)
+	// must cost only its own row, not every concurrent caller.
 	png, err := s.icons.VolumeIcon(path, volumeIconPixels)
-	icon := ""
+	icon = ""
 	if err == nil && len(png) > 0 {
 		icon = "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
 	}
 	// A failure is cached too: retrying on every refresh would only repeat it.
+	// The cache is dropped whenever the mounted set changes.
+	s.iconMu.Lock()
 	s.iconCache[path] = icon
+	s.iconMu.Unlock()
 	return icon
 }
 

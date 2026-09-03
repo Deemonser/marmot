@@ -26,6 +26,7 @@ static int marmot_volume_icon(const char *path, int pixels, unsigned char **out,
             samplesPerPixel:4 hasAlpha:YES isPlanar:NO colorSpaceName:NSCalibratedRGBColorSpace
             bytesPerRow:0 bitsPerPixel:0];
         if (rep == nil) { *message = strdup("bitmap allocation failed"); return 1; }
+        // From here on every exit releases rep.
         [NSGraphicsContext saveGraphicsState];
         NSGraphicsContext *context = [NSGraphicsContext graphicsContextWithBitmapImageRep:rep];
         [NSGraphicsContext setCurrentContext:context];
@@ -35,6 +36,10 @@ static int marmot_volume_icon(const char *path, int pixels, unsigned char **out,
         [context flushGraphics];
         [NSGraphicsContext restoreGraphicsState];
         NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        // Manual retain/release here (no -fobjc-arc in this package): the rep is
+        // +1 from alloc/init and the pool would not reclaim it. png is
+        // autoreleased and is copied out below before the pool drains.
+        [rep release];
         if (png == nil || png.length == 0) { *message = strdup("png encoding failed"); return 1; }
         *out = malloc(png.length);
         if (*out == NULL) { *message = strdup("out of memory"); return 1; }

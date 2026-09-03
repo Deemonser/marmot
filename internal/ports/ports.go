@@ -158,6 +158,15 @@ type VolumeIcons interface {
 	VolumeIcon(path string, pixels int) ([]byte, error)
 }
 
+// VolumeWatcher reports that the set of mounted volumes changed -- a disk was
+// plugged in, ejected or renamed -- so the source page can re-read the catalog
+// instead of showing the list from launch (SDD §5.2 rule 7). onChange may be
+// called from any thread and more than once per event; the application layer
+// coalesces. stop unregisters the observer.
+type VolumeWatcher interface {
+	WatchVolumes(onChange func()) (stop func(), err error)
+}
+
 // ScanTotals remembers, per scan root, how many bytes the last completed walk
 // counted. The progress numerator is lstat-allocated bytes, and no statfs
 // figure shares that basis — "volume used" runs ~6% high (purgeable, local

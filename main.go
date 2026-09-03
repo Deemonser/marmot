@@ -25,6 +25,8 @@ func init() {
 	application.RegisterEvent[wails.ScanProgress]("scan-progress")
 	application.RegisterEvent[wails.CleanupProgress]("cleanup-progress")
 	application.RegisterEvent[wails.VolumeMenuAction]("volume-menu")
+	// No payload: the frontend answers by re-reading the source list.
+	application.RegisterEvent[application.Void](marmotapp.StorageSourcesChangedEvent)
 }
 
 func main() {
@@ -57,6 +59,7 @@ func main() {
 		Volumes:        adapter,
 		Preview:        adapter,
 		Icons:          adapter,
+		VolumeWatcher:  adapter,
 		Credentials:    adapter,
 		ScanTotals:     adapter,
 		// The composition root is where a transport is chosen; the application
@@ -75,6 +78,9 @@ func main() {
 
 	service := wails.NewService(core)
 	app := application.New(application.Options{
+		// The mount observers and their pending debounce must not outlive the
+		// app: an emit during termination has no window to reach.
+		OnShutdown:  core.StopVolumeWatch,
 		Name:        "Marmot",
 		Description: "macOS disk space analysis and safe cleanup",
 		Services:    []application.Service{application.NewService(service)},
@@ -102,6 +108,8 @@ func main() {
 		}
 		app.Event.Emit(name, data)
 	}
+	// After emit exists: the first thing the watcher does is emit.
+	core.StartVolumeWatch()
 
 	// The window is born hidden and shown by the frontend only after it has
 	// sized and locked it (App.tsx, the layout effect). Sizing it correctly at

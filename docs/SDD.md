@@ -189,6 +189,10 @@ StorageVolumeMember
    这正是参考产品"多种磁盘图标"的来源，参考产品的图标资源本身受版权保护，**不得复制**。该字段只作展示，
    不进入容量、身份或扫描契约；端口未接入或查询失败时为空，前端退回内置图形。Application 按挂载路径缓存
    到进程结束：源列表每次扫描后都会重读，而图标不会跟着变。
+7. **挂载集合变化时源页跟着变**（`ports.VolumeWatcher`，Darwin 用 `NSWorkspace` 的 `DidMount` /
+   `DidUnmount` / `DidRenameVolume` 通知）：插入外置盘、弹出、改名都会让 Application 在 350ms 防抖后清空
+   图标缓存并发出无载荷事件 `storage-sources-changed`，前端收到后重新调用 `GetStorageSources()`。事件只是
+   信号，列表仍只有一种来源；端口未接入时源页仍在启动和每次扫描后正确，只是不再跟随桌面。
 
 该契约由 [R-018](research/R-018-APFS卷组与产品存储源映射.md) 和
 [ADR-0020](adr/0020-APFS卷组与产品存储源映射.md) 锁定。前端和 Wails 只消费
@@ -672,7 +676,7 @@ Wails 对外暴露的接口先按行为定义：
 | 确认清理计划 | 精确版本 | 确认结果 |
 | 执行清理计划 | 已确认计划 ID | 逐项执行结果 |
 
-Wails 事件至少包括扫描进度、扫描问题、快照更新、清理进度和清理结果。扫描事件只携带摘要和受
+Wails 事件至少包括扫描进度、扫描问题、快照更新、清理进度、清理结果和存储源变化（`storage-sources-changed`，无载荷）。扫描事件只携带摘要和受
 影响父节点，不承担节点传输。客户端断线或窗口重开后，必须通过查询恢复状态。
 
 Preview/Reveal 的 Wails 输入只能是 `snapshotId + nodeId`，不能接收任意路径、URL、命令或 Shell
