@@ -804,13 +804,17 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .advice-list { min-height: 0; flex: 1; padding: 4px 6px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
 .advice-empty { margin: 0; padding: 18px 8px; color: #96979e; font-size: 10px; text-align: center; }
 
-.advice-item { padding: 4px 6px 5px; border-radius: 6px; cursor: default; }
+/* No rule between rows: each row is two lines of its own -- a name with tags
+   above its path -- so a hairline every 40px striped the list without telling
+   the reader anything the pairing did not. The space between rows does that job,
+   and 已收集 below has never had rules either. The hover background is the
+   delimiter under the pointer. */
+.advice-item { padding: 6px 6px 7px; border-radius: 6px; cursor: default; }
 /* One row per suggestion: the summary button grows, the action sits at the
    end. The tags used to be a second row under every item; they now follow the
    name on its own line, so a list shows twice the items in the same height. */
 .advice-row { display: flex; align-items: center; gap: 8px; }
 .advice-item:hover { background: rgba(255, 255, 255, .05); }
-.advice-item + .advice-item { border-top: 1px solid #33343a; }
 .advice-summary { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 8px; padding: 0; border: 0; background: transparent; text-align: left; }
 .advice-title { display: flex; min-width: 0; align-items: center; gap: 5px; }
 .advice-title strong { min-width: 0; flex: 0 1 auto; }
