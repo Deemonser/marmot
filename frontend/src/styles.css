@@ -319,9 +319,15 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .directory-footer { display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px 0; color: #808188; font-size: 8px; }
 
 /* The transient notice (notice.ts). Two tones: info confirms, error reports.
-   It leaves on its own, holds while hovered, and closes on click. */
-.notice { position: fixed; right: 18px; bottom: 16px; z-index: 40; max-width: min(380px, calc(100% - 36px)); padding: 9px 12px; border: 1px solid #81704a; border-radius: 4px; background: #39352a; color: #e5cc91; font-size: 10px; box-shadow: 0 7px 18px rgba(0,0,0,.25); cursor: pointer; animation: notice-in 160ms ease both; }
-.notice.is-error { border-color: #a0574c; background: #3c2a27; color: #f0b3a3; }
+   It leaves on its own, holds while hovered, and closes on click. The same
+   card as the dock and the corner buttons -- surface, border, shadow -- so it
+   belongs to the page; the tone is a thin bar on its left edge, blue for a
+   confirmation and coral for a failure, the coral the fault text uses. The
+   earlier amber card on an amber tint was the one warm object on a cool page. */
+.notice { position: fixed; right: 18px; bottom: 16px; z-index: 40; max-width: min(380px, calc(100% - 36px)); padding: 9px 12px 9px 14px; border: 1px solid #5b5c63; border-radius: 6px; background: #2c2d33; color: #e4e4e8; font-size: 11px; line-height: 1.45; box-shadow: 0 6px 16px rgba(0,0,0,.3); cursor: pointer; animation: notice-in 160ms ease both; }
+.notice::before { content: ""; position: absolute; top: 7px; bottom: 7px; left: 5px; width: 2px; border-radius: 1px; background: #4c7cc4; }
+.notice.is-error { color: #f0a49e; }
+.notice.is-error::before { background: #e5645c; }
 @keyframes notice-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .notice { animation: none; } }
 
@@ -823,7 +829,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 
 .advice-head-actions { display: flex; align-items: center; gap: 5px; }
 .advice-tag.is-ai { background: #2f3a4c; color: #a8c2e8; }
-.advice-fault { color: #d3a44b; }
+.advice-fault { color: #e8948d; }
 
 /* The advisor sheet reuses the evidence scrim, so it inherits the pinned grid
    track and cannot stretch the window either. */
@@ -841,15 +847,38 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* One control, two halves: run on the left, settings past a divider. The halves
    drop their own borders and shadows and the segment carries them, so the pair
    reads as a single object. */
-.advice-segment { display: flex; align-items: stretch; overflow: hidden; border: 1px solid #5b5c63; border-radius: 6px; background: #2c2d33; box-shadow: 0 6px 16px rgba(0,0,0,.3); }
+/* A pill, not a card: the notice next to it is a card, and a control and a
+   message must not look alike. The dock's bar-only state is a pill too. */
+.advice-segment { display: flex; align-items: stretch; overflow: hidden; border: 1px solid #5b5c63; border-radius: 999px; background: #2c2d33; box-shadow: 0 6px 16px rgba(0,0,0,.3); }
 .advice-segment .advice-button { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.advice-segment .advice-button:first-child { padding-left: 15px; }
 .advice-segment .advice-button + .advice-button { border-left: 1px solid #5b5c63; }
 .advice-segment .advice-button:hover:not(:disabled) { background: rgba(255,255,255,.06); }
 .advice-corner.is-open .advice-segment { border-color: #4c7cc4; }
-.advice-button.is-icon { display: grid; padding: 0 10px; place-items: center; }
-.advice-gear { color: #85868d; }
-.advice-gear.is-on { color: #6f9ede; }
-.advisor-fault { margin: 0; padding: 7px 9px; border-radius: 5px; background: #3a3226; color: #e5cc91; font-size: 9px; line-height: 1.6; }
+.advice-button.is-icon { position: relative; display: grid; padding: 0 13px 0 11px; place-items: center; }
+/* Nudged up and left so the corner mark has its own corner. */
+.advice-spark { color: #85868d; transform: translate(-1px, -1px); transition: color .2s ease; }
+.advice-spark.is-on { color: #8fb4f0; }
+/* The corner mark on the settings half: "AI" in colour when an advisor is
+   installed. Bottom-right, inside the button, so the segment's own clipping
+   never cuts it. */
+.advice-ai-mark { position: absolute; right: 5px; bottom: 3px; padding: 0 3px; border-radius: 3px; background: linear-gradient(135deg, #4a86e8, #7c6cf0); color: #fff; font-size: 6.5px; font-weight: 700; line-height: 9px; letter-spacing: .04em; pointer-events: none; }
+/* Meant to be on and is not: a dot, not a word. The ring in the button's own
+   colour lifts it off the spark. Amber read as a warning stripe against the
+   blue-grey; this is the same coral the fault text uses, once. */
+.advice-ai-mark.is-fault { right: 7px; bottom: 5px; width: 5px; height: 5px; padding: 0; border-radius: 50%; background: #e5645c; box-shadow: 0 0 0 2px #2c2d33; color: transparent; font-size: 0; }
+/* The switch row at the top of the sheet. */
+.advisor-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border: 1px solid #3a3b42; border-radius: 6px; background: #26272d; }
+.advisor-switch-row > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.advisor-switch-title { color: #e4e4e8; font-size: 11px; }
+.advisor-switch-hint { overflow: hidden; color: #8b8c93; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.advisor-switch { position: relative; width: 30px; height: 18px; flex: none; padding: 0; border: 0; border-radius: 999px; background: #4a4b52; cursor: pointer; transition: background-color .18s ease; }
+.advisor-switch.is-on { background: #4c7cc4; }
+.advisor-switch:disabled { cursor: default; opacity: .5; }
+.advisor-switch-knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .18s ease; }
+.advisor-switch.is-on .advisor-switch-knob { transform: translateX(12px); }
+@media (prefers-reduced-motion: reduce) { .advisor-switch, .advisor-switch-knob, .advice-spark { transition: none; } }
+.advisor-fault { margin: 0; padding: 7px 9px; border-radius: 5px; border: 1px solid rgba(229, 100, 92, .28); background: rgba(229, 100, 92, .09); color: #f0a49e; font-size: 9px; line-height: 1.6; }
 
 /* Recoverability is the axis a person actually decides on, so it is coloured and
    risk is not: everything regenerable costs at most a download, and only

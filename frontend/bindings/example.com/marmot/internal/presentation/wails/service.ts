@@ -120,6 +120,15 @@ export function RunAdvisorAnalysis(snapshotID: number): $CancellablePromise<$mod
     return $Call.ByID(1504811705, snapshotID);
 }
 
+/**
+ * SetAdvisorEnabled flips the switch on a saved configuration without touching
+ * the endpoint or the key. A failure to come back on is reported in the status's
+ * Fault, next to the switch, rather than as an error.
+ */
+export function SetAdvisorEnabled(enabled: boolean): $CancellablePromise<$models.AdvisorStatus> {
+    return $Call.ByID(2266906309, enabled);
+}
+
 export function StartScan(options: $models.ScanOptions): $CancellablePromise<$models.ScanStatus> {
     return $Call.ByID(2776032857, options);
 }

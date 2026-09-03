@@ -1641,6 +1641,10 @@ export default function App() {
   const [evidence, setEvidence] = useState<EvidencePreview | null>(null);
   const [advisor, setAdvisor] = useState<AdvisorStatus | null>(null);
   const [advisorOpen, setAdvisorOpen] = useState(false);
+  // Meant to be on and is not: a configuration is saved with the switch on, yet
+  // no advisor is installed. The reason is in fault. This is the state the app
+  // used to fall into silently at startup when the key was missing.
+  const advisorFaulted = !!advisor && advisor.saved && advisor.enabled && !advisor.configured && !!advisor.fault;
   const [advisorForm, setAdvisorForm] = useState({ baseUrl: "https://api.deepseek.com", model: "", jsonMode: "json_object", reasoningEffort: "disabled", apiKey: "" });
   const [advisorSaving, setAdvisorSaving] = useState(false);
   // The in-flight analysis, kept so it can be cancelled. Wails returns a
@@ -2577,7 +2581,7 @@ export default function App() {
       const next = await MarmotService.ConfigureAdvisor(
         {
           provider: "openai_compatible", baseUrl: advisorForm.baseUrl, model: advisorForm.model,
-          jsonMode: advisorForm.jsonMode, reasoningEffort: advisorForm.reasoningEffort,
+          jsonMode: advisorForm.jsonMode, reasoningEffort: advisorForm.reasoningEffort, disabled: false,
         },
         advisorForm.apiKey,
       );
@@ -2588,6 +2592,21 @@ export default function App() {
       notify("已连接 " + next.description);
     } catch (error) {
       notify("保存失败：" + String(error));
+    } finally {
+      setAdvisorSaving(false);
+    }
+  }
+
+  async function toggleAdvisor(enabled: boolean) {
+    setAdvisorSaving(true);
+    try {
+      const next = await MarmotService.SetAdvisorEnabled(enabled);
+      setAdvisor(next);
+      if (!enabled) notify("已关闭 AI 分析，仅使用本机规则。");
+      else if (next.configured) notify("已开启 AI 分析：" + next.description);
+      else notify("AI 未能开启：" + next.fault);
+    } catch (error) {
+      notify("切换失败：" + String(error));
     } finally {
       setAdvisorSaving(false);
     }
@@ -3420,6 +3439,12 @@ export default function App() {
                     was staged for you, whether the model is still out, whether it
                     failed. Run statistics live in the AI settings sheet -- the
                     list is the point of this section, not its paperwork. */}
+                {/* The AI was meant to run and did not. Said here, on the list it
+                    would have contributed to, not only two clicks away in the
+                    settings sheet. */}
+                {advisorFaulted && !adviceBusy && (
+                  <p className="advice-summary-line advice-fault">AI 未启用：{advisor?.fault}</p>
+                )}
                 {!adviceBusy && advice && (advice.items ?? []).length > 0 && (
                   <p className="advice-summary-line">
                     {stageSummary(adviceStaged.added, formatBytes(adviceStaged.bytes), pendingDecisions)}
@@ -3695,13 +3720,23 @@ export default function App() {
             <button
               className="advice-button is-icon"
               onClick={() => setAdvisorOpen(true)}
-              title={advisor?.configured ? "AI 设置 · " + advisor.description : "AI 设置（未连接）"}
+              title={advisor?.configured
+                ? "AI 设置 · " + advisor.description
+                : advisorFaulted
+                  ? "AI 未启用：" + advisor?.fault
+                  : advisor?.saved && !advisor.enabled ? "AI 设置（已关闭）" : "AI 设置（未连接）"}
               aria-label="AI 设置"
             >
-              <svg className={"advice-gear" + (advisor?.configured ? " is-on" : "")} viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
-                <circle cx="6" cy="6" r="2" fill="none" stroke="currentColor" strokeWidth="1.4" />
-                <path d="M6 .8v1.7M6 9.5v1.7M.8 6h1.7M9.5 6h1.7M2.3 2.3l1.2 1.2M8.5 8.5l1.2 1.2M2.3 9.7l1.2-1.2M8.5 3.5l1.2-1.2" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+              {/* A spark rather than a gear: the button is about the AI, and the
+                  gear said "settings" without saying of what. The corner mark is
+                  the state at a glance -- AI is on, or it was meant to be and is
+                  not, which is the case that used to be invisible. */}
+              <svg className={"advice-spark" + (advisor?.configured ? " is-on" : "")} viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
+                <path d="M5.5 1.3 6.75 4.85 10.3 6.1 6.75 7.35 5.5 10.9 4.25 7.35.7 6.1 4.25 4.85Z" fill="currentColor" />
+                <path d="M11 8.6l.65 1.75 1.75.65-1.75.65L11 13.4l-.65-1.75-1.75-.65 1.75-.65Z" fill="currentColor" opacity=".75" />
               </svg>
+              {advisor?.configured && <span className="advice-ai-mark" aria-hidden="true">AI</span>}
+              {advisorFaulted && <span className="advice-ai-mark is-fault" aria-hidden="true">!</span>}
             </button>
           </div>
         </div>
@@ -3713,11 +3748,40 @@ export default function App() {
             <header>
               <div>
                 <p className="eyebrow">AI 设置</p>
-                <h3>{advisor?.configured ? advisor.description : "未连接"}</h3>
+                <h3>{advisor?.configured ? advisor.description : advisor?.saved && !advisor.enabled ? "已关闭" : "未连接"}</h3>
               </div>
               <button className="quiet-button" onClick={() => setAdvisorOpen(false)}>关闭</button>
             </header>
             <div className="advisor-body">
+              {/* The switch. Off keeps the endpoint and the key and installs no
+                  advisor, so no request leaves the machine; on rebuilds it from
+                  what is stored. It needs a saved configuration to act on. */}
+              <div className="advisor-switch-row">
+                <div>
+                  <span className="advisor-switch-title">AI 分析</span>
+                  <span className="advisor-switch-hint">
+                    {!advisor?.saved
+                      ? "保存配置后即可开启"
+                      : advisor.configured
+                        ? "已连接 " + advisor.description
+                        : advisor.enabled
+                          ? "未能启用，见下方原因"
+                          : "已关闭，仅使用本机规则"}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={!!advisor?.enabled}
+                  aria-label="启用 AI 分析"
+                  className={"advisor-switch" + (advisor?.enabled ? " is-on" : "")}
+                  disabled={!advisor?.saved || advisorSaving}
+                  onClick={() => void toggleAdvisor(!advisor?.enabled)}
+                >
+                  <span className="advisor-switch-knob" />
+                </button>
+              </div>
+              {advisor?.fault && <p className="advisor-fault">{advisor.fault}</p>}
               {/* Any endpoint speaking the OpenAI chat-completions protocol works
                   here: DeepSeek, Kimi, Qwen, OpenRouter, or a local vLLM/Ollama.
                   That is why there is no provider dropdown. */}
@@ -3780,7 +3844,6 @@ export default function App() {
                   <option value="omit">不发送该字段（非 DeepSeek 服务）</option>
                 </select>
               </label>
-              {advisor?.fault && <p className="advisor-fault">{advisor.fault}</p>}
               <p className="advisor-note">
                 Key 加密保存在应用自己的目录里（AES-256-GCM，密钥绑定本机，
                 文件 0600），不写进日志或快照。同机上以你的身份运行的程序仍可解开它。

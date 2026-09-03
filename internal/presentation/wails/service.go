@@ -327,11 +327,17 @@ type AdvisorSettings struct {
 	Model           string `json:"model"`
 	JSONMode        string `json:"jsonMode"`
 	ReasoningEffort string `json:"reasoningEffort"`
+	// Disabled is the switch: configuration kept, no advisor installed.
+	Disabled bool `json:"disabled"`
 }
 
 // AdvisorStatus never carries the key -- only whether one is stored.
 type AdvisorStatus struct {
+	// Configured is whether an advisor is installed right now. Saved is whether
+	// a configuration exists at all, and Enabled is the switch's position.
 	Configured  bool            `json:"configured"`
+	Saved       bool            `json:"saved"`
+	Enabled     bool            `json:"enabled"`
 	HasKey      bool            `json:"hasKey"`
 	Description string          `json:"description"`
 	Settings    AdvisorSettings `json:"settings"`
@@ -363,6 +369,17 @@ func (s *Service) ClearAdvisor() error {
 	return s.application.ClearAdvisor()
 }
 
+// SetAdvisorEnabled flips the switch on a saved configuration without touching
+// the endpoint or the key. A failure to come back on is reported in the status's
+// Fault, next to the switch, rather than as an error.
+func (s *Service) SetAdvisorEnabled(enabled bool) (AdvisorStatus, error) {
+	status, err := s.application.SetAdvisorEnabled(enabled)
+	if err != nil {
+		return AdvisorStatus{}, err
+	}
+	return advisorStatus(status), nil
+}
+
 // RunAdvisorAnalysis is the full flow: rule layer, then the advisor if one is
 // configured. The context is the frontend's -- cancelling the promise cancels
 // the request in flight rather than merely discarding its result.
@@ -376,11 +393,12 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 
 func advisorStatus(status application.AdvisorStatus) AdvisorStatus {
 	return AdvisorStatus{
-		Configured: status.Configured, HasKey: status.HasKey, Description: status.Description, Fault: status.Fault,
+		Configured: status.Configured, Saved: status.Saved, Enabled: status.Enabled,
+		HasKey: status.HasKey, Description: status.Description, Fault: status.Fault,
 		Settings: AdvisorSettings{
 			Provider: status.Settings.Provider, BaseURL: status.Settings.BaseURL,
 			Model: status.Settings.Model, JSONMode: status.Settings.JSONMode,
-			ReasoningEffort: status.Settings.ReasoningEffort,
+			ReasoningEffort: status.Settings.ReasoningEffort, Disabled: status.Settings.Disabled,
 		},
 	}
 }

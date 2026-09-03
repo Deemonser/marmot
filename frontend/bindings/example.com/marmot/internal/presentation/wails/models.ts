@@ -90,13 +90,24 @@ export interface AdvisorSettings {
     "model": string;
     "jsonMode": string;
     "reasoningEffort": string;
+
+    /**
+     * Disabled is the switch: configuration kept, no advisor installed.
+     */
+    "disabled": boolean;
 }
 
 /**
  * AdvisorStatus never carries the key -- only whether one is stored.
  */
 export interface AdvisorStatus {
+    /**
+     * Configured is whether an advisor is installed right now. Saved is whether
+     * a configuration exists at all, and Enabled is the switch's position.
+     */
     "configured": boolean;
+    "saved": boolean;
+    "enabled": boolean;
     "hasKey": boolean;
     "description": string;
     "settings": AdvisorSettings;
