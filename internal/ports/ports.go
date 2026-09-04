@@ -30,6 +30,11 @@ type SnapshotStore interface {
 	NodeByPath(int64, string) (scan.Node, error)
 	FinishScan(int64, string, string, int64, int64, int64, int64, int64) error
 	Children(int64, int64, int, int) ([]scan.Node, error)
+	// SubtreeChunks plans one staged item's deletion: how many nodes are under
+	// it, and disjoint units of work that can be removed concurrently. It is
+	// arithmetic on the tree already in memory, so it costs no I/O and is asked
+	// for at the moment of deletion rather than carried in the plan.
+	SubtreeChunks(int64, string, int) (cleanup.Subtree, error)
 	Map(scan.MapQuery) (scan.MapResult, error)
 	NodeByID(int64, int64) (scan.Node, error)
 	SnapshotVersion(int64) (int64, error)
@@ -135,6 +140,12 @@ type CredentialStore interface {
 	DeleteCredential(account string) error
 }
 
+// ErrItemReplaced is returned when the directory a removal was about to work
+// inside is no longer the one the plan validated. It is a refusal, not a
+// failure: the caller must stop rather than retry, because what is there now was
+// never staged.
+var ErrItemReplaced = errors.New("cleanup item was replaced after it was validated")
+
 type Trash interface {
 	Trash(string) (string, error)
 	// RemovePermanently deletes without a trash step, and without any way back.
@@ -142,6 +153,18 @@ type Trash interface {
 	// rename. What may be removed this way is decided in the application layer,
 	// never here.
 	RemovePermanently(string) error
+	// RemoveWithin deletes names beneath one staged item, and is the only way the
+	// pieces of an item may be removed.
+	//
+	// It exists because a path is not a durable reference to an object. The names
+	// come from the snapshot and are relative on purpose: resolving absolute
+	// child paths from "/" again at the moment of deletion means a directory that
+	// became a symlink since the plan was validated redirects the removal out of
+	// the item entirely. The implementation pins the item by descriptor, confirms
+	// it is still the device and inode the plan captured, and resolves every name
+	// inside it -- so a swap is caught (ErrItemReplaced) instead of followed, and
+	// a name that leaves the item is refused.
+	RemoveWithin(cleanup.Item, []string) error
 }
 
 type PreviewPort interface {

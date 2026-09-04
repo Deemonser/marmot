@@ -17,6 +17,28 @@ type Item struct {
 	Modified time.Time
 }
 
+// Chunk is one unit of deletion work: a group of paths a single worker can hand
+// to a recursive remove on its own. Grouping rather than one path per unit is
+// what makes a wide, shallow tree chunkable at all -- a thousand package
+// directories of two hundred nodes each never produce a single subtree big
+// enough to be worth its own unit, but three of them together do.
+type Chunk struct {
+	Paths []string
+	Nodes int64
+}
+
+// Subtree is a plan for deleting one staged item: how many nodes the snapshot
+// says are under it, and the chunks that cover most of them.
+//
+// The chunks never cover all of it. What is left -- the item's own directories,
+// branches too small to be worth a unit, and anything created since the scan --
+// is deleted by a final sweep of the item path itself, which is also what makes
+// the item's disappearance the real completion test rather than the arithmetic.
+type Subtree struct {
+	TotalNodes int64
+	Chunks     []Chunk
+}
+
 const (
 	PlanDraft     = "draft"
 	PlanValidated = "validated"

@@ -6,6 +6,7 @@ import (
 	"path"
 	"sort"
 
+	"example.com/marmot/internal/domain/cleanup"
 	"example.com/marmot/internal/domain/scan"
 )
 
@@ -368,6 +369,113 @@ func (t *tree) coverage() (int, int) {
 		}
 	}
 	return total, total
+}
+
+// Chunking constants. minChunkNodes keeps a small item from being cut into units
+// smaller than the per-unit overhead is worth; maxChunkMembers bounds how many
+// paths one unit can name, and with it the transient cost of rebuilding them.
+const (
+	minChunkNodes   = 256
+	maxChunkMembers = 64
+)
+
+// countSubtree is removeSubtree's counter walk on its own, run before the
+// deletion instead of after it. The number it returns is the only honest
+// denominator a delete indicator has: unlink cost is per inode and has almost
+// nothing to do with size -- an 8 GiB file measured 0.000s to remove, a 204k
+// inode tree 3.2s.
+func (t *tree) countSubtree(id int64) int64 {
+	t.ensureGrouped()
+	if !t.valid(id) {
+		return 0
+	}
+	var total int64
+	stack := []int64{id}
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		total++
+		for _, child := range t.children(current) {
+			stack = append(stack, int64(child))
+		}
+	}
+	return total
+}
+
+// subtreeChunks cuts one item into units that four workers can delete at once
+// and that a progress ring can be drawn from.
+//
+// Two rules make the units safe to run concurrently. No unit's path is an
+// ancestor of another's: a directory that has already produced a unit of its own
+// can never become a member, so two workers are never unlinking inside the same
+// tree. And no unit covers everything -- what is left over stays for the
+// caller's sweep of the item path, which is what actually finishes the job.
+//
+// Members are directories only. Paths are not stored (see path: 325 MiB of them
+// on a full volume) and every member costs one rebuilt path, so naming files
+// individually would put back exactly what the packed tree exists to avoid. The
+// price is that a single flat directory of half a million files is one member
+// with no progress inside it, which is the shape this cannot help.
+func (t *tree) subtreeChunks(id int64, targetChunks int) cleanup.Subtree {
+	t.ensureGrouped()
+	if !t.valid(id) {
+		return cleanup.Subtree{}
+	}
+	if targetChunks < 1 {
+		targetChunks = 1
+	}
+	chunkNodes := t.countSubtree(id) / int64(targetChunks)
+	if chunkNodes < minChunkNodes {
+		chunkNodes = minChunkNodes
+	}
+
+	var chunks []cleanup.Chunk
+	// walk returns what it did NOT put into a unit, and whether it produced any.
+	var walk func(int64) (int64, bool)
+	walk = func(current int64) (int64, bool) {
+		unclaimed := int64(1)
+		produced := false
+		var pending []int64
+		var pendingNodes int64
+		flush := func() {
+			paths := make([]string, 0, len(pending))
+			for _, member := range pending {
+				paths = append(paths, t.path(member))
+			}
+			chunks = append(chunks, cleanup.Chunk{Paths: paths, Nodes: pendingNodes})
+			produced = true
+			pending, pendingNodes = nil, 0
+		}
+		for _, child := range t.children(current) {
+			childID := int64(child)
+			childUnclaimed, childProduced := walk(childID)
+			// A child that produced a unit is an ancestor of one, so it cannot
+			// become a member itself. What is left of it goes to the sweep.
+			if childProduced || t.kinds.value(t.records.at(childID).kind) != "directory" {
+				unclaimed += childUnclaimed
+				produced = produced || childProduced
+				continue
+			}
+			if childUnclaimed >= chunkNodes {
+				chunks = append(chunks, cleanup.Chunk{Paths: []string{t.path(childID)}, Nodes: childUnclaimed})
+				produced = true
+				continue
+			}
+			pending = append(pending, childID)
+			pendingNodes += childUnclaimed
+			if pendingNodes >= chunkNodes || len(pending) >= maxChunkMembers {
+				flush()
+			}
+		}
+		return unclaimed + pendingNodes, produced
+	}
+
+	unclaimed, _ := walk(id)
+	total := unclaimed
+	for _, chunk := range chunks {
+		total += chunk.Nodes
+	}
+	return cleanup.Subtree{TotalNodes: total, Chunks: chunks}
 }
 
 // removal is what came out of the tree, so the caller can report it and the

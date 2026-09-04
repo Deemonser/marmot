@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	"example.com/marmot/internal/domain/cleanup"
 	"example.com/marmot/internal/domain/recommendation"
 	"example.com/marmot/internal/domain/scan"
 )
@@ -192,6 +193,24 @@ func (s *Store) NodeByPath(snapshotID int64, path string) (scan.Node, error) {
 		return scan.Node{}, ErrNodeNotFound
 	}
 	return result.node(id)
+}
+
+// SubtreeChunks plans the deletion of one staged item. It is pure arithmetic on
+// the tree already in memory -- no I/O, and paths are rebuilt only for the few
+// hundred chunk members, never for every node.
+func (s *Store) SubtreeChunks(snapshotID int64, path string, targetChunks int) (cleanup.Subtree, error) {
+	// Lock, not RLock: nodeIDByPath may have to build the child grouping.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, err := s.treeFor(snapshotID)
+	if err != nil {
+		return cleanup.Subtree{}, err
+	}
+	id, ok := result.nodeIDByPath(path)
+	if !ok {
+		return cleanup.Subtree{}, ErrNodeNotFound
+	}
+	return result.subtreeChunks(id, targetChunks), nil
 }
 
 func (s *Store) Children(snapshotID, parentID int64, limit, offset int) ([]scan.Node, error) {

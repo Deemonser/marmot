@@ -82,7 +82,10 @@ func TestCreateCleanupPlanRejectsParentChildOverlap(t *testing.T) {
 	}
 }
 
+// mu is not decoration: an item is now deleted by four workers at once, so the
+// recorder is written from several goroutines.
 type recordingTrash struct {
+	mu    sync.Mutex
 	paths []string
 	// removed is kept apart from paths so a test can tell which of the two
 	// irreversibly different things happened.
@@ -94,14 +97,32 @@ func (t *recordingTrash) Trash(path string) (string, error) {
 	if err := t.failOn[path]; err != nil {
 		return "", err
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.paths = append(t.paths, path)
 	return path, nil
+}
+
+// RemoveWithin records the absolute paths it was asked for, so a test reads the
+// same shape whether an item went in one call or in chunks.
+func (t *recordingTrash) RemoveWithin(item cleanup.Item, names []string) error {
+	if err := t.failOn[item.Path]; err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, name := range names {
+		t.removed = append(t.removed, filepath.Join(item.Path, name))
+	}
+	return nil
 }
 
 func (t *recordingTrash) RemovePermanently(path string) error {
 	if err := t.failOn[path]; err != nil {
 		return err
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.removed = append(t.removed, path)
 	return nil
 }
@@ -311,6 +332,123 @@ func TestScanToCleanupVerticalSlice(t *testing.T) {
 	// is on the same volume and frees nothing (ADR-0063).
 	if err != nil || applied.State != "applied" || len(trash.removed) != 1 || trash.removed[0] != path {
 		t.Fatalf("cleanup execution failed: plan=%#v removed=%#v trashed=%#v err=%v", applied, trash.removed, trash.paths, err)
+	}
+}
+
+// The delete indicator used to sit still for the whole run: progress was emitted
+// only between items while each item was one blocking recursive remove, so a
+// one-item plan reported 0% from start to finish. This is the shape that broke
+// it -- one staged directory, wide and shallow, where no single subtree is large
+// enough to become a work unit on its own.
+func TestExecuteCleanupPlanReportsProgressInsideOneItem(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "cache")
+	nodes := int64(1)
+	for pkg := 0; pkg < 30; pkg++ {
+		dir := filepath.Join(target, fmt.Sprintf("pkg-%02d", pkg))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		nodes++
+		for file := 0; file < 30; file++ {
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f-%02d.js", file)), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			nodes++
+		}
+	}
+
+	// Off, so every completed chunk is visible. At 5 Hz this tree is deleted
+	// inside a single window and only its two ends would be reported.
+	restore := cleanupProgressEvery
+	cleanupProgressEvery = 0
+	t.Cleanup(func() { cleanupProgressEvery = restore })
+
+	var eventMu sync.Mutex
+	var events []CleanupProgress
+	store := memtree.OpenStore()
+	t.Cleanup(func() { store.Close() })
+	adapter := platform.Adapter{}
+	service := NewService(Dependencies{
+		Store: store, Scanner: scanner.Scanner{}, FileSystem: adapter, Permissions: adapter, Trash: adapter,
+		Emit: func(name string, data any) {
+			progress, ok := data.(CleanupProgress)
+			if !ok {
+				return
+			}
+			eventMu.Lock()
+			defer eventMu.Unlock()
+			events = append(events, progress)
+		},
+	})
+
+	started, err := service.StartScan(ScanOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := started
+	for i := 0; i < 400 && status.State == "running"; i++ {
+		time.Sleep(5 * time.Millisecond)
+		status, err = service.GetScanStatus(started.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status.State != "completed" {
+		t.Fatalf("scan did not complete: %#v", status)
+	}
+
+	plan, err := service.CreateCleanupPlan(CleanupPlanRequest{SnapshotID: status.SnapshotID, Paths: []string{target}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ConfirmCleanupPlan(plan.ID, plan.Version); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := service.ExecuteCleanupPlan(plan.ID, plan.Version)
+	if err != nil || applied.State != "applied" {
+		t.Fatalf("cleanup execution failed: state=%s err=%v results=%#v", applied.State, err, applied.Results)
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Fatalf("the staged directory survived the deletion: %v", err)
+	}
+
+	eventMu.Lock()
+	defer eventMu.Unlock()
+	if len(events) < 3 {
+		t.Fatalf("a %d node item produced %d progress events; the indicator would not move", nodes, len(events))
+	}
+	// The denominator is fixed before the first unlink, so it may never move: a
+	// total that grows during the run makes the fraction go backwards.
+	total := events[0].TotalNodes
+	if total != nodes {
+		t.Errorf("denominator is %d nodes, the tree on disk has %d", total, nodes)
+	}
+	var last int64 = -1
+	for i, event := range events {
+		if event.TotalNodes != total {
+			t.Fatalf("event %d changed the denominator from %d to %d", i, total, event.TotalNodes)
+		}
+		if event.DoneNodes < last {
+			t.Fatalf("event %d went backwards, %d after %d", i, event.DoneNodes, last)
+		}
+		if event.DoneNodes > event.TotalNodes {
+			t.Fatalf("event %d reports %d of %d nodes done", i, event.DoneNodes, event.TotalNodes)
+		}
+		last = event.DoneNodes
+	}
+	// Something in the middle, or the ring still only has its two ends.
+	moved := false
+	for _, event := range events {
+		if event.DoneNodes > 0 && event.DoneNodes < total {
+			moved = true
+		}
+	}
+	if !moved {
+		t.Error("every event was 0% or 100%: progress never moved inside the item")
+	}
+	if events[len(events)-1].DoneNodes != total {
+		t.Errorf("the run ended at %d of %d nodes", events[len(events)-1].DoneNodes, total)
 	}
 }
 

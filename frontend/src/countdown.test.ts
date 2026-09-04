@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { countdownDigit, countdownFraction, deleteFraction, ringOffset } from "./countdown.ts";
+import { countdownDigit, countdownFraction, deleteFraction, progressHoldMs, ringOffset } from "./countdown.ts";
 
 const total = 5000;
 
@@ -78,4 +78,16 @@ test("progress follows bytes, not item count", () => {
 test("a plan with no measurable bytes does not divide by zero", () => {
   assert.equal(deleteFraction(0, 0), 0);
   assert.equal(deleteFraction(5, 0), 0);
+});
+
+test("a ring that was never shown holds for nothing", () => {
+	assert.equal(progressHoldMs(0, 5_000, 400), 0);
+});
+
+test("a ring shown a moment ago holds out the rest of its minimum", () => {
+	assert.equal(progressHoldMs(1_000, 1_100, 400), 300);
+});
+
+test("a ring that has been up long enough holds for nothing", () => {
+	assert.equal(progressHoldMs(1_000, 9_000, 400), 0);
 });

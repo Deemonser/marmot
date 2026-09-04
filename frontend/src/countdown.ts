@@ -32,10 +32,26 @@ export function ringOffset(fraction: number, radius: number): number {
 // 0 grows it clockwise (the deletion). One formula, two directions, and nothing
 // to keep in sync.
 //
-// By bytes, not by item. A measured plan was twelve items with one holding 18.5
-// GB of the 33 GB: by count the ring would have sat at 8% through most of the run
-// and then jumped, which is worse than no ring at all.
-export function deleteFraction(doneBytes: number, totalBytes: number): number {
-	if (totalBytes <= 0) return 0;
-	return Math.min(1, Math.max(0, doneBytes / totalBytes));
+// By inode, not by byte. Deletion unlinks every file, so its cost is per node and
+// almost independent of size: measured on APFS, an 8 GiB file unlinks in 0.000s
+// while a 204k inode tree takes 3.2s. A byte-weighted ring spent a big file's
+// entire share of the bar in one frame and then stood still through the part that
+// actually took the time -- which is the failure it was introduced to fix, moved
+// somewhere else.
+export function deleteFraction(doneNodes: number, totalNodes: number): number {
+	if (totalNodes <= 0) return 0;
+	return Math.min(1, Math.max(0, doneNodes / totalNodes));
+}
+
+// progressHoldMs is how much longer the delete ring has to stay before it may be
+// taken down, given when it appeared. Zero when it was never shown, which is the
+// common case: most deletions finish before the reveal.
+//
+// It exists because the reveal is a bet. Showing the ring only after the run has
+// proved slow means a run that finishes just after the reveal would otherwise
+// flash it for a frame or two, and a flash reads as a glitch rather than as
+// progress.
+export function progressHoldMs(shownAt: number, now: number, minMs: number): number {
+	if (shownAt <= 0) return 0;
+	return Math.max(0, minMs - (now - shownAt));
 }

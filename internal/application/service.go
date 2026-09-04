@@ -337,7 +337,7 @@ type CleanupPlan struct {
 	Results []CleanupItemResult `json:"results"`
 }
 
-// CleanupProgress is emitted before each item and once at the end. Deleting is
+// CleanupProgress is emitted while a plan runs, at up to 5 Hz. Deleting is
 // O(files), not O(1) like a move to the trash, so a plan can take minutes and
 // needs to say so while it does.
 type CleanupProgress struct {
@@ -346,10 +346,13 @@ type CleanupProgress struct {
 	Done    int    `json:"done"`
 	Total   int    `json:"total"`
 	Current string `json:"current"`
-	// DoneBytes and TotalBytes are what the indicator should actually be drawn
-	// from. See cleanupPlan.weights for why item counts will not do.
-	DoneBytes  int64 `json:"doneBytes"`
-	TotalBytes int64 `json:"totalBytes"`
+	// DoneNodes and TotalNodes are what the indicator is drawn from, and they are
+	// inodes rather than bytes because that is what deletion costs. Measured on
+	// an APFS volume: an 8 GiB file unlinks in 0.000s, a 204k inode tree takes
+	// 3.2s. A byte-weighted ring spends a big file's whole share of the bar in
+	// one frame and then sits still through the part that actually takes time.
+	DoneNodes  int64 `json:"doneNodes"`
+	TotalNodes int64 `json:"totalNodes"`
 }
 
 type CleanupItemResult struct {
@@ -375,15 +378,6 @@ type cleanupPlan struct {
 	mu sync.Mutex
 	CleanupPlan
 	items []cleanup.Item
-	// weights is each item's subtree size, taken from the snapshot node rather
-	// than from lstat: a directory's own Size is a dirent, not what it holds.
-	//
-	// Progress is reported by bytes, not by item index, because the items are
-	// nowhere near equal. A real plan here was twelve items of which one held 18.5
-	// GB and the rest a few hundred MB each; counting items would have parked the
-	// indicator at one twelfth for most of the run and then jumped it. An
-	// indicator that spends most of its time wrong is worse than none.
-	weights []int64
 }
 
 func NewService(deps Dependencies) *Service {
@@ -1694,7 +1688,6 @@ func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, er
 		return CleanupPlan{}, errors.New("parent and child cleanup items cannot overlap")
 	}
 	items := make([]cleanup.Item, 0, len(paths))
-	weights := make([]int64, 0, len(paths))
 	for _, path := range paths {
 		node, err := s.store.NodeByPath(request.SnapshotID, path)
 		if err != nil {
@@ -1707,14 +1700,13 @@ func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, er
 		if err != nil {
 			return CleanupPlan{}, err
 		}
-		weights = append(weights, node.OwnedAllocated)
 		if !matchesSnapshotNode(node, item) {
 			log.Printf("cleanup: 拒绝建立计划，%s 在扫描之后发生了变化", path)
 			return CleanupPlan{}, fmt.Errorf("该对象在扫描之后发生了变化，重新扫描后再试: %s", path)
 		}
 		items = append(items, item)
 	}
-	plan := &cleanupPlan{CleanupPlan: CleanupPlan{ID: fmt.Sprintf("plan-%d-%d", time.Now().UnixNano(), s.serial.Add(1)), SnapshotID: request.SnapshotID, Version: 1, State: "draft", Items: len(items), Results: make([]CleanupItemResult, 0, len(items))}, items: items, weights: weights}
+	plan := &cleanupPlan{CleanupPlan: CleanupPlan{ID: fmt.Sprintf("plan-%d-%d", time.Now().UnixNano(), s.serial.Add(1)), SnapshotID: request.SnapshotID, Version: 1, State: "draft", Items: len(items), Results: make([]CleanupItemResult, 0, len(items))}, items: items}
 	log.Printf("cleanup %s: 建立计划，%d 项", plan.ID, len(items))
 	s.mu.Lock()
 	s.plans[plan.ID] = plan
@@ -1750,6 +1742,27 @@ func (s *Service) ConfirmCleanupPlan(planID string, version int64) (CleanupPlan,
 	return plan.publicLocked(), nil
 }
 
+// cleanupWorkers is where APFS stops paying for concurrency. Measured on the
+// development machine, deleting one 204k inode tree: 8.6s with a single worker,
+// 3.2s with four, 3.9s with eight, 4.7s with thirty-two. The ceiling is metadata
+// lock contention inside the filesystem rather than CPU, so it does not follow
+// the core count and there is nothing to gain by raising it.
+const cleanupWorkers = 4
+
+// cleanupTargetChunks is how finely one item is cut: enough units to keep four
+// workers fed and to give the indicator a few hundred steps, without paying
+// per-unit overhead thousands of times.
+const cleanupTargetChunks = 256
+
+// cleanupProgressEvery throttles the event to the 5 Hz the scan already reports
+// at. The workers finish chunks far faster than that.
+//
+// A var, not a const, so a test can turn the throttle off and watch the real
+// deletion path move: a tree small enough to build in a test is deleted well
+// inside one throttle window, and a test that waited out a window instead would
+// be measuring the clock rather than the code.
+var cleanupProgressEvery = 200 * time.Millisecond
+
 func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan, error) {
 	plan, err := s.getPlan(planID, version)
 	if err != nil {
@@ -1763,32 +1776,60 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 	plan.Results = plan.Results[:0]
 	failed := false
 	applied := 0
+
 	// Deleting is not what moving to the trash was. The trash is a rename inside
-	// one volume -- constant time, whatever the size. Deleting unlinks every file,
-	// so a 18.5 GB cache of hundreds of thousands of small files takes as long as
-	// it takes, and the call used to return only when all of it was done. With no
+	// one volume -- constant time, whatever the size. Deleting unlinks every file
+	// one at a time, so a cache of hundreds of thousands of small files takes as
+	// long as it takes, and the call returns only when all of it is done. With no
 	// progress that reads as a hang, on exactly the operation where a user most
 	// wants to know something is still happening.
-	var totalWeight, doneWeight int64
-	for _, weight := range plan.weights {
-		totalWeight += weight
-	}
+	//
+	// Every item is cut up front, before the first unlink, so the denominator is
+	// exact from the first event instead of growing as the run discovers it. The
+	// cut costs no I/O: it is a walk of the tree already in memory.
+	subtrees := make([]cleanup.Subtree, len(plan.items))
+	var totalNodes int64
 	for index, item := range plan.items {
+		subtree, chunkErr := s.store.SubtreeChunks(plan.SnapshotID, item.Path, cleanupTargetChunks)
+		if chunkErr != nil {
+			// Still deleted, just with no progress inside it. A worse indicator is
+			// not a reason to refuse what the user asked for.
+			log.Printf("cleanup %s: %s 无法切块（%v），按整体删除", plan.ID, item.Path, chunkErr)
+			subtree = cleanup.Subtree{TotalNodes: 1}
+		}
+		subtrees[index] = subtree
+		totalNodes += subtree.TotalNodes
+	}
+
+	var doneNodes atomic.Int64
+	var emitMu sync.Mutex
+	var lastEmit time.Time
+	// Called from every worker, so the throttle and the clock are behind one lock.
+	emitProgress := func(index int, current string, force bool) {
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		if !force && time.Since(lastEmit) < cleanupProgressEvery {
+			return
+		}
+		lastEmit = time.Now()
 		s.emit("cleanup-progress", CleanupProgress{
 			PlanID: plan.ID, Version: plan.Version, Done: index, Total: len(plan.items),
-			Current: item.Path, DoneBytes: doneWeight, TotalBytes: totalWeight,
+			Current: current, DoneNodes: doneNodes.Load(), TotalNodes: totalNodes,
 		})
-		// Credited immediately after its event, so every report says how many bytes
-		// were finished BEFORE the item it names. Done here rather than at the
-		// bottom of the loop because the skip and fail paths continue past it, and
-		// the item's turn is over either way -- an indicator that stalls on a
-		// skipped item is telling the user the wrong thing about a run that is
-		// still moving.
-		if index < len(plan.weights) {
-			doneWeight += plan.weights[index]
-		}
+	}
+
+	for index, item := range plan.items {
+		emitProgress(index, item.Path, true)
+		// The item's whole weight is credited when its turn ends, however it
+		// ended. The skip and fail paths continue past this point and the turn is
+		// over either way -- an indicator that stalls on a skipped item is telling
+		// the user the wrong thing about a run that is still moving.
+		itemStart := doneNodes.Load()
+		finishItem := func() { doneNodes.Store(itemStart + subtrees[index].TotalNodes) }
+
 		if valid, reason := s.validateCleanupItem(item); !valid {
 			failed = true
+			finishItem()
 			log.Printf("cleanup %s: 跳过 %s：%s", plan.ID, item.Path, reason)
 			plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "skipped", Reason: reason})
 			continue
@@ -1807,19 +1848,22 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 		// (ADR-0061 §7): the tool will not RECOMMEND deleting a repository. It no
 		// longer overrides a path the user staged themselves. What the tool
 		// suggests and what the user is permitted to do are not the same question.
-		outcome := "已删除"
+		//
 		// The log line is the only remaining record that this object existed.
 		log.Printf("cleanup %s: 删除 %s", plan.ID, item.Path)
-		err := s.trash.RemovePermanently(item.Path)
-		if err != nil {
+		removeErr := s.removeItem(plan.ID, item, subtrees[index], &doneNodes, func() {
+			emitProgress(index, item.Path, false)
+		})
+		finishItem()
+		if removeErr != nil {
 			failed = true
-			log.Printf("cleanup %s: 失败 %s：%v", plan.ID, item.Path, err)
-			plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "failed", Reason: err.Error()})
+			log.Printf("cleanup %s: 失败 %s：%v", plan.ID, item.Path, removeErr)
+			plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "failed", Reason: removeErr.Error()})
 			continue
 		}
 		applied++
-		log.Printf("cleanup %s: %s %s", plan.ID, outcome, item.Path)
-		plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "applied", Reason: outcome})
+		log.Printf("cleanup %s: 已删除 %s", plan.ID, item.Path)
+		plan.Results = append(plan.Results, CleanupItemResult{Path: item.Path, State: "applied", Reason: "已删除"})
 	}
 	// Written whatever the outcome. This is the record that was missing when a
 	// run "failed" after moving 33 GB: the plan state is one word for a per-item
@@ -1837,7 +1881,7 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 		plan.ID, len(plan.items), applied, len(plan.items)-applied, plan.Removed)
 	s.emit("cleanup-progress", CleanupProgress{
 		PlanID: plan.ID, Version: plan.Version, Done: len(plan.items), Total: len(plan.items),
-		DoneBytes: totalWeight, TotalBytes: totalWeight,
+		DoneNodes: totalNodes, TotalNodes: totalNodes,
 	})
 	if failed {
 		plan.State = "failed"
@@ -1845,6 +1889,95 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 		plan.State = "applied"
 	}
 	return plan.publicLocked(), nil
+}
+
+// chunkWork is one unit as the workers see it: names relative to the staged
+// item, because that is the only form that cannot be redirected.
+type chunkWork struct {
+	names []string
+	nodes int64
+}
+
+// removeItem deletes one staged item: its chunks across cleanupWorkers workers,
+// then a sweep of the item path itself.
+//
+// The chunks are named relative to the item and removed through a descriptor for
+// it (ports.Trash.RemoveWithin). Absolute child paths would be resolved from "/"
+// again at the moment of deletion, so a staged directory swapped for a symlink
+// after the plan was validated would send every removal out of the item -- the
+// single recursive remove this replaced could not do that, because it acted on
+// the item path itself and does not follow a final symlink. Recovering that
+// property is what the relative names are for.
+//
+// The sweep is not a formality. The chunks are a picture of the tree as the scan
+// left it, so they miss the item's own directories, the branches too small to be
+// worth a unit, and anything written since. The item counts as deleted when its
+// path is gone, and the sweep is what tests that.
+func (s *Service) removeItem(planID string, item cleanup.Item, subtree cleanup.Subtree, done *atomic.Int64, tick func()) error {
+	var chunkErr error
+	if len(subtree.Chunks) > 0 {
+		// Relative names are worked out here, once, so a refusal is logged from one
+		// goroutine and in a fixed order rather than from whichever worker got it.
+		work := make([]chunkWork, 0, len(subtree.Chunks))
+		for _, chunk := range subtree.Chunks {
+			names := make([]string, 0, len(chunk.Paths))
+			for _, path := range chunk.Paths {
+				name, err := filepath.Rel(item.Path, path)
+				if err != nil || !cleanup.IsPathWithin(item.Path, path) {
+					// The paths were rebuilt from the snapshot, and a recursive remove on
+					// the wrong one cannot be taken back. RemoveWithin would refuse this
+					// too; saying so here names which path it was.
+					log.Printf("cleanup %s: 拒绝删除计划外的路径 %s（不在 %s 之内）", planID, path, item.Path)
+					continue
+				}
+				names = append(names, name)
+			}
+			work = append(work, chunkWork{names: names, nodes: chunk.Nodes})
+		}
+
+		queue := make(chan chunkWork)
+		var wg sync.WaitGroup
+		var errMu sync.Mutex
+		for worker := 0; worker < cleanupWorkers; worker++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for chunk := range queue {
+					if len(chunk.names) > 0 {
+						if err := s.trash.RemoveWithin(item, chunk.names); err != nil {
+							errMu.Lock()
+							if chunkErr == nil {
+								chunkErr = err
+							}
+							errMu.Unlock()
+						}
+					}
+					done.Add(chunk.nodes)
+					tick()
+				}
+			}()
+		}
+		for _, chunk := range work {
+			queue <- chunk
+		}
+		close(queue)
+		wg.Wait()
+		if errors.Is(chunkErr, ports.ErrItemReplaced) {
+			// Not the object the plan validated. Nothing further is removed, and
+			// above all the sweep does not run: it is the one call that acts on the
+			// item path, and the item path is no longer the item.
+			return chunkErr
+		}
+	}
+	if err := s.trash.RemovePermanently(item.Path); err != nil {
+		return err
+	}
+	if chunkErr != nil {
+		// The path is gone, so the item was deleted and the sweep dealt with
+		// whatever the chunk could not. Worth a line, not a failure.
+		log.Printf("cleanup %s: %s 有分块删除失败（%v），整体已清除", planID, item.Path, chunkErr)
+	}
+	return nil
 }
 
 func (s *Service) emitProgress(task *scanTask) {

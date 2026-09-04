@@ -63,14 +63,17 @@ type ProjectedEntry struct {
 // CleanupProgress mirrors the application event. Deleting is O(files) rather than
 // the constant-time rename a move to the trash was, so the UI has to be able to
 // say where it is.
+//
+// Counted in inodes, not bytes: that is what deletion costs. An 8 GiB file
+// unlinks in 0.000s, a 204k inode tree in 3.2s.
 type CleanupProgress struct {
 	PlanID     string `json:"planId"`
 	Version    int64  `json:"version"`
 	Done       int    `json:"done"`
 	Total      int    `json:"total"`
 	Current    string `json:"current"`
-	DoneBytes  int64  `json:"doneBytes"`
-	TotalBytes int64  `json:"totalBytes"`
+	DoneNodes  int64  `json:"doneNodes"`
+	TotalNodes int64  `json:"totalNodes"`
 }
 
 type ScanProgress struct {

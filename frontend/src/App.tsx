@@ -4,7 +4,7 @@ import type { ArcGeom, MorphPlan } from "./morph";
 import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstHiddenSpace, sunburstEndAngle, previewDwellMs, previewLeaveMs } from "./sunburst";
 import type { HueBand } from "./sunburst";
 import { autoStageable, bulkCandidates, inlineRiskReasons, riskReasonLabel, sourceLabel, stageSummary } from "./advice";
-import { countdownDigit, countdownFraction, deleteFraction, ringOffset } from "./countdown";
+import { countdownDigit, countdownFraction, deleteFraction, progressHoldMs, ringOffset } from "./countdown";
 import { useNotice, NoticeToast } from "./useNotice";
 import { meterColor } from "./meter";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
@@ -111,6 +111,17 @@ const smallEntryShare = 0.0005;
 const focusIdleMs = 3000;
 // Seconds the destructive action waits before running, so it can be stopped.
 const countdownSeconds = 5;
+// How long a deletion has to run before it is worth drawing a progress ring for.
+// Measured on APFS with four workers: about 62k inodes a second, so most staged
+// sets are gone well inside a second and an indicator for them is a flash, not
+// information. Revealing on elapsed time rather than on a predicted size is also
+// the only rule that stays right across hardware -- a fast external enclosure and
+// a slow one cannot be told apart in advance, but both answer this.
+const deleteRevealAfterMs = 1500;
+// Once shown it stays long enough to be read. Without this a run that finished
+// just after the reveal would flash the ring for a frame or two, which is worse
+// than never showing it.
+const deleteProgressMinMs = 400;
 // Pixels the pointer must travel before a press turns into a drag instead of a
 // click. Below this the wheel still navigates and the list still selects.
 const dragThreshold = 6;
@@ -1659,7 +1670,7 @@ export default function App() {
   // Where a deletion has got to. Moving to the trash was a rename and finished
   // before the UI could show anything; deleting unlinks every file, so a 18.5 GB
   // cache takes as long as it takes and silence reads as a hang.
-  const [cleanupAt, setCleanupAt] = useState<{ done: number; total: number; current: string; doneBytes: number; totalBytes: number } | null>(null);
+  const [cleanupAt, setCleanupAt] = useState<{ done: number; total: number; current: string; doneNodes: number; totalNodes: number } | null>(null);
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
   const [validation, setValidation] = useState<CleanupValidation | null>(null);
   // All one-off messages go through notify; see notice.ts for the rules.
@@ -1717,6 +1728,18 @@ export default function App() {
   // and a live 删除 button sat there offering to delete a set already being
   // deleted.
   const deleting = plan?.state === "confirmed";
+  // Whether the deletion has run long enough to be worth showing progress for.
+  // A prediction was the alternative -- decide from the staged node count, or
+  // from what kind of volume it is -- and both are guesses about hardware that
+  // cannot be told apart in advance. Elapsed time is not a guess.
+  const [deleteProgressShown, setDeleteProgressShown] = useState(false);
+  // When the ring appeared, so a run that ends just after can hold it briefly.
+  // A ref, not state: nothing renders from it.
+  const deleteShownAt = useRef(0);
+  // Before the reveal the badge is the ordinary byte count with the dock locked;
+  // only after it does the ring mean progress.
+  const showDeleteProgress = deleting && deleteProgressShown;
+  const deleteProgress = deleteFraction(cleanupAt?.doneNodes ?? 0, cleanupAt?.totalNodes ?? 0);
   // Nothing may join, leave or be re-analysed while the set is being acted on.
   // The countdown runs against the exact set the plan was built from, and the
   // deletion is that set going away.
@@ -1985,14 +2008,14 @@ export default function App() {
     // The native row menu only reports which item was picked; the action itself
     // runs here, through the same calls the buttons use (ADR-0051 §4).
     const offCleanup = Events.On("cleanup-progress", (event: {
-      data: { done: number; total: number; current: string; doneBytes: number; totalBytes: number };
+      data: { done: number; total: number; current: string; doneNodes: number; totalNodes: number };
     }) => {
-      const { done, total, current, doneBytes, totalBytes } = event.data;
+      const { done, total, current, doneNodes, totalNodes } = event.data;
       // Kept at the final tick rather than cleared: the ring reads 100% until
       // Execute returns. Clearing here dropped it back to a bare badge for the
       // last stretch of a long delete, which is exactly when the user is
       // watching it. runCleanup clears it when the run is over.
-      setCleanupAt({ done, total, current, doneBytes, totalBytes });
+      setCleanupAt({ done, total, current, doneNodes, totalNodes });
     });
     // A disk was plugged in, ejected or renamed: re-read the list, the way the
     // reference's disk list follows the desktop. The event is a signal; the
@@ -2972,6 +2995,28 @@ export default function App() {
     }
   }
 
+  // The reveal timer lives and dies with the deletion. Cancelling on the way out
+  // is what keeps a fast run from showing the ring after it is already over.
+  useEffect(() => {
+    if (!deleting) {
+      setDeleteProgressShown(false);
+      deleteShownAt.current = 0;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      deleteShownAt.current = Date.now();
+      setDeleteProgressShown(true);
+    }, deleteRevealAfterMs);
+    return () => window.clearTimeout(timer);
+  }, [deleting]);
+
+  // Held only on the way out of a successful run. An error has a notice to show
+  // and should not wait behind an animation.
+  async function holdDeleteProgress() {
+    const left = progressHoldMs(deleteShownAt.current, Date.now(), deleteProgressMinMs);
+    if (left > 0) await new Promise((resolve) => window.setTimeout(resolve, left));
+  }
+
   function stopCountdown() {
     if (countdownTimer.current !== null) {
       window.cancelAnimationFrame(countdownTimer.current);
@@ -3014,6 +3059,7 @@ export default function App() {
       }
       setPlan(await MarmotService.ConfirmCleanupPlan(planID, version));
       const applied = await MarmotService.ExecuteCleanupPlan(planID, version);
+      await holdDeleteProgress();
       setPlan(applied);
       // Execution is per item: some move, some do not, and the plan state is one
       // word for the lot. Reporting that word ("failed") threw away the per-item
@@ -3695,7 +3741,7 @@ export default function App() {
                     type="button"
                     className={"collector-target is-filled collector-badge"
                       + (countdown !== null ? " is-counting" : "")
-                      + (deleting ? " is-deleting" : "")}
+                      + (showDeleteProgress ? " is-deleting" : "")}
                     onClick={() => { if (!deleting) setDockOpen((open) => !open); }}
                     aria-label={deleting ? "正在删除" : dockOpen ? "收起收集区" : "展开收集区"}
                     aria-expanded={dockOpen}
@@ -3704,23 +3750,20 @@ export default function App() {
                         draws the first f of the path clockwise from twelve o'clock, so
                         a falling fraction retreats the arc anticlockwise and a rising
                         one grows it clockwise. Nothing to keep in sync between them. */}
-                    {dockLocked && (
-                      <svg className={"collector-ring" + (deleting ? " is-deleting" : "")} viewBox="0 0 44 44">
+                    {(countdown !== null || showDeleteProgress) && (
+                      <svg className={"collector-ring" + (showDeleteProgress ? " is-deleting" : "")} viewBox="0 0 44 44">
                         <circle
                           cx="22"
                           cy="22"
                           r="20"
                           strokeDasharray={2 * Math.PI * 20}
-                          strokeDashoffset={ringOffset(
-                            deleting ? deleteFraction(cleanupAt?.doneBytes ?? 0, cleanupAt?.totalBytes ?? 0) : ringFraction,
-                            20,
-                          )}
+                          strokeDashoffset={ringOffset(showDeleteProgress ? deleteProgress : ringFraction, 20)}
                         />
                       </svg>
                     )}
                     <span className="collector-count">
-                      {deleting
-                        ? Math.round(deleteFraction(cleanupAt?.doneBytes ?? 0, cleanupAt?.totalBytes ?? 0) * 100) + "%"
+                      {showDeleteProgress
+                        ? Math.round(deleteProgress * 100) + "%"
                         : countdown !== null
                           ? countdown
                           : formatBytes(collectorBytes).split(" ")[0]}
@@ -3731,10 +3774,10 @@ export default function App() {
                       ? drag.blocked
                       : countdown !== null
                         ? <>秒后开始。选中的文件将被<strong className="destructive-note">直接删除，无法撤销</strong></>
-                        : cleanupAt
-                          ? `正在删除 ${cleanupAt.done + 1}/${cleanupAt.total}：${cleanupAt.current.split("/").pop()}`
+                        : showDeleteProgress && cleanupAt
+                          ? `正在删除 ${Math.min(cleanupAt.done + 1, cleanupAt.total)}/${cleanupAt.total}：${cleanupAt.current.split("/").pop()}`
                           : deleting
-                            ? "正在删除…（大目录要逐个文件删除，可能要几分钟）"
+                            ? "正在删除…"
                             : validation && !validation.valid
                               ? "校验未通过，不能执行"
                               : <><span className="collector-unit">{formatBytes(collectorBytes).split(" ")[1]}</span> <span className="collector-dim">已收集</span></>}
