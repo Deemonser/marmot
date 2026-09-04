@@ -2,9 +2,9 @@ module example.com/marmot
 
 go 1.25.0
 
-require github.com/wailsapp/wails/v3 v3.0.0-beta.9
+require github.com/wailsapp/wails/v3 v3.0.0-beta.15
 
-require golang.org/x/sys v0.46.0
+require golang.org/x/sys v0.47.0
 
 require (
 	github.com/adrg/xdg v0.5.3 // indirect

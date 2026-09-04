@@ -17,18 +17,17 @@ Marmot 只允许复用上述固定提交中的代码。当前 `main` 及之后�
 ### Wails
 
 - 项目：[wailsapp/wails](https://github.com/wailsapp/wails)
-- 固定版本：`v3.0.0-beta.9`
+- 固定版本：`v3.0.0-beta.15`
 - 许可证：MIT
-- 本机许可证文件：Go module cache 中的 `github.com/wailsapp/wails/v3@v3.0.0-beta.9/LICENSE`
+- 本机许可证文件：Go module cache 中的 `github.com/wailsapp/wails/v3@v3.0.0-beta.15/LICENSE`
 
-### mattn/go-sqlite3
+前端的 `@wailsio/runtime` 必须固定在同一个 beta 号上，Go 端和 JS 端错版会导致绑定和事件不匹配。
 
-> 过渡依赖：ADR-0028 已决定首版生产快照不使用 SQLite。完成二进制快照 POC 和迁移后，
-> 若代码与构建产物已移除该依赖，应同步删除本节。
+### golang.org/x/sys
 
-- 项目：[mattn/go-sqlite3](https://github.com/mattn/go-sqlite3)
-- 固定版本：`v1.14.24`
-- 许可证：MIT；内含 SQLite 代码的许可证和声明也必须随发行审查
-- 本机许可证文件：Go module cache 中的 `github.com/mattn/go-sqlite3@v1.14.24/LICENSE`
+- 项目：[golang/sys](https://github.com/golang/sys)
+- 固定版本：`v0.47.0`
+- 许可证：BSD-3-Clause
+- 本机许可证文件：Go module cache 中的 `golang.org/x/sys@v0.47.0/LICENSE`
 
 正式发行前必须根据最终 `go.mod` 和前端 lockfile 生成完整依赖清单，不以本节的直接依赖列表替代传递依赖审查。

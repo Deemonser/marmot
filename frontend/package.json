@@ -11,17 +11,17 @@
     "test": "node --test src/*.test.ts"
   },
   "dependencies": {
-    "@wailsio/runtime": "latest",
+    "@wailsio/runtime": "3.0.0-beta.15",
     "d3-shape": "^3.2.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
-    "@types/d3-shape": "^3.1.8",
+    "@types/d3-shape": "^3.2.0",
     "@types/react": "^19.1.10",
-    "@types/react-dom": "^19.1.7",
-    "@vitejs/plugin-react": "^5.0.2",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
     "typescript": "^5.9.3",
-    "vite": "^8.0.5"
+    "vite": "^8.2.2"
   }
 }
