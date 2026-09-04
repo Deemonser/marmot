@@ -260,6 +260,33 @@ export interface NodeActionResult {
     "path": string;
 }
 
+/**
+ * NodeDescription mirrors the application type. An empty Rule means the local
+ * catalog recognised nothing, which the UI must not render as "safe to delete".
+ */
+export interface NodeDescription {
+    "nodeId": number;
+    "name": string;
+    "kind": string;
+    "path": string;
+    "nodes": number;
+    "newestModified": string;
+    "ageKnown": boolean;
+    "isProjectRoot": boolean;
+    "rule": string;
+    "category": string;
+    "recovery": string;
+    "risk": string;
+    "whatBreaks": string;
+    "howToRestore": string;
+    "manual": boolean;
+    "command": string;
+    "protection": string;
+    "irreplaceable": string;
+    "partialInstall": string;
+    "loginState": string;
+}
+
 export interface NodeView {
     "id": number;
     "parentId": number;

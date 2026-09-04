@@ -402,6 +402,50 @@ func (t *tree) countSubtree(id int64) int64 {
 	return total
 }
 
+// describeBound caps the walk a description does. Hovering a top-level directory
+// would otherwise walk a million nodes to produce one sentence, and every
+// catalog rule with an age condition targets a small tree -- an installer image
+// in Downloads, one IDE's stale configuration -- so the cap costs nothing they
+// need. Past it the age is reported as unknown rather than guessed from a
+// partial maximum.
+const describeBound = 200000
+
+// subtreeFacts counts one subtree and finds the newest mtime in it, in one walk
+// of the tree already in memory.
+func (t *tree) subtreeFacts(id int64) scan.SubtreeFacts {
+	t.ensureGrouped()
+	if !t.valid(id) {
+		return scan.SubtreeFacts{}
+	}
+	// Direct children only: a project root is a directory holding a marker, not
+	// one that contains a project somewhere below it.
+	projectRoot := false
+	for _, child := range t.children(id) {
+		name := t.names.get(t.records.at(int64(child)).nameOffset, t.records.at(int64(child)).nameLength)
+		if _, marker := projectMarkers[name]; marker {
+			projectRoot = true
+			break
+		}
+	}
+	var nodes, newest int64
+	stack := []int64{id}
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		nodes++
+		if modified := t.records.at(current).modifiedUnix; modified > newest {
+			newest = modified
+		}
+		if nodes >= describeBound {
+			return scan.SubtreeFacts{Nodes: nodes, NewestModified: modifiedTime(newest), Truncated: true, IsProjectRoot: projectRoot}
+		}
+		for _, child := range t.children(current) {
+			stack = append(stack, int64(child))
+		}
+	}
+	return scan.SubtreeFacts{Nodes: nodes, NewestModified: modifiedTime(newest), IsProjectRoot: projectRoot}
+}
+
 // subtreeChunks cuts one item into units that four workers can delete at once
 // and that a progress ring can be drawn from.
 //

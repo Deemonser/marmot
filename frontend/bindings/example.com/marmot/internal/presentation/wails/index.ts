@@ -25,6 +25,7 @@ export type {
     MapQuery,
     MapResult,
     NodeActionResult,
+    NodeDescription,
     NodeView,
     PermissionStatus,
     ProjectedEntry,

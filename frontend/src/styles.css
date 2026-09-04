@@ -283,7 +283,12 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .directory-parent-dot { width: 14px; height: 14px; flex: 0 0 auto; border-radius: 50%; }
 .directory-title h2 { overflow: hidden; margin: 0 0 4px; color: #f4f4f6; font-size: 18px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .directory-title strong { color: #d1d1d5; font-size: 17px; font-weight: 400; }
-.directory-list { min-height: 0; flex: 0 1 auto; overflow: auto; padding: 0; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
+/* flex: 1, not 0 1 auto. Hugging its content left the footer's POSITION a
+   function of the row count -- floating mid-panel in a short directory, pushed
+   to the bottom in a long one -- so the description block moved every time the
+   level changed. The list takes what is left and scrolls inside it; the footer
+   is where it was last time. */
+.directory-list { min-height: 0; flex: 1 1 auto; overflow: auto; padding: 0; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
 /* Row pitch 22pt and body type 17pt, both measured off the reference; the dot
    column is exactly the dot (R-060 SS3.7). Name left, size right. */
 .directory-row { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto auto; align-items: center; gap: 11px; min-height: 22px; padding: 0 2px; border: 0; border-radius: 3px; outline: none; background: transparent; color: #e2e2e6; cursor: pointer; font-size: 17px; }
@@ -464,7 +469,6 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .directory-name.is-hidden-space { color: #b98fc7; }
 
 /* Partial-result marker sits inline on the title line, muted. */
-.directory-partial { margin: 10px 2px 0; color: #8e8f96; font-size: 11px; line-height: 1.4; }
 
 /* Chip that rides under the cursor while an arc or a row is dragged to the dock.
    It wears the wedge's own colour, so what is in the air is identifiable without
@@ -508,12 +512,19 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* -webkit-user-drag is what lets these rows start a native drag out to Finder:
    the shell sets `user-select: none`, and WebKit otherwise refuses to begin an
    HTML5 drag anywhere under it. */
-.collector-item { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 22px; padding: 0 6px; border-radius: 4px; color: #e6e6ea; font-size: 13px; -webkit-user-drag: element; }
+/* Two lines, and the metrics are the ones the 待确认 list used: with one list
+   left it should read the way the denser of the two did. The cross and the size
+   stay centred on the pair because only the middle column stacks. */
+.collector-item { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 6px 7px; border-radius: 6px; color: #e6e6ea; font-size: 13px; -webkit-user-drag: element; }
 .collector-item:hover { background: rgba(255, 255, 255, .08); }
-.collector-item strong { overflow: hidden; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.collector-text { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+.collector-text strong { overflow: hidden; color: #eeeef1; font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+/* The path is what tells two like-named objects apart, so it may shrink but must
+   not wrap: a dock row is a line, not a paragraph. */
+.collector-path { overflow: hidden; color: #8b8c93; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 /* Same weight and colour as the name, right-aligned, like the reference: the size
    is the other half of the row, not a footnote to it. */
-.collector-item b { font-weight: 400; font-variant-numeric: tabular-nums; }
+.collector-item b { color: #d7d7dc; font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; }
 /* The only thing in column 1, so a press there can only be this button. It holds
    both faces -- the colour dot and the cross -- and swaps them on row hover, which
    is what the reference does. -webkit-user-drag: none keeps the row's own
@@ -630,12 +641,6 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* A collected row keeps the reasons it was proposed with; a hand-dragged row has
    none, which is how the two kinds tell apart (ADR-0066 §1). The tags sit on the
    name's line and give way to it: the name is what identifies the row. */
-.collector-name { display: flex; min-width: 0; align-items: center; gap: 7px; }
-.collector-name strong { flex: 0 1 auto; }
-.collector-tags { display: flex; flex: 0 0 auto; gap: 4px; }
-.collector-tags .advice-tag { padding: 1px 5px; font-size: 8px; }
-.collector-item.has-advice { cursor: default; }
-.collector-item .advice-detail { grid-column: 1 / -1; margin: 2px 0 6px 20px; }
 /* The bar is shorter than the badge on purpose: the badge is centred on it,
    so a 34px bar puts the centre 17px above the panel's bottom edge and the
    disc hangs 8px below the panel, which is the reference's silhouette. */
@@ -733,13 +738,28 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Root-level free-space rows (ADR-0052 §5). */
 /* The reference separates this block by one row height and keeps it on the same
    right edge as the list (R-060 §3.7). */
-.directory-summary { margin-top: 22px; padding: 0; }
-/* Same type size and right edge as the list rows: the reference draws these two
-   at the same size as everything above them, only greyer (R-060 §3.7). */
-.summary-row { display: flex; align-items: center; gap: 11px; min-height: 22px; padding: 0 2px; color: #9a9ba1; font-size: 17px; }
-.summary-mark { width: 10px; flex: 0 0 auto; text-align: center; color: #7c7d84; }
-.summary-name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.summary-size { flex: 0 0 auto; color: #cfd0d5; font-variant-numeric: tabular-nums; }
+/* The panel's footer: what the object under the pointer is, from the local rule
+   catalog. Fixed height with its own scroll -- the list above it is
+   `flex: 0 1 auto`, so a footer that grew with its content would resize the list
+   under the very pointer that is driving it. */
+.directory-describe { height: 132px; flex: 0 0 auto; margin-top: 12px; padding: 9px 2px 0; overflow: auto; border-top: 1px solid rgba(255, 255, 255, .07); scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
+.directory-describe p { margin: 0 0 3px; }
+.describe-name { overflow: hidden; color: #e9e9ec; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.describe-facts { color: #8e8f96; font-size: 10px; }
+.describe-rule { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 2px; }
+.describe-tag { padding: 1px 5px; border-radius: 3px; background: rgba(255, 255, 255, .09); color: #c9cad0; font-size: 9px; }
+.describe-tag.recovery-regenerable, .describe-tag.recovery-redownloadable { background: #2b3a2e; color: #a6cfa8; }
+.describe-tag.recovery-irreplaceable { background: #46281f; color: #f0b3a3; }
+.describe-tag.is-manual { background: #3d3320; color: #d9bd7e; }
+/* The one thing worth saying about a directory the catalog does not name. */
+.describe-tag.is-project { background: #23303d; color: #9dc0ea; }
+/* The two prose lines are the answer to "what happens if I say yes", which is
+   the question a list of paths and sizes never answers. They get the room. */
+.describe-breaks { color: #c6c7cd; font-size: 10px; line-height: 1.5; }
+.describe-restore { color: #8e8f96; font-size: 10px; line-height: 1.5; }
+/* A refusal or a warning, and the one line here that should stop a hand. */
+.describe-guard { color: #e2887c; font-size: 10px; line-height: 1.5; }
+.describe-unknown, .describe-idle { color: #8e8f96; font-size: 10px; line-height: 1.5; }
 
 /* Departing arcs during a level change: they sweep out of the circle and fade,
    so the wedges that are not part of the destination do not leave a hole. */

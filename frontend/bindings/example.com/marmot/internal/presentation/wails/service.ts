@@ -34,6 +34,14 @@ export function CreateCleanupPlan(request: $models.CleanupPlanRequest): $Cancell
     return $Call.ByID(2832030583, request);
 }
 
+/**
+ * DescribeNode is answered from the snapshot and the local catalog, so it is
+ * cheap enough to ask while a pointer rests on a row.
+ */
+export function DescribeNode(snapshotID: number, nodeID: number): $CancellablePromise<$models.NodeDescription> {
+    return $Call.ByID(1285871749, snapshotID, nodeID);
+}
+
 export function ExecuteCleanupPlan(planID: string, version: number): $CancellablePromise<$models.CleanupPlan> {
     return $Call.ByID(3364095130, planID, version);
 }

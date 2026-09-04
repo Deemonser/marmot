@@ -195,6 +195,22 @@ func (s *Store) NodeByPath(snapshotID int64, path string) (scan.Node, error) {
 	return result.node(id)
 }
 
+// SubtreeFacts walks one subtree in memory: how many nodes it holds and the
+// newest mtime among them.
+func (s *Store) SubtreeFacts(snapshotID, nodeID int64) (scan.SubtreeFacts, error) {
+	// Lock, not RLock: the walk uses the child grouping, which it may have to build.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, err := s.treeFor(snapshotID)
+	if err != nil {
+		return scan.SubtreeFacts{}, err
+	}
+	if !result.valid(nodeID) {
+		return scan.SubtreeFacts{}, ErrNodeNotFound
+	}
+	return result.subtreeFacts(nodeID), nil
+}
+
 // SubtreeChunks plans the deletion of one staged item. It is pure arithmetic on
 // the tree already in memory -- no I/O, and paths are rebuilt only for the few
 // hundred chunk members, never for every node.

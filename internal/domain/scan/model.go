@@ -128,6 +128,26 @@ func NodeEntry(node Node) MapEntry {
 // The JSON keys are deliberately short. At the target density the projection
 // carries thousands of arcs and repeated field names dominate the payload; short
 // keys are what keep it inside the 256 KB ceiling (ADR-0048).
+// SubtreeFacts is what a walk of one subtree reports without touching the disk:
+// how many nodes are under it and the newest mtime among them. The age is the
+// input to the catalog rules that condition on staleness -- an installer image
+// in Downloads is only a candidate once it has sat there a month.
+//
+// Truncated says the walk stopped at its bound, so NewestModified is the newest
+// of what was seen and not of the subtree. A description must then decline to
+// answer an age question rather than answer it from a partial maximum.
+type SubtreeFacts struct {
+	Nodes          int64
+	NewestModified time.Time
+	Truncated      bool
+	// IsProjectRoot means a direct child is a project marker (.git and the
+	// others the evidence walk recognises). It is the cheapest true thing that
+	// can be said about a directory no cleanup rule names, and on a developer's
+	// disk that is most of them: the catalog answers "is this cleanable", which
+	// leaves every source tree silent.
+	IsProjectRoot bool
+}
+
 type ProjectedEntry struct {
 	NodeID int64  `json:"id"`
 	Name   string `json:"name"`

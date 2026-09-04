@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"example.com/marmot/internal/domain/cleanup"
+	"example.com/marmot/internal/domain/recommendation"
 	"example.com/marmot/internal/domain/scan"
 	"example.com/marmot/internal/ports"
 )
@@ -1658,6 +1659,114 @@ func (s *Service) nodeAction(snapshotID, nodeID int64, action func(string) (stri
 		return NodeActionResult{Code: "platform_error", Message: err.Error()}, nil
 	}
 	return NodeActionResult{OK: true, Code: "ok", Message: "操作已交给 macOS", Path: path}, nil
+}
+
+// NodeDescription is what the local catalog can say about one object: no
+// advisor, no network, and no I/O beyond the snapshot already in memory.
+//
+// It exists because a list of paths and sizes never answers the question a
+// person actually has in front of a 8 GB directory -- what is this, and what
+// happens if it goes. The catalog requires WhatBreaks and HowToRestore on every
+// rule, so when a rule matches there is an answer to give.
+type NodeDescription struct {
+	NodeID int64  `json:"nodeId"`
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Path   string `json:"path"`
+	// Nodes and NewestModified are facts about the object itself and are always
+	// filled. AgeKnown is false when the subtree was too large to walk, and then
+	// no rule with a staleness condition was allowed to fire: an age answered
+	// from a partial maximum would be a guess wearing a number.
+	Nodes          int64     `json:"nodes"`
+	NewestModified time.Time `json:"newestModified"`
+	AgeKnown       bool      `json:"ageKnown"`
+	// IsProjectRoot is the one thing worth saying about a directory the catalog
+	// does not name. No rule matches a source tree -- the catalog is about what
+	// is cleanable -- and "this is where a piece of work lives" is exactly what
+	// a person needs before deleting it.
+	IsProjectRoot bool `json:"isProjectRoot"`
+
+	// Rule is what the catalog recognised this as, empty when nothing did.
+	//
+	// Empty means "no rule matched". It does NOT mean the object is disposable,
+	// and the UI must not render it as one -- the catalog only ever speaks about
+	// what it recognises, and inverting silence into a reassurance is exactly the
+	// fabrication ADR-0061 §7 refuses.
+	Rule         string `json:"rule"`
+	Category     string `json:"category"`
+	Recovery     string `json:"recovery"`
+	Risk         string `json:"risk"`
+	WhatBreaks   string `json:"whatBreaks"`
+	HowToRestore string `json:"howToRestore"`
+	// Manual objects are root-owned. The finding is still worth making -- nobody
+	// can act on what they were never told about -- but this tool will not take
+	// admin rights to do it (ADR-0065), so the command comes with it.
+	Manual  bool   `json:"manual"`
+	Command string `json:"command"`
+
+	// Protection is the hard guard: why this may not be deleted at all. System
+	// trees, home folder roots, volume roots. Empty when it may.
+	Protection string `json:"protection"`
+	// The advisory guards, each a reason or empty. Empty is not a promise, for
+	// the same reason an empty Rule is not one.
+	Irreplaceable  string `json:"irreplaceable"`
+	PartialInstall string `json:"partialInstall"`
+	LoginState     string `json:"loginState"`
+}
+
+// DescribeNode answers what one object is, from the local rule catalog alone.
+//
+// Every input is already in memory: the node comes from the snapshot, the
+// guards are string matches on its path, and the age is one walk of its
+// subtree. Nothing here calls out and nothing touches the disk, which is what
+// makes it answerable while a pointer rests on a row.
+func (s *Service) DescribeNode(snapshotID, nodeID int64) (NodeDescription, error) {
+	if snapshotID <= 0 || nodeID <= 0 {
+		return NodeDescription{}, errors.New("snapshot and node are required")
+	}
+	node, err := s.store.NodeByID(snapshotID, nodeID)
+	if err != nil {
+		return NodeDescription{}, err
+	}
+	facts, err := s.store.SubtreeFacts(snapshotID, nodeID)
+	if err != nil {
+		return NodeDescription{}, err
+	}
+	description := NodeDescription{
+		NodeID: node.ID, Name: node.Name, Kind: node.Kind, Path: node.Path,
+		Nodes: facts.Nodes, NewestModified: facts.NewestModified, AgeKnown: !facts.Truncated,
+		IsProjectRoot:  facts.IsProjectRoot,
+		Protection:     cleanup.DeleteBlock(node.Path),
+		Irreplaceable:  recommendation.IrreplaceableReason(node.Path),
+		PartialInstall: recommendation.PartialInstallReason(node.Path),
+		LoginState:     recommendation.LoginStateReason(node.Path),
+	}
+	// Zero, not a guess, when the walk was truncated: every staleness condition
+	// is a minimum, so an unknown age abstains instead of matching.
+	var age int64
+	if !facts.Truncated && !facts.NewestModified.IsZero() {
+		age = int64(time.Since(facts.NewestModified).Hours() / 24)
+		if age < 0 {
+			age = 0
+		}
+	}
+	// ProjectIdleDays is NoProject here. Deciding it needs the whole evidence set
+	// -- the ancestor chain up to a project root -- and no rule in the catalog
+	// conditions on it, so asking for that set would be work for nothing. If one
+	// ever does, this is the line that has to grow.
+	if rule := recommendation.Match(recommendation.MatchContext{
+		Path: node.Path, Kind: node.Kind, AgeDays: age, ProjectIdleDays: recommendation.NoProject,
+	}); rule != nil {
+		description.Rule = rule.Name
+		description.Category = rule.Category
+		description.Recovery = string(rule.Recovery)
+		description.Risk = string(rule.Risk)
+		description.WhatBreaks = rule.WhatBreaks
+		description.HowToRestore = rule.HowToRestore
+		description.Manual = rule.Manual
+		description.Command = rule.Command
+	}
+	return description, nil
 }
 
 func (s *Service) CreateCleanupPlan(request CleanupPlanRequest) (CleanupPlan, error) {

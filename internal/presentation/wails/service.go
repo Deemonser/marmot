@@ -3,6 +3,7 @@ package wails
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"example.com/marmot/internal/application"
 	"example.com/marmot/internal/domain/scan"
@@ -634,6 +635,50 @@ func (s *Service) GetNodeEntry(snapshotID, nodeID int64) (MapEntry, error) {
 		return MapEntry{}, err
 	}
 	return mapEntry(entry), nil
+}
+
+// NodeDescription mirrors the application type. An empty Rule means the local
+// catalog recognised nothing, which the UI must not render as "safe to delete".
+type NodeDescription struct {
+	NodeID         int64     `json:"nodeId"`
+	Name           string    `json:"name"`
+	Kind           string    `json:"kind"`
+	Path           string    `json:"path"`
+	Nodes          int64     `json:"nodes"`
+	NewestModified time.Time `json:"newestModified"`
+	AgeKnown       bool      `json:"ageKnown"`
+	IsProjectRoot  bool      `json:"isProjectRoot"`
+	Rule           string    `json:"rule"`
+	Category       string    `json:"category"`
+	Recovery       string    `json:"recovery"`
+	Risk           string    `json:"risk"`
+	WhatBreaks     string    `json:"whatBreaks"`
+	HowToRestore   string    `json:"howToRestore"`
+	Manual         bool      `json:"manual"`
+	Command        string    `json:"command"`
+	Protection     string    `json:"protection"`
+	Irreplaceable  string    `json:"irreplaceable"`
+	PartialInstall string    `json:"partialInstall"`
+	LoginState     string    `json:"loginState"`
+}
+
+// DescribeNode is answered from the snapshot and the local catalog, so it is
+// cheap enough to ask while a pointer rests on a row.
+func (s *Service) DescribeNode(snapshotID, nodeID int64) (NodeDescription, error) {
+	description, err := s.application.DescribeNode(snapshotID, nodeID)
+	if err != nil {
+		return NodeDescription{}, err
+	}
+	return NodeDescription{
+		NodeID: description.NodeID, Name: description.Name, Kind: description.Kind, Path: description.Path,
+		Nodes: description.Nodes, NewestModified: description.NewestModified, AgeKnown: description.AgeKnown,
+		IsProjectRoot: description.IsProjectRoot,
+		Rule:          description.Rule, Category: description.Category, Recovery: description.Recovery, Risk: description.Risk,
+		WhatBreaks: description.WhatBreaks, HowToRestore: description.HowToRestore,
+		Manual: description.Manual, Command: description.Command,
+		Protection: description.Protection, Irreplaceable: description.Irreplaceable,
+		PartialInstall: description.PartialInstall, LoginState: description.LoginState,
+	}, nil
 }
 
 func (s *Service) PreviewNode(snapshotID, nodeID int64) (NodeActionResult, error) {

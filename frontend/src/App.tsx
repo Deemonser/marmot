@@ -3,8 +3,8 @@ import { paintMorph, clearMorphStyles, planMorph, arcPath, morphDuration, morphA
 import type { ArcGeom, MorphPlan } from "./morph";
 import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstHiddenSpace, sunburstEndAngle, previewDwellMs, previewLeaveMs } from "./sunburst";
 import type { HueBand } from "./sunburst";
-import { autoStageable, bulkCandidates, inlineRiskReasons, riskReasonLabel, sourceLabel, stageSummary } from "./advice";
 import { countdownDigit, countdownFraction, deleteFraction, progressHoldMs, ringOffset } from "./countdown";
+import { factsLine, guardLines, hasVerdict, recoveryLabel } from "./describe";
 import { useNotice, NoticeToast } from "./useNotice";
 import { meterColor } from "./meter";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
@@ -21,11 +21,8 @@ type ScanProgress = Models.ScanProgress;
 type PermissionStatus = Models.PermissionStatus;
 type StorageSourceOverview = Models.StorageSourceOverview;
 type CleanupPlan = Models.CleanupPlan;
+type NodeDescription = Models.NodeDescription;
 type CleanupValidation = Models.CleanupValidation;
-type Advice = Models.Advice;
-type AdviceItem = Models.AdviceItem;
-type EvidencePreview = Models.EvidencePreview;
-type AdvisorStatus = Models.AdvisorStatus;
 // hue is the level's slice of the colour wheel, carried on the crumb so
 // navigating up restores exactly the colours that level had on the way down.
 // HueBand is the stretch of the colour wheel a level's children are spread over.
@@ -48,6 +45,10 @@ type Breadcrumb = { id: number; path: string; name: string; hue: HueBand; endAng
 // subtree, so nothing has to be fetched.
 type HoverPreview = {
   key: string;
+  // The node the arc stands for. A description is asked for by id, so the panel
+  // can explain an outer ring's arc without the projection ever carrying a path
+  // (ADR-0048, DDD invariant 17): an id explains, a path authorises.
+  nodeId: number;
   name: string;
   size: number;
   children: ProjectedEntry[];
@@ -305,28 +306,6 @@ function formatBytes(value: number): string {
   return (text.endsWith(".0") ? text.slice(0, -2) : text) + " " + units[unit];
 }
 
-// The three answers to "what does it cost me to get this back". Recovery is
-// deliberately separate from risk: a 40 GB build directory is regenerable and
-// deleting it still costs an hour of rebuilding, and the user is entitled to
-// know which of the two they are being asked to accept.
-// Formal wording, on request: the first cut ("删了就没了") read as chat, not as a
-// label on a tool that deletes things for good. Each label names the fact
-// without softening it: whether it comes back, and how much scrutiny it needs.
-const recoveryLabels: Record<string, string> = {
-  regenerable: "可自动重建",
-  redownloadable: "可重新下载",
-  irreplaceable: "不可恢复",
-};
-
-// Settled with the user after two rounds: "安全" says there is nothing to
-// weigh (a "低风险" grade still reads as a warning), "需确认" names the action,
-// and only the last one carries the word 风险.
-const riskLabels: Record<string, string> = {
-  safe: "安全",
-  review: "需确认",
-  risky: "高风险",
-};
-
 // Home paths are shown the way the shell writes them. Only the display is
 // abbreviated: what gets sent to CreateCleanupPlan is always the real path.
 function homePath(path: string): string {
@@ -340,56 +319,6 @@ function homePath(path: string): string {
 // leads: it is the axis that decides whether a suggestion is frightening --
 // reinstalling a toolchain costs a download, losing a photo library costs the
 // photos. Risk follows it.
-// Both lists draw the tier as a coloured dot on the row's left mark, so the word
-// for it is only worth its space at 高风险 -- the one tier that should be loud.
-function AdviceTags({ item }: { item: AdviceItem }) {
-  // The code Assess adds when the model was below its confidence threshold. The
-  // threshold itself stays on the Go side: this reads its conclusion.
-  const unsure = (item.riskReasons ?? []).includes("advisor_uncertain");
-  return (
-    <>
-      {item.source === "advisor"
-        ? <><span className="advice-tag">{item.category}</span><span className={"advice-tag is-ai" + (unsure ? " is-unsure" : "")} title={unsure ? "AI 对这一条把握不足" : undefined}>{sourceLabel(item)}</span></>
-        : <span className="advice-tag">{sourceLabel(item)}</span>}
-      <span className={"advice-tag is-recovery recovery-" + item.recovery}>
-        {recoveryLabels[item.recovery] ?? item.recovery}
-      </span>
-      {item.risk === "risky" && <span className="advice-tag is-tier tier-risky">{riskLabels.risky}</span>}
-      {/* Why the tier is what it is (ADR-0067 §5). Only the reasons that carry a
-          decision ride inline; the detail view lists them all. */}
-      {inlineRiskReasons(item.riskReasons).map((code) => (
-        <span key={code} className={"advice-tag is-reason reason-" + code}>{riskReasonLabel(code)}</span>
-      ))}
-    </>
-  );
-}
-
-// The reasoning behind a suggestion. One rendering for 待确认 and 已收集: the
-// reason travels with the object rather than staying behind in the list it left.
-function AdviceDetail({ item }: { item: AdviceItem }) {
-  return (
-    <dl className="advice-detail">
-      <dt>依据</dt>
-      <dd>{(item.evidence ?? []).join(" · ") || "—"}</dd>
-      {(item.riskReasons ?? []).length > 0 && <>
-        <dt>判定依据</dt>
-        <dd>{(item.riskReasons ?? []).map(riskReasonLabel).join(" · ")}</dd>
-      </>}
-      <dt>删除后</dt>
-      <dd>{item.whatBreaks}</dd>
-      <dt>如何恢复</dt>
-      <dd>{item.howToRestore}</dd>
-      {item.manual && <>
-        <dt>手动执行</dt>
-        {/* The command, verbatim and selectable. This app will not ask for admin
-            rights to delete files: the blast radius of a cleanup tool running as
-            root is in a different league (ADR-0065). */}
-        <dd><code className="advice-command">{item.command}</code></dd>
-      </>}
-    </dl>
-  );
-}
-
 function confidenceLabel(confidence: string): string {
   return ({ exact: "精确", estimated: "估算", partial: "部分结果", unknown: "未知" } as Record<string, string>)[confidence] ?? "待确认";
 }
@@ -784,6 +713,7 @@ function Sunburst({
         band: own,
         preview: item.aggregate ? null : {
           key: item.key,
+          nodeId: itemId,
           name: (item as { name?: string }).name ?? "",
           size: item.size,
           children: item.children,
@@ -1333,6 +1263,7 @@ function DirectoryList({
   focusedKey,
   selectedKey,
   contextEntry,
+  description,
   inCollector,
   onHover,
   onFocus,
@@ -1359,6 +1290,7 @@ function DirectoryList({
   focusedKey: string | null;
   selectedKey: string | null;
   contextEntry: MapEntry | null;
+  description: NodeDescription | null;
   inCollector: boolean;
   onHover: (entry: MapEntry | null) => void;
   onFocus: (entry: MapEntry) => void;
@@ -1450,32 +1382,62 @@ function DirectoryList({
           );
         })}
       </div>
-      {/* Root level only: the free-space rows the original shows under the
-          entries. Both rows read the same value until we have a separate source
-          for purgeable space — inventing a difference would be a fabrication
-          (ADR-0052 §5). */}
-      {parent?.parentId === 0 && (map?.volumeFreeBytes ?? 0) > 0 && (
-        <div className="directory-summary">
-          <div className="summary-row">
-            <span className="summary-mark">●</span>
-            <span className="summary-name">实际可用空间</span>
-            <span className="summary-size">{formatBytes(map!.volumeFreeBytes)}</span>
-          </div>
-          <div className="summary-row">
-            <span className="summary-mark">~</span>
-            <span className="summary-name">实际可用 + 可清除</span>
-            <span className="summary-size">{formatBytes(map!.volumeFreeBytes)}</span>
-          </div>
-        </div>
-      )}
-      {/* The result is incomplete -- permissions, cloud placeholders, a cancelled
-          run. DDD invariant 5 requires that be visible, so it cannot simply be
-          dropped; it moved out of the heading, where it sat as a badge next to
-          the volume name, down to where the unaccounted space is already
-          explained. */}
-      {(map?.confidence ?? parent?.confidence) === "partial" && (
-        <p className="directory-partial">部分结果：有目录未能完整读取，未计入的空间归入隐藏空间。</p>
-      )}
+      {/* What the object under the pointer is, from the local rule catalog. This
+          replaced two free-space rows that used to sit here, which were volume
+          facts at the foot of a directory listing -- and which printed the same
+          number twice, because purgeable space has no separate source yet
+          (ADR-0052 §5). A directory listing's footer should describe the
+          directory.
+
+          Fixed height with its own scroll: the list above is `flex: 0 1 auto`,
+          so a footer that grew with its content would resize the list under the
+          pointer that is driving it.
+
+          Everything is read from `description` and nothing is mixed with the
+          currently hovered entry, so the block is always internally consistent
+          -- the name and the verdict always describe the same object -- at the
+          cost of trailing the pointer by one settle interval. */}
+      <div className="directory-describe">
+        {description ? (
+          <>
+            <p className="describe-name">{description.name}</p>
+            <p className="describe-facts">{factsLine(description, new Date())}</p>
+            {(description.rule || description.isProjectRoot) && (
+              <p className="describe-rule">
+                {description.rule && <span className="describe-tag">{description.rule}</span>}
+                {recoveryLabel(description.recovery) && (
+                  <span className={"describe-tag recovery-" + description.recovery}>
+                    {recoveryLabel(description.recovery)}
+                  </span>
+                )}
+                {/* Root-owned: worth saying, and this tool will not take admin
+                    rights to act on it (ADR-0065). */}
+                {description.manual && <span className="describe-tag is-manual">需管理员权限</span>}
+                {/* No cleanup rule names a source tree, because the catalog is
+                    about what is disposable. This is the one true thing left to
+                    say, and it is the thing that matters most before a delete. */}
+                {description.isProjectRoot && <span className="describe-tag is-project">项目目录</span>}
+              </p>
+            )}
+            {description.whatBreaks && <p className="describe-breaks">{description.whatBreaks}</p>}
+            {description.howToRestore && <p className="describe-restore">{description.howToRestore}</p>}
+            {guardLines(description).map((line) => (
+              <p key={line} className="describe-guard">{line}</p>
+            ))}
+            {/* Nothing is known. Said plainly, because the alternative -- printing
+                nothing, or worse printing a reassurance -- is what makes an
+                unrecognised 8 GB directory look approved. The condition has one
+                definition, in describe.ts, so a new signal cannot be added
+                without this line learning about it. */}
+            {!hasVerdict(description) && (
+              <p className="describe-unknown">本机规则不认识这一项，删除前请自行确认。</p>
+            )}
+          </>
+        ) : (
+          <p className="describe-idle">把指针停在一项上，这里说明它是什么。</p>
+        )}
+      </div>
+
       {contextEntry?.displayState === "stale" && (
         <p className="context-warning">{displayStateLabel(contextEntry.displayState)}，当前对象需要重新读取。</p>
       )}
@@ -1600,73 +1562,18 @@ export default function App() {
   const [selectedEntry, setSelectedEntry] = useState<MapEntry | null>(null);
   const [staleEntry, setStaleEntry] = useState<MapEntry | null>(null);
   const [collector, setCollector] = useState<MapEntry[]>([]);
-  const [advice, setAdvice] = useState<Advice | null>(null);
-  const [adviceOpen, setAdviceOpen] = useState(false);
-  const [adviceBusy, setAdviceBusy] = useState(false);
-  // Which suggestion has its reasoning open. One at a time: the panel is a list
-  // to scan, and the explanation is what you open when a row is worth deciding.
-  const [adviceDetail, setAdviceDetail] = useState<number | null>(null);
-  // Why the last analysis produced nothing. Without it the header read "没有结果"
-  // after a failed call -- a false statement about the disk, with the real reason
-  // only in a transient notice.
-  const [adviceError, setAdviceError] = useState("");
-  const [adviceStaged, setAdviceStaged] = useState({ added: 0, bytes: 0 });
-  // Paths the user took back out of the dock. A suggestion returns to 待确认
-  // wearing this mark, and the bulk button skips it: the button acts on a list
-  // the user can see, and re-adding what they just removed would break that
-  // (ADR-0066 §2). Cleared by a fresh analysis and by a completed deletion.
-  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
-  // Which collected row has its suggestion's reasoning open -- the same detail
-  // block 待确认 shows, so the reason travels with the object (ADR-0066 §1).
-  const [collectorDetail, setCollectorDetail] = useState<string | null>(null);
-  // The badge in the action bar folds the panel body -- both sections -- down to
-  // the bar itself, and folded is the default: the reference answers a drop with
-  // the amount in the badge and "GB 已收集" in the bar, not with the list. The
-  // badge unfolds it on demand. A new analysis, and 全部加入 from one, do unfold
-  // it: those put things in the dock the user has not seen one by one.
+  // The badge in the action bar folds the panel body down to the bar itself, and
+  // folded is the default: the reference answers a drop with the amount in the
+  // badge and "GB 已收集" in the bar, not with the list. The badge unfolds it.
   const [dockOpen, setDockOpen] = useState(false);
   // Emptied -- the last row removed, or the plan carried out -- the dock goes
-  // back to its folded default rather than staying open on nothing. Not while
-  // 待确认 is showing: emptying 已收集 by moving a row back up must not fold the
-  // list it moved to.
-  const pendingShowing = (Boolean(adviceError) || advice !== null) && adviceOpen;
+  // back to its folded default rather than staying open on nothing.
   useEffect(() => {
-    if (collector.length === 0 && !pendingShowing) setDockOpen(false);
-  }, [collector.length, pendingShowing]);
+    if (collector.length === 0) setDockOpen(false);
+  }, [collector.length]);
   // A dock row is hovered whose node is not on the current level: the wheel
   // breathes the projected arc by id instead.
   const [breathingNodeId, setBreathingNodeId] = useState<number | null>(null);
-  // The advisor round is a separate wait from the rule pass, and it must not
-  // block it. Measured against deepseek-v4-flash: the rule layer is under a
-  // second, the model round was 235 seconds.
-  const [advisorBusy, setAdvisorBusy] = useState(false);
-  const [advisorSeconds, setAdvisorSeconds] = useState(0);
-  // A transport failure or a refused key, as opposed to advice.advisorError which
-  // the backend reports when the round itself came back unusable. Kept apart from
-  // adviceError so a failed AI round never overwrites a good rule result.
-  const [advisorFault, setAdvisorFault] = useState("");
-  // A four-minute wait with no moving number is indistinguishable from a hang,
-  // and the first thing it costs is the user's trust that the button did anything.
-  useEffect(() => {
-    if (!advisorBusy) return;
-    setAdvisorSeconds(0);
-    const started = Date.now();
-    const timer = window.setInterval(() => setAdvisorSeconds(Math.round((Date.now() - started) / 1000)), 1000);
-    return () => window.clearInterval(timer);
-  }, [advisorBusy]);
-  const [evidence, setEvidence] = useState<EvidencePreview | null>(null);
-  const [advisor, setAdvisor] = useState<AdvisorStatus | null>(null);
-  const [advisorOpen, setAdvisorOpen] = useState(false);
-  // Meant to be on and is not: a configuration is saved with the switch on, yet
-  // no advisor is installed. The reason is in fault. This is the state the app
-  // used to fall into silently at startup when the key was missing.
-  const advisorFaulted = !!advisor && advisor.saved && advisor.enabled && !advisor.configured && !!advisor.fault;
-  const [advisorForm, setAdvisorForm] = useState({ baseUrl: "https://api.deepseek.com", model: "", jsonMode: "json_object", reasoningEffort: "disabled", apiKey: "" });
-  const [advisorSaving, setAdvisorSaving] = useState(false);
-  // The in-flight analysis, kept so it can be cancelled. Wails returns a
-  // cancellable promise, so stopping is a real cancellation of the request
-  // rather than discarding a result that still gets paid for.
-  const adviceCall = useRef<{ cancel: () => void } | null>(null);
   // Where a deletion has got to. Moving to the trash was a rename and finished
   // before the UI could show anything; deleting unlinks every file, so a 18.5 GB
   // cache takes as long as it takes and silence reads as a hang.
@@ -1746,7 +1653,6 @@ export default function App() {
   const dockLocked = countdown !== null || deleting;
   const [ringFraction, setRingFraction] = useState(1);
   const collectorRef = useRef<HTMLElement | null>(null);
-  const pendingRef = useRef<HTMLElement | null>(null);
   const mapRequest = useRef(0);
   // Same guard for the source list: a mount event can start a second read while
   // a slow first one (diskutil per never-seen volume) is still out, and the
@@ -1817,21 +1723,38 @@ export default function App() {
     };
   }, [hoverPreview]);
   const inspectedInCollector = inspectorEntry ? collector.some((item) => entryKey(item) === entryKey(inspectorEntry)) : false;
+  // What the catalog says about the inspected object. Asked for on the backend
+  // because the catalog lives there: the rules need the snapshot's own view of
+  // the subtree (its age), and the outer rings' projected entries carry no path
+  // by design (ADR-0048) -- only a node id, which is exactly what this takes.
+  const [description, setDescription] = useState<NodeDescription | null>(null);
+  const describeCall = useRef<{ cancel: () => void } | null>(null);
+  // The description is anchored to the list's own heading, which is the one
+  // thing in this panel that already names the object on screen: the previewed
+  // arc while the pointer is on the wheel, the current directory otherwise. One
+  // source, so the two halves of the panel cannot disagree about what is under
+  // discussion, and no precedence to get wrong. See the <h2> in DirectoryList --
+  // it is the same expression.
+  const previewNodeId = hoverPreview?.nodeId ?? 0;
+  const describedNodeId = previewNodeId > 0 ? previewNodeId : currentParent?.id ?? 0;
+  const describedSnapshotId = status?.snapshotId ?? cachedStatus?.snapshotId ?? 0;
+  useEffect(() => {
+    describeCall.current?.cancel();
+    if (describedNodeId <= 0 || describedSnapshotId <= 0) {
+      setDescription(null);
+      return;
+    }
+    // No debounce here. The only thing that moves this is the heading, and the
+    // heading is already debounced upstream by previewDwellMs -- damping a
+    // damped signal is what made the block feel a third of a second behind the
+    // list it exists to agree with.
+    const call = MarmotService.DescribeNode(describedSnapshotId, describedNodeId);
+    describeCall.current = call;
+    // A failure leaves the block empty rather than notifying: this is an
+    // explanation nobody asked for out loud, and it must not interrupt.
+    call.then(setDescription).catch(() => setDescription(null));
+  }, [describedNodeId, describedSnapshotId]);
   const collectorBytes = collector.reduce((sum, item) => sum + entrySize(item), 0);
-  // Path is the one identity a collected entry and an AdviceItem share, so it is
-  // how the dock's two sections agree on which objects are in which (ADR-0066).
-  const collectedPaths = useMemo(() => new Set(collector.map((item) => entryNode(item)?.path ?? "")), [collector]);
-  const adviceByPath = useMemo(() => {
-    const index = new Map<string, AdviceItem>();
-    for (const item of advice?.items ?? []) index.set(item.path, item);
-    return index;
-  }, [advice]);
-  // 待确认: every suggestion not yet in the dock, manual ones included -- they
-  // stay here for good, with the command, since this app will not run them.
-  const pendingAdvice = useMemo(
-    () => (advice?.items ?? []).filter((item) => !collectedPaths.has(item.path)),
-    [advice, collectedPaths],
-  );
   // Staged in the dock, or on its way there while its lookup runs. These arcs
   // stay drawn: the object is still on disk until the dock's own action runs, so
   // an empty slot would overstate it, and in a space map the slot's position is
@@ -2039,22 +1962,6 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    MarmotService.GetAdvisorStatus()
-      .then((status) => {
-        setAdvisor(status);
-        if (status.settings?.baseUrl) {
-          setAdvisorForm((form) => ({
-            ...form,
-            baseUrl: status.settings.baseUrl || form.baseUrl,
-            model: status.settings.model || form.model,
-            jsonMode: status.settings.jsonMode || form.jsonMode,
-            reasoningEffort: status.settings.reasoningEffort ?? form.reasoningEffort,
-          }));
-        }
-      })
-      .catch(() => undefined);
-  }, []);
 
   const sourceRows = Math.max(1, Math.min(storageSources.length, maxVisibleSourceRows));
   const sourceAlert = Boolean(permission && permission.state !== "available");
@@ -2274,11 +2181,6 @@ export default function App() {
     setSelectedEntry(null);
     setStaleEntry(null);
     setCollector([]);
-    setAdvice(null);
-    setAdviceOpen(false);
-    setAdviceDetail(null);
-    setDismissed(new Set());
-    setCollectorDetail(null);
     setPlan(null);
     setValidation(null);
     try {
@@ -2417,11 +2319,9 @@ export default function App() {
   function overDock(x: number, y: number): boolean {
     const rect = collectorRef.current?.getBoundingClientRect();
     if (!rect) return false;
-    // 待确认 is part of the dock but not a drop target: its own rows start
-    // drags, and a press that wandered four pixels inside it must not count as
-    // "dropped into the dock". The drop is onto 已收集 or the action bar.
-    const pending = pendingRef.current?.getBoundingClientRect();
-    if (pending && x >= pending.left && x <= pending.right && y >= pending.top && y <= pending.bottom) return false;
+    // The hole punched here for 待确认 -- part of the dock but not a drop target,
+    // since its own rows started drags -- went with that section. The whole dock
+    // is a drop target again.
     return x >= rect.left - dropSlack && x <= rect.right + dropSlack
       && y >= rect.top - dropSlack && y <= rect.bottom + dropSlack;
   }
@@ -2512,185 +2412,7 @@ export default function App() {
     }
   }
 
-  // Advice always includes the local rule layer. When an advisor is configured
-  // the same call adds its suggestions, tagged by source; when one is not, the
-  // rule layer is the whole answer and nothing leaves the machine.
-  // Two passes, shown as they finish rather than together. The rule layer needs
-  // no network and takes under a second; holding it back until a 235-second model
-  // round returns meant staring at a spinner while 73.8 GB of deterministic,
-  // already-computed answers sat behind it. The model is now an addition that
-  // lands late, not a gate on the part that was ready.
-  async function runAdvice() {
-    const snapshotId = mapRef.current?.snapshotId ?? status?.snapshotId ?? 0;
-    if (snapshotId <= 0) {
-      notify("请先完成一次扫描。");
-      return;
-    }
-    setAdviceError("");
-    setAdvisorFault("");
-    setAdviceStaged({ added: 0, bytes: 0 });
-    // A fresh analysis is a fresh start: what was declined last time is not held
-    // against the new list.
-    setDismissed(new Set());
-    setAdviceBusy(true);
-    try {
-      const rules = await MarmotService.GetCleanupAdvice(snapshotId);
-      setAdvice(rules);
-      // Only now. The rule pass is well under a second, and opening the dock on
-      // the click put an empty 分析中… card on screen for that moment -- a state
-      // with nothing in it, saying what the button already said. The dock opens
-      // when it has something to show. A re-analysis keeps the previous list up
-      // meanwhile, so nothing flashes empty either.
-      setAdviceOpen(true);
-      setDockOpen(true);
-      // The deterministic half of the answer needs no further decision from the
-      // user, so it does not wait for one.
-      setAdviceStaged(await stageAdviceItems((rules.items ?? []).filter(autoStageable), rules.snapshotId));
-    } catch (error) {
-      setAdviceError(String(error));
-      notify("分析失败：" + String(error));
-      // A failure is something to show, so the panel opens for it.
-      setAdviceOpen(true);
-      setDockOpen(true);
-      return;
-    } finally {
-      setAdviceBusy(false);
-    }
-    if (!advisor?.configured) return;
-
-    setAdvisorBusy(true);
-    const call = MarmotService.RunAdvisorAnalysis(snapshotId);
-    adviceCall.current = call;
-    try {
-      // The merged result contains the rule pass, so it supersedes it. Staging is
-      // deliberately NOT repeated: the rule items are already in the dock, and
-      // re-staging would put back anything the user removed while waiting.
-      setAdvice(await call);
-    } catch (error) {
-      // A cancelled round is not a failure and does not need a notice.
-      if (!String(error).includes("cancel")) {
-        setAdvisorFault(String(error));
-        notify("AI 分析失败：" + String(error));
-      }
-    } finally {
-      adviceCall.current = null;
-      setAdvisorBusy(false);
-    }
-  }
-
-  // stageAdviceItems puts suggestions in the dock through exactly the checks a
-  // manual drop goes through: a protected object, an aggregate, or one that
-  // changed under us is refused whether a rule named it or a hand dragged it.
-  // Staging is not authorisation -- the dock still needs the delete press, its
-  // countdown, and the plan's own re-validation of every path.
-  async function stageAdviceItems(items: AdviceItem[], snapshotId: number) {
-    const pending = items.filter((item) => !isCollected(item));
-    if (snapshotId <= 0 || pending.length === 0) return { added: 0, bytes: 0 };
-    const entries = await Promise.all(
-      pending.map((item) => MarmotService.GetNodeEntry(snapshotId, item.nodeId).catch(() => null)),
-    );
-    const staged: MapEntry[] = [];
-    let bytes = 0;
-    entries.forEach((entry, index) => {
-      if (!entry || entry.protection || !hasCapability(entry, "collect") || !entryNode(entry)) return;
-      if (staleEntry && entryKey(staleEntry) === entryKey(entry)) return;
-      staged.push(entry);
-      bytes += pending[index].reclaimableBytes;
-    });
-    if (staged.length > 0) {
-      setDockOpen(true);
-      setCollector((current) => {
-        const known = new Set(current.map(entryKey));
-        return current.concat(staged.filter((entry) => !known.has(entryKey(entry))));
-      });
-    }
-    return { added: staged.length, bytes };
-  }
-
-  // The bulk action for everything automatic staging deliberately left behind.
-  // Explicit, on a list already on screen -- which is the difference between this
-  // and pre-filling the cart with items that say "look at me".
-  async function stageRemainingAdvice() {
-    if (!advice) return;
-    const staged = await stageAdviceItems(
-      bulkCandidates(advice.items ?? [], isCollected, dismissed),
-      advice.snapshotId,
-    );
-    notify(staged.added > 0
-      ? "已加入 " + staged.added + " 项 · " + formatBytes(staged.bytes)
-      : "没有可加入的项。");
-  }
-
-  function stopAdvice() {
-    adviceCall.current?.cancel();
-    adviceCall.current = null;
-    setAdvisorBusy(false);
-  }
-
-  async function saveAdvisor() {
-    setAdvisorSaving(true);
-    try {
-      const next = await MarmotService.ConfigureAdvisor(
-        {
-          provider: "openai_compatible", baseUrl: advisorForm.baseUrl, model: advisorForm.model,
-          jsonMode: advisorForm.jsonMode, reasoningEffort: advisorForm.reasoningEffort, disabled: false,
-        },
-        advisorForm.apiKey,
-      );
-      setAdvisor(next);
-      // The key is never read back, so it must not linger in the form either.
-      setAdvisorForm((form) => ({ ...form, apiKey: "" }));
-      setAdvisorOpen(false);
-      notify("已保存并启用 AI 分析：" + next.description);
-    } catch (error) {
-      notify("保存失败：" + String(error));
-    } finally {
-      setAdvisorSaving(false);
-    }
-  }
-
-  async function toggleAdvisor(enabled: boolean) {
-    setAdvisorSaving(true);
-    try {
-      const next = await MarmotService.SetAdvisorEnabled(enabled);
-      setAdvisor(next);
-      if (!enabled) notify("已关闭 AI 分析，仅使用本机规则。");
-      else if (next.configured) notify("已开启 AI 分析：" + next.description);
-      else notify("AI 未能开启：" + next.fault);
-    } catch (error) {
-      notify("切换失败：" + String(error));
-    } finally {
-      setAdvisorSaving(false);
-    }
-  }
-
-  async function clearAdvisor() {
-    try {
-      await MarmotService.ClearAdvisor();
-      setAdvisor(await MarmotService.GetAdvisorStatus());
-      notify("已删除 AI 配置和 key，仅使用本机规则。");
-    } catch (error) {
-      notify("清除失败：" + String(error));
-    }
-  }
-
-  // A suggestion carries a node id and a path for display, and neither
-  // authorises anything. Collecting one goes back to the snapshot for the real
-  // entry -- the same route an arc from an outer ring takes, and the place
-  // capabilities and protection are decided (ADR-0061 §1).
-  // One definition, used by the row's badge and by staging. Two copies of "is
-  // this already in the dock" would eventually disagree, and the visible symptom
-  // would be a suggestion staged twice or a badge that lies.
-  function isCollected(item: AdviceItem): boolean {
-    return collectedPaths.has(item.path);
-  }
-
-  // Hovering a dock row points at the object on the wheel (ADR-0066 §3). On the
-  // current level that is the entry itself, which also lights its list row; on a
-  // deeper ring only the id is known, and the wheel breathes the projected arc.
-  // Highlight only, never scroll: a hover that drags the list around takes the
-  // user's eyes off what they were reading.
-  function hoverAdviceNode(nodeId: number | null) {
+  function hoverNode(nodeId: number | null) {
     if (nodeId === null) {
       setHoveredEntry(null);
       setBreathingNodeId(null);
@@ -2699,45 +2421,6 @@ export default function App() {
     const entry = entries.find((candidate) => entryNode(candidate)?.id === nodeId) ?? null;
     setHoveredEntry(entry);
     setBreathingNodeId(entry ? null : nodeId);
-  }
-
-  // A 待确认 row drags like an arc or a directory row: the pointer path, one chip,
-  // one armed state. The source carries the node id and nothing else it did not
-  // already have; the drop looks the entry up in the snapshot the same way an
-  // outer ring's arc does (ADR-0066 §4).
-  function dragAdviceItem(item: AdviceItem, event: ReactPointerEvent) {
-    if (item.manual) return;
-    const entry = entries.find((candidate) => entryNode(candidate)?.id === item.nodeId) ?? null;
-    const key = entry ? entryKey(entry) : "node:" + item.nodeId;
-    beginEntryDrag({
-      key,
-      name: item.name,
-      size: item.reclaimableBytes,
-      color: levelColors[key] ?? "#7fb96a",
-      entry,
-      nodeId: item.nodeId,
-      protection: entry?.protection ?? "",
-    }, event);
-  }
-
-  async function collectAdviceItem(item: AdviceItem) {
-    const snapshotId = advice?.snapshotId ?? 0;
-    if (snapshotId <= 0) return;
-    try {
-      toggleCollector(await MarmotService.GetNodeEntry(snapshotId, item.nodeId), "add");
-    } catch (error) {
-      notify("无法收集该对象：" + String(error));
-    }
-  }
-
-  async function showEvidence() {
-    const snapshotId = advice?.snapshotId ?? mapRef.current?.snapshotId ?? 0;
-    if (snapshotId <= 0) return;
-    try {
-      setEvidence(await MarmotService.PreviewEvidence(snapshotId));
-    } catch (error) {
-      notify("无法生成证据包：" + String(error));
-    }
   }
 
   function activateEntry(entry: MapEntry, geom?: ArcGeom) {
@@ -2844,11 +2527,6 @@ export default function App() {
     setSelectedEntry(null);
     setStaleEntry(null);
     setCollector([]);
-    setAdvice(null);
-    setAdviceOpen(false);
-    setAdviceDetail(null);
-    setDismissed(new Set());
-    setCollectorDetail(null);
     setPlan(null);
     setValidation(null);
     notify("已放弃扫描结果。结果只存在于内存，重新查看需要再扫描一次。");
@@ -2864,7 +2542,6 @@ export default function App() {
       // page remains real, and cachedStatus is set before it so the tile
       // already wears its result badge as it slides in.
       setCachedStatus(status);
-      setAdviceOpen(false);
       try {
         await Window.SetMinSize(minWindowWidth, 0);
       } catch {
@@ -2920,30 +2597,17 @@ export default function App() {
       notify("聚合对象和受限对象不能加入收集区。");
       return;
     }
-    const path = entryNode(entry)?.path ?? "";
     if (!collector.some((item) => entryKey(item) === entryKey(entry))) {
       setCollector((current) => current.some((item) => entryKey(item) === entryKey(entry)) ? current : current.concat(entry));
-      // Collected again after being taken out: the user changed their mind, and
-      // the mark that kept it out of 全部加入 comes off.
-      setDismissed((current) => {
-        if (!current.has(path)) return current;
-        const next = new Set(current);
-        next.delete(path);
-        return next;
-      });
       return;
     }
     if (mode === "add") return;
     setCollector((current) => current.filter((item) => entryKey(item) !== entryKey(entry)));
-    if (collectorDetail === path) setCollectorDetail(null);
     // The row being removed is, as often as not, the row under the pointer: its
     // pointerenter pointed the wheel at this arc, and an unmounted row sends no
     // pointerleave. Without this the arc went on breathing after the cross.
     if (hoveredEntry && entryKey(hoveredEntry) === entryKey(entry)) setHoveredEntry(null);
     if (breathingNodeId !== null && breathingNodeId === entryNode(entry)?.id) setBreathingNodeId(null);
-    // Taken out of the dock by hand. A suggestion goes back to 待确认 with this
-    // mark, and the bulk button skips it (ADR-0066 §2).
-    setDismissed((current) => new Set(current).add(path));
   }
 
   async function previewEntry(entry: MapEntry | null) {
@@ -3074,11 +2738,6 @@ export default function App() {
       if (moved.length > 0) {
         const movedPaths = new Set(moved.map((item) => item.path));
         setCollector((current) => current.filter((entry) => !movedPaths.has(entryNode(entry)?.path ?? "")));
-        setAdvice(null);
-        setAdviceOpen(false);
-        setAdviceDetail(null);
-        setDismissed(new Set());
-        setCollectorDetail(null);
       }
       setCleanupAt(null);
       if (stuck.length === 0) {
@@ -3174,7 +2833,6 @@ export default function App() {
       if (target && ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target.tagName)) return;
       if (event.key === "Escape") {
         dismissNotice();
-        setAdviceOpen(false);
         return;
       }
       if (command && event.key === "ArrowUp") {
@@ -3365,6 +3023,7 @@ export default function App() {
             focusedKey={focusedKey}
             selectedKey={selectedKey}
             contextEntry={inspectorEntry}
+            description={description}
             inCollector={inspectedInCollector}
             onHover={setHoveredEntry}
             onFocus={setFocusedEntry}
@@ -3380,22 +3039,12 @@ export default function App() {
       </main>
     </>
   );
-
-  // The dock's own state, named once (ADR-0066 §1). 待确认 shows while an
-  // analysis is open -- running, failed or done; the panel exists if either
-  // section has something to say.
-  const adviceData = Boolean(adviceError) || advice !== null;
-  // The section stays mounted while there is a result, folded or not, so that
-  // folding is a height transition and not a re-layout: unmounting it snapped
-  // the dock from full height to its compact form in one frame.
-  const dockHasPanel = collector.length > 0 || adviceData;
+  // The panel exists while anything is collected. It used to also exist for an
+  // open analysis, which was the other half of ADR-0066's two-section dock.
+  const dockHasPanel = collector.length > 0;
   // Nothing unfolded above the bar: the panel is then the reference's pill
   // rather than a card, with the badge clear of its left end.
-  const barOnly = !(adviceData && !dockLocked && adviceOpen && dockOpen)
-    && !(!dockLocked && collector.length > 0 && dockOpen);
-  const bulk = advice ? bulkCandidates(advice.items ?? [], isCollected, dismissed) : [];
-  const pendingBytes = pendingAdvice.reduce((sum, item) => sum + item.reclaimableBytes, 0);
-  const pendingDecisions = pendingAdvice.filter((item) => !item.manual).length;
+  const barOnly = !(!dockLocked && collector.length > 0 && dockOpen);
 
   return (
     <div className={"app-shell " + (chromeView === "result" ? "app-shell-result" : "app-shell-source") + (slide ? " is-sliding" : "") + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
@@ -3456,173 +3105,6 @@ export default function App() {
           </div>
         ) : (
           <div className={"collector-panel" + (barOnly ? " is-bar-only" : "")}>
-            {/* 待确认. Hidden with the other list while the set is being acted on: nothing
-                may join the set the plan was built from. */}
-            {adviceData && !dockLocked && (
-              <section
-                ref={pendingRef}
-                className={"dock-section dock-pending" + (adviceOpen && dockOpen ? "" : " is-folded")}
-                aria-label="待确认"
-                aria-hidden={!(adviceOpen && dockOpen) || undefined}
-                inert={!(adviceOpen && dockOpen)}
-              >
-                {/* One child for the section's single grid row, so the fold can
-                    animate the row from 1fr to 0fr -- the content's real height to
-                    nothing -- the same way 已收集 folds below. See .dock-pending. */}
-                <div className="dock-pending-body">
-                <header className="advice-head">
-                  <div>
-                    <p className="eyebrow">待确认</p>
-                    <h3>
-                      {adviceError
-                        ? "分析失败"
-                        : pendingAdvice.length > 0
-                          ? pendingAdvice.length + " 项 · " + formatBytes(pendingBytes)
-                          : (advice?.items ?? []).length > 0 ? "都已在收集区" : "没有结果"}
-                    </h3>
-                  </div>
-                  <div className="advice-head-actions">
-                    {/* What left the machine, byte for byte (ADR-0061 §2). The
-                        run's shape rides on the tooltip; the pack's own header
-                        already states the evidence size and floor. */}
-                    {advice && (
-                      <button
-                        className="quiet-button"
-                        onClick={() => void showEvidence()}
-                        title={advice.rounds > 0
-                          ? "规则 " + advice.ruleItems + " 条 · AI " + advice.advisorItems + " 条 · " + advice.rounds + " 轮"
-                            + (advice.expanded > 0 ? "，深挖 " + advice.expanded + " 处" : "")
-                            + " · " + (advice.inputTokens + advice.outputTokens).toLocaleString() + " token"
-                            + ((advice.rejected ?? []).length > 0 ? "\n已丢弃 " + (advice.rejected ?? []).length + " 条：" + advice.rejectedSummary : "")
-                          : "本轮全部来自本机规则，未联网"}
-                      >查看发送内容</button>
-                    )}
-                    {/* The bulk action for everything automatic staging left
-                        behind and the user has not since declined. Explicit, on
-                        a list already on screen -- which is the difference
-                        between this and pre-filling the cart. */}
-                    {bulk.length > 0 && (
-                      <button className="quiet-button" onClick={() => void stageRemainingAdvice()}>全部加入 {bulk.length} 项</button>
-                    )}
-                    {/* Only the advisor round is stoppable. The rule pass is under
-                        a second, so a stop button on it would be decoration. */}
-                    {advisorBusy
-                      ? <button className="quiet-button" onClick={stopAdvice}>停止 AI</button>
-                      : <button className="quiet-button dock-fold" onClick={() => setAdviceOpen(false)} aria-label="收起" title="收起">
-                          <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2 4.5 6 8.5 10 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                        </button>}
-                  </div>
-                </header>
-
-                {/* One line under the head, and only what changes a decision: what
-                    was staged for you, whether the model is still out, whether it
-                    failed. Run statistics live in the AI settings sheet -- the
-                    list is the point of this section, not its paperwork. */}
-                {/* The AI was meant to run and did not. Said here, on the list it
-                    would have contributed to, not only two clicks away in the
-                    settings sheet. */}
-                {advisorFaulted && (
-                  <p className="advice-summary-line advice-fault">AI 未启用：{advisor?.fault}</p>
-                )}
-                {advice && (advice.items ?? []).length > 0 && (
-                  <p className="advice-summary-line">
-                    {/* Whole sentences, the AI's state first while it is out. Numbers
-                        already on screen -- the timer by 停止 AI, the counts on the
-                        headers and the bulk button -- are not repeated here; the
-                        advisor's discarded count rides on the evidence tooltip. */}
-                    {advisorBusy && (
-                      <span className="advice-waiting">
-                        <span className="advice-spinner" aria-hidden="true" />
-                        AI 仍在分析（{advisorSeconds} 秒），先列出本机规则的结果。
-                      </span>
-                    )}
-                    {!advisorBusy && advisorFault && <span className="advice-fault">AI 未完成：{advisorFault}</span>}
-                    {!advisorBusy && !advisorFault && advice.advisorError && <span className="advice-fault">{advice.advisorError}</span>}
-                    {stageSummary(adviceStaged.added, pendingDecisions)}
-                    {/* The app overrode the model on recoverability -- the one
-                        error class waiting cannot undo. The count belongs here;
-                        the per-case wording is on the tooltip, and every affected
-                        row already wears its corrected tag. */}
-                    {advice.corrections > 0 && (
-                      <span className="advice-corrected" data-tip={advice.correctionSummary}>
-                        已修正 {advice.corrections} 条 AI 的恢复判断。
-                      </span>
-                    )}
-                  </p>
-                )}
-
-                <div className="advice-list">
-                  {adviceError && <p className="advice-empty advice-fault">{adviceError}</p>}
-                  {!adviceError && advice && (advice.items ?? []).length === 0 && (
-                    <p className="advice-empty">没有找到可清理的对象。</p>
-                  )}
-                  {!adviceError && advice && (advice.items ?? []).length > 0 && pendingAdvice.length === 0 && (
-                    <p className="advice-empty">全部建议都已在收集区。</p>
-                  )}
-                  {pendingAdvice.map((item) => {
-                    const open = adviceDetail === item.nodeId;
-                    const wasDismissed = dismissed.has(item.path);
-                    return (
-                      <article
-                        key={item.nodeId}
-                        className={"advice-item risk-" + item.risk + (wasDismissed ? " is-dismissed" : "")}
-                        onPointerEnter={() => hoverAdviceNode(item.nodeId)}
-                        onPointerLeave={() => hoverAdviceNode(null)}
-                        onPointerDown={(event) => dragAdviceItem(item, event)}
-                      >
-                        <div className="advice-row">
-                          {/* The row's left mark is also its action, the way a
-                              collected row's dot is: the tier dot becomes a +
-                              under the pointer, and pressing it collects. One
-                              gesture in the same place in both lists, and the
-                              加入 button's width goes back to the path. A row
-                              needing admin rights cannot be collected, so there
-                              the mark stays a mark. */}
-                          {item.manual
-                            ? <span className="advice-mark"><span className="advice-risk" aria-hidden="true" /></span>
-                            : <button
-                                className="advice-add"
-                                onClick={() => void collectAdviceItem(item)}
-                                aria-label={"加入 " + item.name}
-                                title="加入"
-                              >
-                                <span className="advice-risk" aria-hidden="true" />
-                                <span className="advice-plus" aria-hidden="true">+</span>
-                              </button>}
-                          <button
-                            className="advice-summary"
-                            onClick={() => {
-                              // The click that follows a drag belongs to the drag.
-                              if (dragSuppressesClick.current) return;
-                              setAdviceDetail(open ? null : item.nodeId);
-                            }}
-                            aria-expanded={open}
-                          >
-                            <span className="advice-text">
-                              <span className="advice-title">
-                                <strong>{item.name}</strong>
-                                <span className="advice-tags">
-                                  <AdviceTags item={item} />
-                                  {/* Needs admin rights; this tool will not take them
-                                      (ADR-0065). The command is in the detail. */}
-                                  {item.manual && <span className="advice-tag is-manual">需管理员权限</span>}
-                                </span>
-                              </span>
-                              <span className="advice-path">{homePath(item.path)}</span>
-                            </span>
-                            <span className="advice-size">{formatBytes(item.reclaimableBytes)}</span>
-                          </button>
-                        </div>
-                        {open && <AdviceDetail item={item} />}
-                      </article>
-                    );
-                  })}
-                </div>
-                </div>
-
-              </section>
-            )}
-
             {/* 已收集. The rows are the reference's plain run of lines; a row that
                 came from a suggestion keeps its tags and opens the same reasoning
                 the other section shows. A row dragged in by hand has none, which
@@ -3639,25 +3121,13 @@ export default function App() {
                     to nothing -- instead of a max-height that starts far above
                     the content and spends most of the transition invisible. */}
                 <div className="dock-staged-body">
-                {adviceData && (
-                  <header className="dock-section-head"><span>已收集 · {collector.length} 项</span></header>
-                )}
                 <div className="collector-list">
                   {collector.map((item) => {
                     const node = entryNode(item);
                     const path = node?.path ?? "";
-                    const suggestion = adviceByPath.get(path);
-                    const open = suggestion !== undefined && collectorDetail === path;
                     return (
                       <div
-                        /* risk-*: the dot is the tier, the same palette the 待确认 list
-                           uses. It used to be the wheel's level colour, falling back to
-                           #7fb96a when the object was not on the current level -- exactly
-                           the green that means 安全 one list above, so a 需确认 row
-                           arrived here looking safe. Two colour languages in one panel
-                           means neither can be read. A row dragged in by hand has no
-                           assessment and gets the neutral dot. */
-                        className={"collector-item" + (suggestion ? " has-advice risk-" + suggestion.risk : "") + (open ? " is-open" : "")}
+                        className="collector-item"
                         key={entryKey(item)}
                         draggable={Boolean(node)}
                         onDragStart={(event) => {
@@ -3669,9 +3139,10 @@ export default function App() {
                         onDragEnd={(event) => {
                           if (event.dataTransfer.dropEffect !== "none") toggleCollector(item);
                         }}
-                        onPointerEnter={() => { if (node) hoverAdviceNode(node.id); }}
-                        onPointerLeave={() => hoverAdviceNode(null)}
-                        onClick={() => { if (suggestion) setCollectorDetail(open ? null : path); }}
+                        /* Hovering a row lights its arc in the wheel and drives the
+                           panel's description of it, the same as hovering the arc. */
+                        onPointerEnter={() => { if (node) hoverNode(node.id); }}
+                        onPointerLeave={() => hoverNode(null)}
                       >
                         {/* The dot and the cross live *inside* the button rather than
                             beside it. Stacked as siblings in one grid cell they were
@@ -3705,12 +3176,16 @@ export default function App() {
                           <span className="collector-dot" aria-hidden="true" />
                           <span className="collector-cross" aria-hidden="true">×</span>
                         </button>
-                        <span className="collector-name">
+                        {/* Two lines, which is the shape the 待确认 list had: the name
+                            on the first with the size at the right edge, the path on the
+                            second. The path is what tells two like-named objects apart,
+                            and a dock of rows all reading "Cache" could not be read at
+                            all. The row's gesture is unchanged -- the cross removes. */}
+                        <span className="collector-text">
                           <strong>{item.name}</strong>
-                          {suggestion && <span className="collector-tags"><AdviceTags item={suggestion} /></span>}
+                          <span className="collector-path">{homePath(path)}</span>
                         </span>
                         <b>{formatBytes(item.ownedAllocated)}</b>
-                        {open && suggestion && <AdviceDetail item={suggestion} />}
                       </div>
                     );
                   })}
@@ -3727,10 +3202,7 @@ export default function App() {
               {collector.length === 0 ? (
                 <>
                   <button type="button" className="collector-target" aria-hidden="true" tabIndex={-1} disabled />
-                  <span className="collector-caption">{drag?.blocked || (adviceOpen ? "将文件拖放至此，或从上面加入" : "将文件拖放至此，以收集要删除的文件")}</span>
-                  {!adviceOpen && pendingAdvice.length > 0 && (
-                    <button className="quiet-button" onClick={() => { setAdviceOpen(true); setDockOpen(true); }}>待确认 {pendingAdvice.length} 项</button>
-                  )}
+                  <span className="collector-caption">{drag?.blocked || "将文件拖放至此，以收集要删除的文件"}</span>
                 </>
               ) : (
                 <>
@@ -3782,10 +3254,6 @@ export default function App() {
                               ? "校验未通过，不能执行"
                               : <><span className="collector-unit">{formatBytes(collectorBytes).split(" ")[1]}</span> <span className="collector-dim">已收集</span></>}
                   </span>
-                  {/* A folded analysis stays reachable from the bar. */}
-                  {!dockLocked && !adviceOpen && pendingAdvice.length > 0 && (
-                    <button className="quiet-button" onClick={() => { setAdviceOpen(true); setDockOpen(true); }}>待确认 {pendingAdvice.length} 项</button>
-                  )}
                   {/* One action, and it deletes outright -- the trash is on the same
                       volume, so moving there reclaims nothing. Nothing is rerouted and
                       nothing is undoable; the countdown is the whole confirmation. */}
@@ -3799,214 +3267,6 @@ export default function App() {
         )}
       </section>}
 
-      {/* The dock sits bottom-left (ADR-0018), so the analysis entry takes the
-          opposite corner -- buttons only, since ADR-0066: what they produce
-          lands in the dock's 待确认 section, not in a second panel here. */}
-      {view === "result" && !slide && (
-        <div className={"advice-corner" + (adviceOpen ? " is-open" : "")}>
-          {/* Beside the corner button rather than inside the dock: opening
-              settings must not require running an analysis first. It is only on
-              the result page because the source window is 151pt tall and a sheet
-              bounded by that window would be an unusable sliver. */}
-          <div className="advice-segment">
-            {/* This button only ever runs an analysis. Folding and unfolding the
-                result is the dock's job -- it has the chevron and the 待确认 N 项
-                chip -- so a second copy here would be the same control twice. */}
-            <button
-              className="advice-button"
-              onClick={() => void runAdvice()}
-              disabled={adviceBusy || advisorBusy || dockLocked}
-            >
-              {/* Working states carry the same turning ring as the list's own
-                  waiting line, so one vocabulary says "still going" wherever the
-                  user happens to be looking. */}
-              {adviceBusy
-                ? <><span className="advice-spinner" aria-hidden="true" />读取中…</>
-                : advisorBusy
-                  ? <><span className="advice-spinner" aria-hidden="true" />AI {advisorSeconds}s</>
-                  : advice || adviceError
-                    ? "重新分析"
-                    : advisor?.configured ? "AI 分析" : "分析可清理项"}
-            </button>
-            {/* Settings ride on the same control, past a divider, so the corner
-                is one object. It is here and not in the dock because opening
-                settings must not require running an analysis first. */}
-            <button
-              className="advice-button is-icon"
-              onClick={() => setAdvisorOpen(true)}
-              title={advisor?.configured
-                ? "AI 设置 · " + advisor.description
-                : advisorFaulted
-                  ? "AI 未启用：" + advisor?.fault
-                  : advisor?.saved && !advisor.enabled ? "AI 设置（已关闭）" : "AI 设置（未连接）"}
-              aria-label="AI 设置"
-            >
-              {/* A spark rather than a gear: the button is about the AI, and the
-                  gear said "settings" without saying of what. The corner mark is
-                  the state at a glance -- AI is on, or it was meant to be and is
-                  not, which is the case that used to be invisible. */}
-              <svg className={"advice-spark" + (advisor?.configured ? " is-on" : "")} viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
-                <path d="M5.5 1.3 6.75 4.85 10.3 6.1 6.75 7.35 5.5 10.9 4.25 7.35.7 6.1 4.25 4.85Z" fill="currentColor" />
-                <path d="M11 8.6l.65 1.75 1.75.65-1.75.65L11 13.4l-.65-1.75-1.75-.65 1.75-.65Z" fill="currentColor" opacity=".75" />
-              </svg>
-              {advisor?.configured && <span className="advice-ai-mark" aria-hidden="true">AI</span>}
-              {advisorFaulted && <span className="advice-ai-mark is-fault" aria-hidden="true">!</span>}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {advisorOpen && (
-        <div className="evidence-scrim" role="dialog" aria-modal="true" onClick={() => setAdvisorOpen(false)}>
-          <div className="advisor-sheet" onClick={(event) => event.stopPropagation()}>
-            <header>
-              {/* One title. The state -- which model, whether it is on -- is said
-                  once, in the switch row below; repeating it up here in the raw
-                  "model @ host" form was the same fact twice in two typefaces. */}
-              <h3>AI 设置</h3>
-              <button className="quiet-button sheet-close" onClick={() => setAdvisorOpen(false)} aria-label="关闭" title="关闭">
-                <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
-              </button>
-            </header>
-            <div className="advisor-body">
-              {/* The switch. Off keeps the endpoint and the key and installs no
-                  advisor, so no request leaves the machine; on rebuilds it from
-                  what is stored. It needs a saved configuration to act on. */}
-              <div className="advisor-switch-row">
-                <div>
-                  <span className="advisor-switch-title">AI 分析</span>
-                  <span className="advisor-switch-hint">
-                    {!advisor?.saved
-                      ? "保存配置后即可开启"
-                      : advisor.configured
-                        ? "已启用 · " + advisor.description
-                        : advisor.enabled
-                          ? "未能启用，见下方原因"
-                          : "已关闭，仅使用本机规则"}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={!!advisor?.enabled}
-                  aria-label="启用 AI 分析"
-                  className={"advisor-switch" + (advisor?.enabled ? " is-on" : "")}
-                  disabled={!advisor?.saved || advisorSaving}
-                  onClick={() => void toggleAdvisor(!advisor?.enabled)}
-                >
-                  <span className="advisor-switch-knob" />
-                </button>
-              </div>
-              {advisor?.fault && <p className="advisor-fault">{advisor.fault}</p>}
-              {/* Any endpoint speaking the OpenAI chat-completions protocol works
-                  here: DeepSeek, Kimi, Qwen, OpenRouter, or a local vLLM/Ollama.
-                  That is why there is no provider dropdown. */}
-              <label>
-                <span>API 地址</span>
-                <input
-                  value={advisorForm.baseUrl}
-                  spellCheck={false}
-                  onChange={(event) => setAdvisorForm((form) => ({ ...form, baseUrl: event.target.value }))}
-                  placeholder="https://api.deepseek.com"
-                />
-              </label>
-              <label>
-                <span>模型</span>
-                <input
-                  value={advisorForm.model}
-                  spellCheck={false}
-                  onChange={(event) => setAdvisorForm((form) => ({ ...form, model: event.target.value }))}
-                  placeholder="模型 id"
-                />
-              </label>
-              <label>
-                <span>API Key</span>
-                <input
-                  type="password"
-                  value={advisorForm.apiKey}
-                  spellCheck={false}
-                  onChange={(event) => setAdvisorForm((form) => ({ ...form, apiKey: event.target.value }))}
-                  placeholder={advisor?.hasKey ? "已保存，留空则保持不变" : "sk-…"}
-                />
-              </label>
-              {/* The two knobs most people never touch, folded. Both are about
-                  the request's shape, not about which service answers. */}
-              <details className="advisor-advanced">
-                <summary>高级选项</summary>
-                <label>
-                  <span>JSON 约束</span>
-                  <select
-                    value={advisorForm.jsonMode}
-                    onChange={(event) => setAdvisorForm((form) => ({ ...form, jsonMode: event.target.value }))}
-                  >
-                    <option value="json_object">json_object · 多数服务</option>
-                    <option value="json_schema">json_schema · 部分服务</option>
-                    <option value="">不约束，仅靠提示词</option>
-                  </select>
-                </label>
-                <label>
-                  <span>推理强度</span>
-                  <select
-                    value={advisorForm.reasoningEffort}
-                    onChange={(event) => setAdvisorForm((form) => ({ ...form, reasoningEffort: event.target.value }))}
-                  >
-                    {/* Reasoning models default to a high effort. This task is
-                        classification against a fixed output contract, and the
-                        measured cost of the default was 239s spent thinking and an
-                        answer cut off at the output cap. The choice is a trade, so
-                        the trade is stated -- in the hint below, in one line, not
-                        inside every option. Numbers: one identical pack,
-                        deepseek-v4-flash, R-063 §4e. */}
-                    <option value="disabled">关闭</option>
-                    <option value="low">低</option>
-                    <option value="high">高</option>
-                    <option value="max">最高</option>
-                    <option value="omit">不发送该字段</option>
-                  </select>
-                  <span className="advisor-hint">
-                    关闭最快、建议最多（实测 34 秒、22 条）；越高越慢越贵、建议越保守（低：约 2–3 分钟、6–7 条）。
-                    非 DeepSeek 服务若拒绝该字段，选「不发送」。
-                  </span>
-                </label>
-              </details>
-              <p className="advisor-note">
-                Key 以 AES-256-GCM 加密保存在应用目录（密钥绑定本机，文件 0600），不进日志和快照；同机上以你身份运行的程序仍可解开。
-                只有你点「AI 分析」时才会出网，发送内容可在待确认区的「查看发送内容」中逐字查看。
-              </p>
-            </div>
-            <footer className="advisor-foot">
-              {/* There is no connection to break: every analysis is one request.
-                  This deletes the saved endpoint, model and key; pausing is the
-                  switch's job. */}
-              {advisor?.saved && (
-                <button className="quiet-button" onClick={() => void clearAdvisor()}>删除配置</button>
-              )}
-              <button className="advice-button" disabled={advisorSaving || !advisorForm.model.trim()} onClick={() => void saveAdvisor()}>
-                {advisorSaving ? "保存中…" : "保存"}
-              </button>
-            </footer>
-          </div>
-        </div>
-      )}
-
-      {/* One rendering serves both the payload and this preview, so what is
-          shown here cannot drift from what would be sent. */}
-      {evidence && (
-        <div className="evidence-scrim" role="dialog" aria-modal="true" onClick={() => setEvidence(null)}>
-          <div className="evidence-sheet" onClick={(event) => event.stopPropagation()}>
-            <header>
-              <div>
-                <p className="eyebrow">将要发送的内容</p>
-                <h3>{evidence.nodes} 个节点 · {formatBytes(evidence.bytes)} · 下限 {formatBytes(evidence.floorBytes)}</h3>
-              </div>
-              <button className="quiet-button sheet-close" onClick={() => setEvidence(null)} aria-label="关闭" title="关闭">
-                <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
-              </button>
-            </header>
-            <pre className="evidence-text">{evidence.text}</pre>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

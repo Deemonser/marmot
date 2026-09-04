@@ -35,6 +35,10 @@ type SnapshotStore interface {
 	// arithmetic on the tree already in memory, so it costs no I/O and is asked
 	// for at the moment of deletion rather than carried in the plan.
 	SubtreeChunks(int64, string, int) (cleanup.Subtree, error)
+	// SubtreeFacts is the node count and newest mtime under one node. Both are
+	// arithmetic on the tree in memory; the age is what the catalog rules with a
+	// staleness condition are evaluated against.
+	SubtreeFacts(int64, int64) (scan.SubtreeFacts, error)
 	Map(scan.MapQuery) (scan.MapResult, error)
 	NodeByID(int64, int64) (scan.Node, error)
 	SnapshotVersion(int64) (int64, error)
