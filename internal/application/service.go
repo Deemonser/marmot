@@ -1692,7 +1692,13 @@ type NodeDescription struct {
 	// and the UI must not render it as one -- the catalog only ever speaks about
 	// what it recognises, and inverting silence into a reassurance is exactly the
 	// fabrication ADR-0061 §7 refuses.
-	Rule         string `json:"rule"`
+	Rule string `json:"rule"`
+	// Generic marks a rule that named the container and not the object --
+	// `Library/Caches/*` knows it is looking at an app cache, not whose. It
+	// matters beyond wording: only a SPECIFIC identification may supersede an
+	// inherited guard, and "some app's cache" is not specific enough to overrule
+	// "you are inside your Documents".
+	Generic      bool   `json:"generic"`
 	Category     string `json:"category"`
 	Recovery     string `json:"recovery"`
 	Risk         string `json:"risk"`
@@ -1705,13 +1711,19 @@ type NodeDescription struct {
 	Command string `json:"command"`
 
 	// Protection is the hard guard: why this may not be deleted at all. System
-	// trees, home folder roots, volume roots. Empty when it may.
+	// trees, home folder roots, volume roots. Empty when it may. It is the only
+	// thing here on a different axis from the rest: it answers whether the tool
+	// is allowed to act, not what the object is.
 	Protection string `json:"protection"`
-	// The advisory guards, each a reason or empty. Empty is not a promise, for
-	// the same reason an empty Rule is not one.
-	Irreplaceable  string `json:"irreplaceable"`
-	PartialInstall string `json:"partialInstall"`
-	LoginState     string `json:"loginState"`
+	// Guard is the reason code the winning rule carries, or empty.
+	//
+	// It is not a second opinion any more. The guards used to be four tables
+	// behind three functions answering "can this come back" in parallel with the
+	// catalog, which is how one directory came back redownloadable and
+	// irreplaceable at once. A guard is a rule now: the rule that carries it IS
+	// the identification, WhatBreaks is its sentence, and this code is only here
+	// so the panel can paint a permanent loss differently.
+	Guard string `json:"guard"`
 }
 
 // DescribeNode answers what one object is, from the local rule catalog alone.
@@ -1735,11 +1747,8 @@ func (s *Service) DescribeNode(snapshotID, nodeID int64) (NodeDescription, error
 	description := NodeDescription{
 		NodeID: node.ID, Name: node.Name, Kind: node.Kind, Path: node.Path,
 		Nodes: facts.Nodes, NewestModified: facts.NewestModified, AgeKnown: !facts.Truncated,
-		IsProjectRoot:  facts.IsProjectRoot,
-		Protection:     cleanup.DeleteBlock(node.Path),
-		Irreplaceable:  recommendation.IrreplaceableReason(node.Path),
-		PartialInstall: recommendation.PartialInstallReason(node.Path),
-		LoginState:     recommendation.LoginStateReason(node.Path),
+		IsProjectRoot: facts.IsProjectRoot,
+		Protection:    cleanup.DeleteBlock(node.Path),
 	}
 	// Zero, not a guess, when the walk was truncated: every staleness condition
 	// is a minimum, so an unknown age abstains instead of matching.
@@ -1758,6 +1767,7 @@ func (s *Service) DescribeNode(snapshotID, nodeID int64) (NodeDescription, error
 		Path: node.Path, Kind: node.Kind, AgeDays: age, ProjectIdleDays: recommendation.NoProject,
 	}); rule != nil {
 		description.Rule = rule.Name
+		description.Generic = rule.Generic
 		description.Category = rule.Category
 		description.Recovery = string(rule.Recovery)
 		description.Risk = string(rule.Risk)
@@ -1765,6 +1775,7 @@ func (s *Service) DescribeNode(snapshotID, nodeID int64) (NodeDescription, error
 		description.HowToRestore = rule.HowToRestore
 		description.Manual = rule.Manual
 		description.Command = rule.Command
+		description.Guard = rule.Guard
 	}
 	return description, nil
 }

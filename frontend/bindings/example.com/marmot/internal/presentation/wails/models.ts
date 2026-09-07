@@ -274,6 +274,7 @@ export interface NodeDescription {
     "ageKnown": boolean;
     "isProjectRoot": boolean;
     "rule": string;
+    "generic": boolean;
     "category": string;
     "recovery": string;
     "risk": string;
@@ -282,9 +283,7 @@ export interface NodeDescription {
     "manual": boolean;
     "command": string;
     "protection": string;
-    "irreplaceable": string;
-    "partialInstall": string;
-    "loginState": string;
+    "guard": string;
 }
 
 export interface NodeView {

@@ -188,9 +188,16 @@ func TestPrefixSegmentMatching(t *testing.T) {
 	if rule == nil || rule.Name != "git 残留临时包" {
 		t.Fatalf("expected the stale temp pack rule, got %v", rule)
 	}
-	// A real pack must not be swept up by it.
-	if got := Match(MatchContext{Path: "/Users/alice/work/thing/.git/objects/pack/pack-abc.pack"}); got != nil {
-		t.Fatalf("a real pack matched %q", got.Name)
+	// A real pack must not be swept up by it. It does match now -- as repository
+	// history, which is what it is: the guards are rules in this catalog since
+	// they stopped being a second system, so "matches nothing" is no longer the
+	// way to say "is not a stale artifact".
+	got := Match(MatchContext{Path: "/Users/alice/work/thing/.git/objects/pack/pack-abc.pack"})
+	if got == nil || got.Name == "git 残留临时包" {
+		t.Fatalf("a real pack was taken for a stale artifact: %v", got)
+	}
+	if got.Recovery != RecoveryIrreplaceable {
+		t.Fatalf("a real pack came back as %q, want irreplaceable", got.Recovery)
 	}
 }
 

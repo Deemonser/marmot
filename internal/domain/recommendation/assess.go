@@ -241,23 +241,6 @@ func hasIrreplaceableGuard(guards []string) bool {
 	return irreplaceableGuard(guards) != ""
 }
 
-// GuardsFor collects every guard code that applies to a path. It is the one
-// place the three guard functions are consulted together, so a caller cannot
-// remember two of them and forget the third.
-func GuardsFor(absolutePath string) []string {
-	guards := make([]string, 0, 3)
-	if reason := IrreplaceableReason(absolutePath); reason != "" {
-		guards = append(guards, reason)
-	}
-	if reason := LoginStateReason(absolutePath); reason != "" {
-		guards = append(guards, reason)
-	}
-	if reason := PartialInstallReason(absolutePath); reason != "" {
-		guards = append(guards, reason)
-	}
-	return guards
-}
-
 // Facts builds the fact sheet a Recommendation carries, so a caller that learns
 // one more fact -- the application layer adding an activity signal to an advisor
 // item -- can reassess without re-deriving the rest.

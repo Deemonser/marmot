@@ -1,20 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { factsLine, guardLines, hasVerdict, recoveryLabel, relativeDays } from "./describe.ts";
+import { factsLine, hasVerdict, recoveryLabel, relativeDays } from "./describe.ts";
 
 const described = (over: Partial<Parameters<typeof factsLine>[0]> = {}) => ({
-	kind: "directory", nodes: 1, newestModified: "", ageKnown: true, isProjectRoot: false,
-	rule: "", recovery: "", protection: "", irreplaceable: "",
-	partialInstall: "", loginState: "", ...over,
+	kind: "directory", nodes: 1, newestModified: "", ageKnown: true,
+	isProjectRoot: false, rule: "", recovery: "", protection: "", ...over,
 });
 const now = new Date("2026-09-04T12:00:00Z");
 
 // The invariant the whole module exists for. Every unrecognised directory on the
 // disk arrives here, and none of them may come out looking approved.
-test("an unrecognised object gets no verdict and no warning", () => {
-	assert.equal(recoveryLabel(""), "");
-	assert.deepEqual(guardLines(described()), []);
-});
 
 test("an unknown recovery value is not translated into a reassurance", () => {
 	assert.equal(recoveryLabel("maybe"), "");
@@ -67,22 +62,28 @@ test("a file gets no item count", () => {
 	assert.equal(factsLine(described({ kind: "file", nodes: 1, newestModified: "2026-09-03T12:00:00Z" }), now), "文件 · 昨天修改");
 });
 
-test("guards are ordered hardest first", () => {
-	assert.deepEqual(
-		guardLines(described({ protection: "系统目录", irreplaceable: "这是 Git 仓库", loginState: "会退出登录" })),
-		["不可删除：系统目录", "不可重建：这是 Git 仓库", "会退出登录"],
-	);
-});
 
+// The measured contradiction: a node_modules under ~/Documents inherited the
+// user-content guard and was described as 可重新下载 and 不可重建 at once.
+
+// The same guard on the object itself is a property of the object, and nothing
+// supersedes it -- that direction of error loses files.
+
+// "Some app's cache" is not a statement about this object, so it may not silence
+// a guard about where the object sits.
+
+// An inherited guard with nothing to supersede it is still worth saying -- as
+// context, not as a refusal, which is what `hard: false` carries.
+
+// The honest-silence rule, which survives the merge unchanged: nothing known
+// must not read as approval.
 test("nothing known is nothing known", () => {
 	assert.equal(hasVerdict(described()), false);
+	assert.equal(recoveryLabel(""), "");
 });
 
-test("a project marker counts as knowing something, with no rule at all", () => {
-	assert.equal(hasVerdict(described({ isProjectRoot: true })), true);
-});
-
-test("a guard alone counts, and so does a rule alone", () => {
-	assert.equal(hasVerdict(described({ irreplaceable: "这是 Git 仓库" })), true);
+test("a rule, a project marker or a protection each count as knowing something", () => {
 	assert.equal(hasVerdict(described({ rule: "用户缓存" })), true);
+	assert.equal(hasVerdict(described({ isProjectRoot: true })), true);
+	assert.equal(hasVerdict(described({ protection: "系统目录" })), true);
 });

@@ -1,6 +1,8 @@
 package application
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"example.com/marmot/internal/domain/scan"
@@ -99,8 +101,8 @@ func TestDescribeNodeCarriesTheIrreplaceableGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if description.Irreplaceable == "" {
-		t.Fatalf("a repository came through with no irreplaceable reason: %#v", description)
+	if description.Guard == "" || description.Recovery != "irreplaceable" {
+		t.Fatalf("a repository came through unguarded: %#v", description)
 	}
 }
 
@@ -139,5 +141,62 @@ func TestDescribeNodeRecognisesAProjectRoot(t *testing.T) {
 	}
 	if plain.IsProjectRoot {
 		t.Error("a directory with no marker claimed to be a project root")
+	}
+}
+
+// The measured contradiction, at the level the panel actually reads from: one
+// directory came back as 可重新下载 by the catalog AND 不可重建 by a guard,
+// because the guard's pattern for ~/Documents is a segment prefix and reached
+// three levels down. The reason is right about the neighbourhood and wrong about
+// the object, which is what the scope now says.
+func TestDescribeNodeDoesNotContradictItself(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	docs := filepath.Join(home, "Documents")
+	proj := filepath.Join(docs, "proj")
+	deps := filepath.Join(proj, "node_modules")
+	service, snapshotID := describeStore(t, []scan.Node{
+		{ID: 1, Path: home, Name: filepath.Base(home), Kind: "directory", HasChildren: true},
+		{ID: 2, ParentID: 1, Path: docs, Name: "Documents", Kind: "directory", HasChildren: true},
+		{ID: 3, ParentID: 2, Path: proj, Name: "proj", Kind: "directory", HasChildren: true},
+		{ID: 4, ParentID: 3, Path: deps, Name: "node_modules", Kind: "directory", OwnedAllocated: 10},
+	})
+
+	dependencies, err := service.DescribeNode(snapshotID, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dependencies.Rule == "" {
+		t.Fatalf("the catalog no longer identifies a node_modules: %#v", dependencies)
+	}
+	// The Documents rule reaches this path too, and loses: it speaks from above
+	// while the node_modules rule speaks about the object. One answer, not two.
+	if dependencies.Recovery == "irreplaceable" || dependencies.Guard != "" {
+		t.Errorf("the Documents guard still speaks for node_modules: %#v", dependencies)
+	}
+
+	// Documents itself keeps the guard, and keeps it as its own.
+	documents, err := service.DescribeNode(snapshotID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if documents.Guard == "" {
+		t.Errorf("~/Documents lost its own guard: %#v", documents)
+	}
+
+	// The sentence comes off the rule now, so a reader never sees a reason code
+	// -- the panel used to print "不可重建：user_content" at them.
+	if documents.WhatBreaks == "" || documents.HowToRestore == "" {
+		t.Errorf("~/Documents came back with no explanation: %#v", documents)
+	}
+	if documents.Recovery != "irreplaceable" {
+		t.Errorf("~/Documents recovery is %q, want irreplaceable", documents.Recovery)
+	}
+	for _, code := range []string{"user_content", "user_data", "repository", "credentials", "device_backup", "virtual_disk"} {
+		if documents.WhatBreaks == code || documents.HowToRestore == code {
+			t.Errorf("the description carries the reason code %q instead of its sentence", code)
+		}
 	}
 }

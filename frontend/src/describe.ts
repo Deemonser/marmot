@@ -18,10 +18,10 @@ export type Described = {
 	isProjectRoot: boolean;
 	rule: string;
 	recovery: string;
+	// Why the tool may not delete this at all. The only thing here on a
+	// different axis from the rest: it answers whether acting is allowed, not
+	// what the object is.
 	protection: string;
-	irreplaceable: string;
-	partialInstall: string;
-	loginState: string;
 };
 
 const kindLabels: Record<string, string> = {
@@ -80,23 +80,11 @@ export function factsLine(described: Described, now: Date): string {
 	return parts.join(" · ");
 }
 
-// guardLines are the refusals and the warnings, hardest first. A protection is
-// the machine's guard and cannot be overridden by anyone; the rest are advisory
-// and exist to be read before a decision, not to block it.
-export function guardLines(described: Described): string[] {
-	const lines: string[] = [];
-	if (described.protection) lines.push("不可删除：" + described.protection);
-	if (described.irreplaceable) lines.push("不可重建：" + described.irreplaceable);
-	if (described.loginState) lines.push(described.loginState);
-	if (described.partialInstall) lines.push(described.partialInstall);
-	return lines;
-}
-
 // hasVerdict is whether anything at all is known about this object beyond its
 // plain facts. It exists so the "nothing is known" line has exactly one
 // definition: the alternative is a condition spelled out at the call site, which
 // is where an added signal gets forgotten and the panel goes back to claiming
 // ignorance about something it just recognised.
 export function hasVerdict(described: Described): boolean {
-	return Boolean(described.rule) || described.isProjectRoot || guardLines(described).length > 0;
+	return Boolean(described.rule) || described.isProjectRoot || Boolean(described.protection);
 }

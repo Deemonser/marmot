@@ -649,6 +649,7 @@ type NodeDescription struct {
 	AgeKnown       bool      `json:"ageKnown"`
 	IsProjectRoot  bool      `json:"isProjectRoot"`
 	Rule           string    `json:"rule"`
+	Generic        bool      `json:"generic"`
 	Category       string    `json:"category"`
 	Recovery       string    `json:"recovery"`
 	Risk           string    `json:"risk"`
@@ -657,9 +658,7 @@ type NodeDescription struct {
 	Manual         bool      `json:"manual"`
 	Command        string    `json:"command"`
 	Protection     string    `json:"protection"`
-	Irreplaceable  string    `json:"irreplaceable"`
-	PartialInstall string    `json:"partialInstall"`
-	LoginState     string    `json:"loginState"`
+	Guard          string    `json:"guard"`
 }
 
 // DescribeNode is answered from the snapshot and the local catalog, so it is
@@ -673,11 +672,11 @@ func (s *Service) DescribeNode(snapshotID, nodeID int64) (NodeDescription, error
 		NodeID: description.NodeID, Name: description.Name, Kind: description.Kind, Path: description.Path,
 		Nodes: description.Nodes, NewestModified: description.NewestModified, AgeKnown: description.AgeKnown,
 		IsProjectRoot: description.IsProjectRoot,
-		Rule:          description.Rule, Category: description.Category, Recovery: description.Recovery, Risk: description.Risk,
+		Rule:          description.Rule, Generic: description.Generic, Category: description.Category,
+		Recovery: description.Recovery, Risk: description.Risk,
 		WhatBreaks: description.WhatBreaks, HowToRestore: description.HowToRestore,
 		Manual: description.Manual, Command: description.Command,
-		Protection: description.Protection, Irreplaceable: description.Irreplaceable,
-		PartialInstall: description.PartialInstall, LoginState: description.LoginState,
+		Protection: description.Protection, Guard: description.Guard,
 	}, nil
 }
 

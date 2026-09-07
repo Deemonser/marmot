@@ -38,6 +38,17 @@ type Rule struct {
 	// the following segment sequence at any depth; "*" matches one whole
 	// segment; a trailing "*" on a segment matches a prefix.
 	Pattern string
+	// Covers is how far this rule's claim reaches. See the Covers type: the zero
+	// value is the old behaviour, so a rule that has not been reviewed for it
+	// keeps speaking for what is inside it.
+	Covers Covers
+	// Guard is the reason code this rule reports to Assess when it wins, or empty
+	// when it reports none. It is what merged the guards into this catalog: they
+	// used to be four separate tables behind three separate functions answering
+	// "can this come back" a second time, in parallel, with no way to reconcile
+	// the two answers. A guard is now a rule like any other, ranked like any
+	// other, and GuardsFor is a query over this list.
+	Guard string
 	// FileOnly restricts a rule to file nodes. Patterns are segment matches, so
 	// `Downloads/*.dmg` would otherwise name a directory that happens to end in
 	// .dmg -- and everything the user put inside it.
@@ -270,12 +281,6 @@ var Catalog = []Rule{
 		HowToRestore: "无需手动操作，cargo 自行重建。",
 	},
 	{
-		Name: "git 残留临时包", Category: "残留文件",
-		Pattern: "**/.git/objects/pack/tmp_pack_*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
-		WhatBreaks:   "没有影响。这是 repack 中断后遗留的临时文件，git 不会使用它。",
-		HowToRestore: "无需恢复：它不是版本库内容，删除不丢任何提交。",
-	},
-	{
 		Name: "代码索引数据库", Category: "工具索引",
 		Pattern: "**/.codegraph", Recovery: RecoveryRegenerable, Risk: RiskReview,
 		WhatBreaks:   "该项目的代码图谱与符号搜索不可用，重建索引需要时间。源码不受影响。",
@@ -399,13 +404,15 @@ var Catalog = []Rule{
 		HowToRestore: "Xcode 重新创建模拟器并下载运行时。",
 	},
 	{
-		Name: "iOS 设备备份", Category: "设备备份",
+		Guard: IrreplaceableBackup,
+		Name:  "iOS 设备备份", Category: "设备备份",
 		Pattern: "Library/Application Support/MobileSync/Backup/*", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
 		WhatBreaks:   "这是 iPhone/iPad 的本地完整备份。删掉后无法从本机恢复设备。",
 		HowToRestore: "无法恢复。只有在确认已有 iCloud 备份或不再需要时才删。",
 	},
 	{
-		Name: "Docker 数据", Category: "虚拟机磁盘",
+		Guard: IrreplaceableVirtualDisk,
+		Name:  "Docker 数据", Category: "虚拟机磁盘",
 		Pattern: "Library/Containers/com.docker.docker/Data/*", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
 		WhatBreaks:   "所有本地镜像、容器和卷会消失，包括未推送的镜像和容器内数据。",
 		HowToRestore: "镜像可重新拉取；卷里的数据无法恢复。建议改用 docker system prune。",
@@ -554,6 +561,117 @@ var Catalog = []Rule{
 		WhatBreaks:   "下次 Gradle 构建重新生成该模块的转换产物。",
 		HowToRestore: "自动重建。",
 	},
+	// --- The location guards, merged in from homeRelativeIrreplaceable. ---
+	//
+	// They were a parallel table read by IrreplaceableReason, which meant two
+	// systems answered "can this come back" and nothing reconciled them: a
+	// node_modules three levels under ~/Documents came back redownloadable from
+	// here and irreplaceable from there, and the panel printed both. As rules
+	// they are ranked with everything else, so the node_modules rule -- which
+	// names that object rather than reaching it from above -- simply wins.
+	//
+	// Every one of them covers what is inside it, which is the point: a photo in
+	// ~/Pictures is user content too. That is now declared rather than inferred.
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "用户文档", Category: "用户内容",
+		Pattern: "Documents", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "桌面", Category: "用户内容",
+		Pattern: "Desktop", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "图片", Category: "用户内容",
+		Pattern: "Pictures", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "影片", Category: "用户内容",
+		Pattern: "Movies", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "音乐", Category: "用户内容",
+		Pattern: "Music", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "公共目录", Category: "用户内容",
+		Pattern: "Public", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	// A sandboxed application keeps the person's own documents one segment away
+	// from its caches. The two could not be more different.
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "沙盒应用文档", Category: "用户内容",
+		Pattern: "Library/Containers/*/Data/Documents", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "应用组文档", Category: "用户内容",
+		Pattern: "Library/Group Containers/*/Documents", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableCredentials,
+		Name:  "钥匙串", Category: "凭据",
+		Pattern: "Library/Keychains", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是密钥或凭据，删除后无法恢复。",
+		HowToRestore: "无法恢复。",
+	},
+	{
+		Guard: IrreplaceableUserData,
+		Name:  "邮件数据", Category: "用户数据",
+		Pattern: "Library/Mail", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
+		HowToRestore: "无法恢复，除非服务端仍有副本并重新同步。",
+	},
+	{
+		Guard: IrreplaceableUserData,
+		Name:  "信息记录", Category: "用户数据",
+		Pattern: "Library/Messages", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
+		HowToRestore: "无法恢复，除非服务端仍有副本并重新同步。",
+	},
+	{
+		Guard: IrreplaceableUserData,
+		Name:  "日历数据", Category: "用户数据",
+		Pattern: "Library/Calendars", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
+		HowToRestore: "无法恢复，除非服务端仍有副本并重新同步。",
+	},
+	{
+		Guard: IrreplaceableUserData,
+		Name:  "提醒事项数据", Category: "用户数据",
+		Pattern: "Library/Reminders", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
+		HowToRestore: "无法恢复，除非服务端仍有副本并重新同步。",
+	},
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "照片数据", Category: "用户内容",
+		Pattern: "Library/Photos", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
 }
 
 // MatchContext is what a rule is evaluated against. A struct rather than a
@@ -583,6 +701,56 @@ const NoProject = int64(-1)
 // rule that fires on one but not the other would depend on which spelling the
 // scan happened to walk. cleanup.DeleteBlock handles the same pair for the same
 // reason.
+// Covers says how far a rule's claim reaches: to the object its pattern names,
+// or to everything inside it as well.
+//
+// It is declared, not inferred. Inferring it from the pattern shape is what put
+// "不可重建：这是你自己的文件" on a node_modules three levels under ~/Documents:
+// the Documents rule means every photo below it, the node_modules rule means
+// that directory and nothing else, and only the rules themselves know which.
+type Covers string
+
+const (
+	// CoversSelfAndInside is the zero value, because it is what every rule did
+	// before this field existed: `Library/Caches/go-build` also speaks for what
+	// is inside it.
+	CoversSelfAndInside Covers = ""
+	// CoversSelfOnly names the object and stops. A rule about an object that can
+	// contain anything -- node_modules, target, build -- has to say so, or it
+	// claims the unrelated things people put inside it.
+	CoversSelfOnly Covers = "self"
+)
+
+// candidate is one rule that matched, with what is needed to rank it.
+type candidate struct {
+	rule *Rule
+	self bool
+	segs int
+}
+
+// moreSpecific is the whole arbitration, and there is deliberately no other.
+//
+// Before this there was none: Match returned the first rule in list order and
+// the guards were a second, parallel system whose answer could contradict it.
+// Merging them into one catalog only works if "which of these two answers is
+// about this object" has a definition, so here it is, in order:
+//
+//  1. a rule that named THIS object beats one that reached it from above;
+//  2. a longer pattern beats a shorter one;
+//  3. a rule that names the object beats one that names its container.
+//
+// Ties go to whichever was considered first, which keeps the absolute catalog
+// ahead of the home-relative one as it was.
+func moreSpecific(a, b candidate) bool {
+	if a.self != b.self {
+		return a.self
+	}
+	if a.segs != b.segs {
+		return a.segs > b.segs
+	}
+	return !a.rule.Generic && b.rule.Generic
+}
+
 func Match(context MatchContext) *Rule {
 	// Absolute patterns first, and they are checked whatever the path looks like.
 	// Everything in Catalog goes through homeRelative, which only recognises
@@ -591,33 +759,40 @@ func Match(context MatchContext) *Rule {
 	// GB of regenerable cache and matched nothing at all. Same root cause as the
 	// `**/` guard hole, which I fixed on the guard side only.
 	clean := strings.TrimSuffix(filepath.Clean(context.Path), "/")
-	for index := range AbsoluteCatalog {
-		rule := &AbsoluteCatalog[index]
-		if !rule.conditionsMet(context) {
-			continue
-		}
-		if matchPattern(strings.TrimPrefix(rule.Pattern, "/"), strings.TrimPrefix(clean, "/")) {
-			return rule
+	var best candidate
+	consider := func(catalog []Rule, relative string, trimLeadingSlash bool) {
+		for index := range catalog {
+			rule := &catalog[index]
+			if !rule.conditionsMet(context) {
+				continue
+			}
+			pattern := rule.Pattern
+			if trimLeadingSlash {
+				pattern = strings.TrimPrefix(pattern, "/")
+			}
+			matched, exact := matchPatternScoped(pattern, relative)
+			if !matched {
+				continue
+			}
+			if rule.Covers == CoversSelfOnly && !exact {
+				continue
+			}
+			next := candidate{rule: rule, self: exact, segs: rule.Specificity()}
+			if best.rule == nil || moreSpecific(next, best) {
+				best = next
+			}
 		}
 	}
-	relative, ok := homeRelative(context.Path)
-	if !ok {
-		return nil
+	consider(AbsoluteCatalog, strings.TrimPrefix(clean, "/"), true)
+	if relative, ok := homeRelative(clean); ok {
+		consider(Catalog, relative, false)
 	}
-	for index := range Catalog {
-		rule := &Catalog[index]
-		if !rule.conditionsMet(context) {
-			continue
-		}
-		if matchPattern(rule.Pattern, relative) {
-			return rule
-		}
-	}
-	return nil
+	return best.rule
 }
 
 // AbsoluteCatalog is matched against the whole path rather than a home-relative
-// one. Everything here is root-owned, so it is reported and never staged: see
+// one -- that is the only thing the list has in common. Root-owned entries carry
+// Manual and are reported but never staged: see
 // Rule.Manual.
 var AbsoluteCatalog = []Rule{
 	{
@@ -651,6 +826,224 @@ var AbsoluteCatalog = []Rule{
 		Recovery: RecoveryIrreplaceable, Risk: RiskReview,
 		WhatBreaks:   "历史诊断日志消失。排查旧问题时会缺少记录，功能不受影响。",
 		HowToRestore: "无法恢复，但新日志会继续写入。",
+	},
+
+	// --- The location guards, merged in from anywhereIrreplaceable,
+	// suffixIrreplaceable, loginStatePaths and PartialInstallReason. ---
+	//
+	// They live here because they are matched against the whole path: a
+	// repository on an external disk is still a repository, and a guard that only
+	// fires inside one home folder is not the guard it looks like.
+	{
+		Guard: IrreplaceableRepository,
+		Name:  "版本库历史", Category: "版本库",
+		Pattern: "**/.git", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是版本库历史。即使远端可能有副本，本工具无法确认，删除后可能永久丢失未推送的提交。",
+		HowToRestore: "只能从远端重新克隆，且未推送的提交无法找回。",
+	},
+	// The exception that used to be a mechanism. gitTransient was a list read by
+	// the guard to suppress itself; a more specific rule does that by itself now.
+	// Both live here rather than in the home-relative catalog because a
+	// repository on an external disk leaves the same artifacts, and an exception
+	// that only holds inside one home folder is not the exception it looks like.
+	{
+		Name: "git 残留临时包", Category: "残留文件",
+		Pattern: "**/.git/objects/pack/tmp_pack_*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "没有影响。这是 repack 中断后遗留的临时文件，git 不会使用它。",
+		HowToRestore: "无需恢复：它不是版本库内容，删除不丢任何提交。",
+	},
+	{
+		Name: "git 残留临时索引", Category: "残留文件",
+		Pattern: "**/.git/objects/pack/tmp_idx_*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		WhatBreaks:   "没有影响。这是 repack 中断后遗留的临时文件，git 不会使用它。",
+		HowToRestore: "无需恢复：它不是版本库内容，删除不丢任何提交。",
+	},
+	{
+		Guard: IrreplaceableUserData,
+		Name:  "站点本地存储", Category: "用户数据",
+		Pattern: "**/Local Storage", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
+		HowToRestore: "无法恢复，除非服务端仍有副本。",
+	},
+	{
+		Guard: IrreplaceableUserData,
+		Name:  "站点数据库", Category: "用户数据",
+		Pattern: "**/IndexedDB", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
+		HowToRestore: "无法恢复，除非服务端仍有副本。",
+	},
+	{
+		Guard: IrreplaceableUserData,
+		Name:  "站点文件系统", Category: "用户数据",
+		Pattern: "**/File System", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
+		HowToRestore: "无法恢复，除非服务端仍有副本。",
+	},
+	{
+		Guard: IrreplaceableUserData,
+		Name:  "扩展本地设置", Category: "用户数据",
+		Pattern: "**/Local Extension Settings", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
+		HowToRestore: "无法恢复，除非服务端仍有副本。",
+	},
+	// Not a cache despite where it sits: IntelliJ's local file history is how
+	// uncommitted work is recovered, one segment from the index that is disposable.
+	{
+		Guard: IrreplaceableUserData,
+		Name:  "本地文件历史", Category: "用户数据",
+		Pattern: "**/LocalHistory", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是 IDE 保存的本地修改历史，未提交的改动靠它找回，删除后无法重建。",
+		HowToRestore: "无法恢复。",
+	},
+	{
+		Guard: IrreplaceableCredentials,
+		Name:  "SSH 密钥", Category: "凭据",
+		Pattern: "**/.ssh", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是密钥或凭据，删除后无法恢复。",
+		HowToRestore: "无法恢复，只能重新生成密钥并在每个服务上重新登记。",
+	},
+	{
+		Guard: IrreplaceableCredentials,
+		Name:  "GPG 密钥", Category: "凭据",
+		Pattern: "**/.gnupg", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是密钥或凭据，删除后无法恢复。",
+		HowToRestore: "无法恢复，只能重新生成密钥。",
+	},
+	// The bundles, by their own extension. Matched on the segment rather than on
+	// a lowercased whole path, so the comparison is now case sensitive -- the
+	// applications that create these write the extension themselves, so this is
+	// a narrowing on paper more than in practice.
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "照片图库", Category: "用户内容",
+		Pattern: "**/*.photoslibrary", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "照片图库（旧版）", Category: "用户内容",
+		Pattern: "**/*.photolibrary", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "Final Cut 资源库", Category: "用户内容",
+		Pattern: "**/*.fcpbundle", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的剪辑工程与素材，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableUserContent,
+		Name:  "Logic 工程", Category: "用户内容",
+		Pattern: "**/*.logicx", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是你自己的工程文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableVirtualDisk,
+		Name:  "稀疏磁盘映像", Category: "虚拟磁盘",
+		Pattern: "**/*.sparsebundle", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableVirtualDisk,
+		Name:  "虚拟机磁盘", Category: "虚拟磁盘",
+		Pattern: "**/*.vmdk", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableVirtualDisk,
+		Name:  "虚拟机磁盘", Category: "虚拟磁盘",
+		Pattern: "**/*.qcow2", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableVirtualDisk,
+		Name:  "UTM 虚拟机", Category: "虚拟磁盘",
+		Pattern: "**/*.utm", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableVirtualDisk,
+		Name:  "Parallels 虚拟机", Category: "虚拟磁盘",
+		Pattern: "**/*.pvm", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Guard: IrreplaceableVirtualDisk,
+		Name:  "VirtualBox 磁盘", Category: "虚拟磁盘",
+		Pattern: "**/*.vdi", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	// Login state is not irreplaceable -- you can sign in again -- so the
+	// correction is on the risk and the wording, not on the recoverability.
+	// Recovery is deliberately left unset rather than filled with a comfortable
+	// answer.
+	{
+		Guard: LoginState,
+		Name:  "Cookie", Category: "登录状态",
+		Pattern: "**/Cookies", Risk: RiskRisky,
+		WhatBreaks:   "这里保存的是浏览器的登录状态。删除后所有网站都需要重新登录，部分站点的两步验证需要重新设置。",
+		HowToRestore: "只能逐个网站重新登录。",
+	},
+	{
+		Guard: LoginState,
+		Name:  "Cookie 日志", Category: "登录状态",
+		Pattern: "**/Cookies-journal", Risk: RiskRisky,
+		WhatBreaks:   "这里保存的是浏览器的登录状态。删除后所有网站都需要重新登录。",
+		HowToRestore: "只能逐个网站重新登录。",
+	},
+	{
+		Guard: LoginState,
+		Name:  "保存的登录信息", Category: "登录状态",
+		Pattern: "**/Login Data", Risk: RiskRisky,
+		WhatBreaks:   "这里保存的是浏览器记住的账号密码，删除后需要重新输入。",
+		HowToRestore: "只能重新输入或从密码管理器恢复。",
+	},
+	{
+		Guard: LoginState,
+		Name:  "保存的登录信息", Category: "登录状态",
+		Pattern: "**/Login Data For Account", Risk: RiskRisky,
+		WhatBreaks:   "这里保存的是浏览器记住的账号密码，删除后需要重新输入。",
+		HowToRestore: "只能重新输入或从密码管理器恢复。",
+	},
+	{
+		Guard: LoginState,
+		Name:  "扩展 Cookie", Category: "登录状态",
+		Pattern: "**/Extension Cookies", Risk: RiskRisky,
+		WhatBreaks:   "这里保存的是浏览器扩展的登录状态，删除后扩展需要重新登录。",
+		HowToRestore: "只能逐个扩展重新登录。",
+	},
+	{
+		Guard: LoginState,
+		Name:  "设备绑定会话", Category: "登录状态",
+		Pattern: "**/Device Bound Sessions", Risk: RiskRisky,
+		WhatBreaks:   "这里保存的是与本机绑定的会话，删除后相关站点需要重新登录并重新验证设备。",
+		HowToRestore: "只能重新登录。",
+	},
+	{
+		Guard: LoginState,
+		Name:  "Safari 数据", Category: "登录状态",
+		Pattern: "**/Safari", Risk: RiskRisky,
+		WhatBreaks:   "这里保存的是 Safari 的登录状态与浏览数据，删除后所有网站都需要重新登录。",
+		HowToRestore: "只能逐个网站重新登录。",
+	},
+	// Inside an installed toolchain: the installer checks the root and a stamp,
+	// not the files, so nothing self-heals and the toolchain stays broken.
+	{
+		Guard: PartialInstall,
+		Name:  "工具链内部目录", Category: "工具链",
+		Pattern: "**/flutter/bin/cache/dart-sdk", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		WhatBreaks:   "这是已安装工具链的内部目录。安装器只检查根目录和 stamp，不校验里面的文件，所以删掉之后不会自动重新下载——工具链会一直是坏的。",
+		HowToRestore: "真实恢复方式是删除整个缓存目录重新拉取。",
 	},
 }
 
@@ -739,20 +1132,38 @@ func homeRelative(absolutePath string) (string, bool) {
 // the whole cache directory is as legitimate a suggestion as one app's slice of
 // it, and which one is offered depends on where the size floor cut.
 func matchPattern(pattern, relative string) bool {
+	matched, _ := matchPatternScoped(pattern, relative)
+	return matched
+}
+
+// matchPatternScoped is matchPattern plus the one bit a description needs:
+// whether the pattern consumed the whole path, so whether it named THIS object
+// or an ancestor of it.
+//
+// Patterns are segment prefixes, which is right for the question the guards
+// answer -- losing anything under ~/Documents does cost user content -- and
+// wrong for the question a description answers, which is what this object is.
+// Measured: ~/Documents/proj/node_modules matched the node_modules rule
+// (redownloadable) and the Documents guard (user_content) at the same time, so
+// the panel printed 可重新下载 and 不可重建 about one directory.
+func matchPatternScoped(pattern, relative string) (matched bool, exact bool) {
 	pathSegments := strings.Split(relative, "/")
 	if trimmed, found := strings.CutPrefix(pattern, "**/"); found {
-		return containsSequence(pathSegments, strings.Split(trimmed, "/"))
+		return sequenceScoped(pathSegments, strings.Split(trimmed, "/"))
 	}
+	// A trailing "/*" names a container, so such a pattern can never be the
+	// object itself however the segments line up.
+	container := strings.HasSuffix(pattern, "/*")
 	patternSegments := strings.Split(strings.TrimSuffix(pattern, "/*"), "/")
 	if len(pathSegments) < len(patternSegments) {
-		return false
+		return false, false
 	}
 	for index, segment := range patternSegments {
 		if !segmentMatches(segment, pathSegments[index]) {
-			return false
+			return false, false
 		}
 	}
-	return true
+	return true, !container && len(pathSegments) == len(patternSegments)
 }
 
 // segmentMatches handles the wildcards a segment may carry: "*" alone is any
@@ -774,22 +1185,33 @@ func segmentMatches(pattern, segment string) bool {
 }
 
 func containsSequence(haystack, needle []string) bool {
+	matched, _ := sequenceScoped(haystack, needle)
+	return matched
+}
+
+// sequenceScoped reports whether the needle appears in the haystack at all, and
+// whether any occurrence of it ends on the haystack's last segment -- which is
+// what separates "this IS a .git" from "this is inside one".
+func sequenceScoped(haystack, needle []string) (matched bool, atEnd bool) {
 	if len(needle) == 0 || len(haystack) < len(needle) {
-		return false
+		return false, false
 	}
 	for start := 0; start+len(needle) <= len(haystack); start++ {
-		matched := true
+		hit := true
 		for offset := range needle {
 			if !segmentMatches(needle[offset], haystack[start+offset]) {
-				matched = false
+				hit = false
 				break
 			}
 		}
-		if matched {
-			return true
+		if hit {
+			matched = true
+			if start+len(needle) == len(haystack) {
+				return true, true
+			}
 		}
 	}
-	return false
+	return matched, false
 }
 
 // Project activity thresholds. Not tuned against anything -- they are the

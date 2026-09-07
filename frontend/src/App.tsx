@@ -4,7 +4,7 @@ import type { ArcGeom, MorphPlan } from "./morph";
 import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstHiddenSpace, sunburstEndAngle, previewDwellMs, previewLeaveMs } from "./sunburst";
 import type { HueBand } from "./sunburst";
 import { countdownDigit, countdownFraction, deleteFraction, progressHoldMs, ringOffset } from "./countdown";
-import { factsLine, guardLines, hasVerdict, recoveryLabel } from "./describe";
+import { factsLine, hasVerdict, recoveryLabel } from "./describe";
 import { useNotice, NoticeToast } from "./useNotice";
 import { meterColor } from "./meter";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
@@ -111,6 +111,9 @@ const smallEntryShare = 0.0005;
 // the focus ring go away on their own.
 const focusIdleMs = 3000;
 // Seconds the destructive action waits before running, so it can be stopped.
+// Said in one place, because it is now the only place it is said: the mark in
+// the heading is the whole carrier, and its tooltip is the whole explanation.
+const incompleteReason = "部分结果：有目录未能完整读取，未计入的空间归入隐藏空间。";
 const countdownSeconds = 5;
 // How long a deletion has to run before it is worth drawing a progress ring for.
 // Measured on APFS with four workers: about 62k inodes a second, so most staged
@@ -1264,6 +1267,7 @@ function DirectoryList({
   selectedKey,
   contextEntry,
   description,
+  confidence,
   inCollector,
   onHover,
   onFocus,
@@ -1291,6 +1295,9 @@ function DirectoryList({
   selectedKey: string | null;
   contextEntry: MapEntry | null;
   description: NodeDescription | null;
+  // The scan result's own confidence, passed rather than recomputed: two
+  // expressions for one fact is how they drift apart.
+  confidence: string;
   inCollector: boolean;
   onHover: (entry: MapEntry | null) => void;
   onFocus: (entry: MapEntry) => void;
@@ -1315,6 +1322,24 @@ function DirectoryList({
           ? <span className="directory-parent-dot" style={{ background: preview.color }} />
           : parentDotColor && <span className="directory-parent-dot" style={{ background: parentDotColor }} />}
         <h2>{preview ? preview.name : parent ? crumbLabel(parent.path, parent.parentId === 0 ? 0 : 1) : "当前目录"}</h2>
+        {/* The result is incomplete -- permissions, cloud placeholders, a
+            cancelled run -- and DDD invariant 5 requires that be visible. It was
+            a sentence under the list until that sentence was removed, and the
+            隐藏空间 row alone states the bytes without the reason. So it is a
+            mark beside the title: it costs no row, it rides the heading the
+            description region is anchored to, and the reason is on its tooltip.
+
+            Only "partial". "estimated" is a statement about precision, not about
+            something missing, and a mark that fires on both would stop meaning
+            anything. */}
+        {confidence === "partial" && (
+          <span
+            className="directory-incomplete"
+            role="img"
+            title={incompleteReason}
+            aria-label={incompleteReason}
+          >!</span>
+        )}
         <strong>{formatBytes(preview ? preview.size : total)}</strong>
       </div>
 
@@ -1421,9 +1446,12 @@ function DirectoryList({
             )}
             {description.whatBreaks && <p className="describe-breaks">{description.whatBreaks}</p>}
             {description.howToRestore && <p className="describe-restore">{description.howToRestore}</p>}
-            {guardLines(description).map((line) => (
-              <p key={line} className="describe-guard">{line}</p>
-            ))}
+            {/* The one refusal. Everything else the object is -- including that
+                losing it would be permanent -- arrives as its rule's own
+                recovery tag and prose, because a guard is a rule now. */}
+            {description.protection && (
+              <p className="describe-guard">不可删除：{description.protection}</p>
+            )}
             {/* Nothing is known. Said plainly, because the alternative -- printing
                 nothing, or worse printing a reassurance -- is what makes an
                 unrecognised 8 GB directory look approved. The condition has one
@@ -3024,6 +3052,7 @@ export default function App() {
             selectedKey={selectedKey}
             contextEntry={inspectorEntry}
             description={description}
+            confidence={mapConfidence}
             inCollector={inspectedInCollector}
             onHover={setHoveredEntry}
             onFocus={setFocusedEntry}
