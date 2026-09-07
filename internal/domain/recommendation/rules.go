@@ -227,6 +227,17 @@ var Catalog = []Rule{
 	},
 	// Not a cache despite where it sits: IntelliJ's local file history is how
 	// uncommitted work is recovered, one segment from the index that is disposable.
+	// R-070 §2.2 把它列在"该写哪条规则"的工单里，实测 667 MB。但它是聊天记录本身，
+	// 不是缓存——工单按未解释字节排序，排出来的不一定是可清理项，这一条就是反例。
+	// 同目录下的 media 是可重建的缓存，此处不涉及。
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableUserData,
+		Name:   "聊天记录数据库", Category: "用户数据",
+		Pattern: "**/postbox/db", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是本机保存的聊天记录。服务端未必保留全部历史，删除后无法重建。",
+		HowToRestore: "无法恢复；能同步回来的部分取决于服务端保留策略。",
+	},
 	{
 		Anchor: AnchorPath,
 		Guard:  IrreplaceableUserData,
@@ -864,6 +875,82 @@ var Catalog = []Rule{
 		WhatBreaks:   "下次 Gradle 构建重新生成该模块的转换产物。",
 		HowToRestore: "自动重建。",
 	},
+	// --- Android SDK。R-070 §2.2 的工单里最大的一块，实测约 9.5 GB，此前 0 条规则。 ---
+	//
+	// 逐个组件而不是一条 `Library/Android/sdk`：SDK 目录里还有 licenses、skins 这类
+	// 几 KB 的东西，以及 platform-tools（adb 在里面），整块报会把它们一起卷进去。
+	{
+		Name: "Android NDK", Category: "SDK 缓存",
+		Pattern: "Library/Android/sdk/ndk", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
+		WhatBreaks:   "所有含原生代码的模块无法编译，直到 NDK 重新下载完成。单个版本约 3 GB。",
+		HowToRestore: "SDK Manager 里重新勾选对应 NDK 版本。",
+	},
+	{
+		Name: "Android 平台 SDK", Category: "SDK 缓存",
+		Pattern: "Library/Android/sdk/platforms", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
+		WhatBreaks:   "编译需要的目标平台缺失，Gradle 同步会报找不到 compileSdk。",
+		HowToRestore: "SDK Manager 里重新勾选对应 API 级别。",
+	},
+	{
+		Name: "Android 构建工具", Category: "SDK 缓存",
+		Pattern: "Library/Android/sdk/build-tools", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
+		WhatBreaks:   "aapt2、d8 等工具缺失，构建在打包阶段失败。",
+		HowToRestore: "SDK Manager 里重新勾选对应 build-tools 版本。",
+	},
+	{
+		Name: "Android 平台源码", Category: "SDK 缓存",
+		Pattern: "Library/Android/sdk/sources", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
+		WhatBreaks:   "不影响编译。IDE 里跳转到框架源码会变成反编译结果。",
+		HowToRestore: "SDK Manager 里重新勾选 Sources。",
+	},
+	{
+		Name: "Android 模拟器系统镜像", Category: "SDK 缓存",
+		Pattern: "Library/Android/sdk/system-images", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
+		WhatBreaks:   "已创建的虚拟设备无法启动，直到对应镜像重新下载。单个镜像 1–3 GB。",
+		HowToRestore: "SDK Manager 里重新勾选对应镜像；虚拟设备自身的配置不受影响。",
+	},
+	{
+		Name: "Android 模拟器", Category: "SDK 缓存",
+		Pattern: "Library/Android/sdk/emulator", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
+		WhatBreaks:   "模拟器无法启动，直到重新下载。",
+		HowToRestore: "SDK Manager 里重新勾选 Android Emulator。",
+	},
+
+	// --- Gradle 的补漏。目录里已有 8 条版本无关的规则，这三处是它们没盖到的。 ---
+	{
+		Name: "Gradle 发行版", Category: "SDK 缓存",
+		Pattern: ".gradle/wrapper", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
+		WhatBreaks:   "下次用 Gradle Wrapper 构建时重新下载对应版本，离线状态下失败。",
+		HowToRestore: "联网后 wrapper 自行下载。",
+	},
+	{
+		Name: "Gradle 守护进程日志", Category: "日志",
+		Pattern: ".gradle/daemon", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
+		WhatBreaks:   "没有影响。不需要联网。这是守护进程的日志与注册信息，下次启动重建。",
+		HowToRestore: "无需恢复。",
+	},
+	// 版本目录（8.13 一类）剩下的部分故意不加规则。写一条 `.gradle/caches/*` 会连
+	// `~/.gradle/caches` 本身一起占住——容器模式的语义就是这样——而证据包的折叠是
+	// 外层胜（ADR-0061 §2b），于是里面已经分清楚的 transforms / modules 会被重新
+	// 收成一句模糊警告。`Specificity()` 的注释记着这个实测：通用的 Library/Caches
+	// 规则占住整个 8.1 GB，把里面 1.7 GB 的 Chrome 发现丢掉了。
+	// 未解释的残余约 0.56 GB，不值得换这个。TestNoRuleClaimsTheWholeGradleCacheDirectory 看着这条。
+
+	// --- 其余工单项。 ---
+	{
+		Name: "LLDB 模块缓存", Category: "构建缓存",
+		Pattern: ".lldb/module_cache", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
+		WhatBreaks:   "不需要联网。下次调试时重建，首次断点变慢。",
+		HowToRestore: "无需操作，调试器自行重建。",
+	},
+	// 装完之后没清理的安装包副本；扩展本体在 extensions/ 下，删掉不影响已装扩展。
+	{
+		Name: "VS Code 扩展安装包残留", Category: "更新器残留",
+		Pattern: "Library/Application Support/Code/CachedExtensionVSIXs", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
+		WhatBreaks:   "没有影响。这是已安装扩展的 .vsix 安装包副本，扩展本体不在这里。",
+		HowToRestore: "无需恢复；下次安装或更新扩展时重新下载。",
+	},
+
 	// --- The location guards, merged in from homeRelativeIrreplaceable. ---
 	//
 	// They were a parallel table read by IrreplaceableReason, which meant two

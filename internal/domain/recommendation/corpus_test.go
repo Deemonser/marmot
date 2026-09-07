@@ -67,6 +67,29 @@ var corpus = []string{
 	"~/Library/Application Support/Google/Chrome/Default/Login Data",
 	// --- partial install ---
 	"~/development/flutter/bin/cache/dart-sdk/lib",
+	// --- R-070 §2.2 的工单，新增的一批 ---
+	"~/Library/Android/sdk/ndk",
+	"~/Library/Android/sdk/ndk/29.0.14206865/toolchains",
+	"~/Library/Android/sdk/platforms",
+	"~/Library/Android/sdk/build-tools",
+	"~/Library/Android/sdk/sources",
+	"~/Library/Android/sdk/system-images",
+	"~/Library/Android/sdk/emulator",
+	// SDK 目录里不该被整块卷走的部分：adb 在这儿，licenses 是几 KB。
+	"~/Library/Android/sdk/platform-tools",
+	"~/Library/Android/sdk/licenses",
+	"~/.gradle/wrapper",
+	"~/.gradle/daemon",
+	// 版本目录本身故意不被任何规则占住（见 rules.go 里的说明）；里面的具体项各有规则。
+	"~/.gradle/caches/8.13",
+	"~/.gradle/caches/8.13/transforms",
+	"~/.gradle/caches/modules-2/files-2.1",
+	"~/.gradle/caches/build-cache-1",
+	"~/.lldb/module_cache",
+	"~/Library/Application Support/Code/CachedExtensionVSIXs",
+	// 聊天记录是用户数据，不是缓存——工单排出来的不一定是可清理项。
+	"~/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/appstore/account-1/postbox/db",
+	"~/Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram/appstore/account-1/postbox/media",
 	// --- absolute catalog ---
 	"/Library/Caches/com.apple.something",
 	"/Library/Logs/DiagnosticReports",
