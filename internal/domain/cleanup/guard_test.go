@@ -62,3 +62,41 @@ func TestDeleteBlockCarveOutBeatsTheProtectedTree(t *testing.T) {
 		t.Fatalf("/usr/local must be exempt, got %q", reason)
 	}
 }
+
+// An application bundle is one object. Its interior is not separately
+// addressable: deleting part of it yields a broken application and nothing puts
+// the part back, so the catalog must never get the chance to label it.
+//
+// Measured before this guard existed: `**/node_modules` matched
+// ~/Downloads/Realm Studio.app/Contents/Resources/app.asar.unpacked/node_modules
+// and offered it as 可重新下载, and a whole-disk scan found fifty more inside
+// /Applications. Nothing refused any of them.
+func TestBundleInteriorIsRefusedButTheBundleItselfIsNot(t *testing.T) {
+	refused := []string{
+		"/Users/alice/Downloads/Realm Studio.app/Contents/Resources/app.asar.unpacked/node_modules",
+		"/Applications/Visual Studio Code.app/Contents/Resources/app/extensions/copilot/node_modules",
+		"/Applications/Foo.app/Contents",
+		"/Applications/Foo.app/Contents/Frameworks/Bar.framework/Versions/A/Resources",
+		"/Users/alice/Library/QuickLook/Thing.qlgenerator/Contents/MacOS",
+	}
+	for _, path := range refused {
+		if reason := DeleteBlock(path); reason != ProtectionBundleInterior {
+			// A more specific refusal winning is fine; nothing at all is not.
+			if reason == "" {
+				t.Errorf("%s was not refused", path)
+			}
+		}
+	}
+	// Deleting a whole application is ordinary cleanup and stays allowed. So does
+	// an ordinary directory that merely has a dot in its name.
+	for _, path := range []string{
+		"/Applications/Foo.app",
+		"/Users/alice/Downloads/Realm Studio.app",
+		"/Users/alice/work/project.old/node_modules",
+		"/Users/alice/work/repo/node_modules",
+	} {
+		if reason := DeleteBlock(path); reason != "" {
+			t.Errorf("%s was refused as %q", path, reason)
+		}
+	}
+}

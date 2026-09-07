@@ -21,6 +21,17 @@ const (
 	ProtectionHomeFolder = "home_folder"
 	// A mounted volume's own mount point, which is not an ordinary directory.
 	ProtectionVolumeRoot = "volume_root"
+	// Inside an application bundle. The bundle is one object: its interior is not
+	// separately addressable, deleting part of it yields a broken application,
+	// and nothing puts the part back.
+	//
+	// Measured on this machine: `**/node_modules` matched
+	// ~/Downloads/Realm Studio.app/Contents/Resources/app.asar.unpacked/node_modules
+	// and offered it as 可重新下载, which npm will not honour, and a whole-disk
+	// scan found fifty more inside /Applications -- Visual Studio Code's Copilot
+	// extension, ChatGPT's embedded node runtime, RustRover's bundled Python.
+	// Nothing refused any of them.
+	ProtectionBundleInterior = "bundle_interior"
 )
 
 // protectedExactly may not be deleted themselves, while what is inside them may.
@@ -66,6 +77,38 @@ var unprotectedTrees = []string{
 	"/usr/local",
 }
 
+// bundleExtensions are the directory suffixes macOS presents as a single object.
+//
+// By extension, because the real test is an Info.plist inside Contents and the
+// scanner does not read files -- so this is the list of known wrappers rather
+// than a complete answer, and a wrapper missing from it is a gap, not a
+// decision. Everything here shares the property that earns the refusal: deleting
+// part of it leaves a broken thing that nothing reinstalls.
+//
+// Document packages are deliberately absent. A .photoslibrary is guarded as
+// irreplaceable content instead, which is a statement about what the loss costs
+// rather than about the structure, and the two should not be conflated.
+var bundleExtensions = []string{
+	".app", ".framework", ".bundle", ".plugin", ".kext", ".dext", ".systemextension",
+	".appex", ".xpc", ".service", ".prefPane", ".qlgenerator", ".mdimporter",
+	".saver", ".component", ".audiounit", ".wdgt", ".pluginkit", ".driver",
+}
+
+// insideBundle reports whether any ancestor of the path is an application
+// bundle. The bundle itself is not inside one: deleting a whole application is
+// ordinary cleanup and stays allowed.
+func insideBundle(clean string) bool {
+	for parent := filepath.Dir(clean); parent != "/" && parent != "."; parent = filepath.Dir(parent) {
+		name := filepath.Base(parent)
+		for _, extension := range bundleExtensions {
+			if strings.HasSuffix(name, extension) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // DeleteBlock reports why a path may not be deleted, or "" when it may. It is the
 // only place that question is answered: the space map consults it when granting
 // the collect capability, and plan creation consults it again before anything is
@@ -100,6 +143,12 @@ func DeleteBlock(path string) string {
 		if clean == tree || IsPathWithin(tree, clean) {
 			return ProtectionSystemDependency
 		}
+	}
+	// Part of an application bundle. Checked after the trees so a more specific
+	// refusal still wins, and before returning nothing so the answer is a refusal
+	// rather than a suggestion the catalog would then mislabel.
+	if insideBundle(clean) {
+		return ProtectionBundleInterior
 	}
 	// A volume's own root, for the same reason the scan root is refused: the mount
 	// point is not an ordinary directory.
