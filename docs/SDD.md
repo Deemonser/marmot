@@ -973,7 +973,7 @@ ports.Advisor:
 | `Declared` | 规则作者声明的基线风险；模型来源为空 |
 | `Confidence` | 规则：`Generic` 的容器规则报 0.7，其余报 1；模型自报 |
 | `Activity` / `IdleDays` | `project_source`（§14.5a）、`artifact_age`（应用缓存自身最新 mtime）、`generation`（§14.5c） |
-| `Guards` | `IrreplaceableReason` / `LoginStateReason` / `PartialInstallReason` 的命中码 |
+| `Guards` | 胜出规则携带的 `Rule.Guard` 码（ADR-0068 §2；此前来自三个独立的护栏函数） |
 | `Generic` | 规则作者声明"只认识容器、认不出对象"（`Library/Caches/*` 一类）；不按段数推断，`**/node_modules` 一段却精确 |
 
 推导顺序固定，见 ADR-0067 §1。要点：
@@ -1276,11 +1276,16 @@ fixed 元素（提示条、收集区、建议角、拖拽芯片、证据遮罩�
 
 两种守卫因此分工明确，且不能混为一谈：
 
-| | `cleanup.DeleteBlock` | `recommendation.IrreplaceableReason` |
+| | `cleanup.DeleteBlock` | 目录里携带 `Guard` 的规则 |
 | :-- | :-- | :-- |
-| 保护什么 | **机器不被弄坏**（`/`、系统树、家目录根、卷根） | 用户不被**建议**删掉无法重建的东西 |
+| 保护什么 | **机器不被弄坏**（`/`、系统树、家目录根、卷根、应用包内部） | 用户不被**建议**删掉无法重建的东西 |
 | 在删除路径上 | **硬拒绝**，建立计划时 | **不介入** |
 | 在建议路径上 | 不产出建议 | 更正模型的错误主张（ADR-0061 §7） |
+| 可否外置 | **永不**，编译进二进制 | 基线专有，覆盖层不得引入或压过（ADR-0068 §5） |
+
+自 ADR-0068 起，右列不再是独立的匹配系统：位置护栏是 `Catalog` 里的普通规则，
+`IrreplaceableReason` / `LoginStateReason` / `PartialInstallReason` 是对目录的过滤式查询。
+规则结论此后天然不带位置护栏（ADR-0067 的要求），因为"自身命中胜过祖先继承"是仲裁的第一条。
 
 **工具建议什么，与用户被允许做什么，是两个问题。** 前者要谨慎，后者是用户的决定。
 
@@ -1348,8 +1353,11 @@ ADR-0063 之后删除是真删，同一个减法从谎报变成准确陈述—�
 
 ### 14.5g 规则表必须够到家目录之外，且有些事只能报告
 
-`Match` 先走 `AbsoluteCatalog`（对完整路径匹配），再走 `Catalog`（经 `homeRelative()`，
-只认 `/Users/<账户>/`）。此前只有后者，于是**扫描根是整盘、而工具只在家目录里认得东西**：
+`Match` 对**一张** `Catalog` 走一趟，每条规则用自己的 `Rule.Anchor` 决定匹配对象：
+`AnchorPath` 对完整路径，`AnchorHome` 经 `homeRelative()`（只认 `/Users/<账户>/`）。
+ADR-0068 §3 之前是两张表两趟，而两张表都含 `**/` 模式，于是"是否在家目录外生效"取决于
+作者把规则放进了哪张表——放错表正是本节这个洞的机制，R-070 §4.1 记录了它的一次复发。
+此前只有家目录相对那一趟，于是**扫描根是整盘、而工具只在家目录里认得东西**：
 `/Library/Developer/CoreSimulator/Caches/dyld` 是 3.5 GB 模拟器可重建缓存，一条都没命中。
 与 ADR-0063 §3 那个 `**/` 守卫的洞同源（R-065 §3）。
 

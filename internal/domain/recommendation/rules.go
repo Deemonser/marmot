@@ -1,6 +1,7 @@
 package recommendation
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -38,6 +39,9 @@ type Rule struct {
 	// the following segment sequence at any depth; "*" matches one whole
 	// segment; a trailing "*" on a segment matches a prefix.
 	Pattern string
+	// Origin is where this rule came from. See the Origin type; the zero value is
+	// the binary, so a rule written in this file needs no annotation.
+	Origin Origin
 	// Anchor is what Pattern is matched against. See the Anchor type.
 	Anchor Anchor
 	// Covers is how far this rule's claim reaches. See the Covers type: the zero
@@ -1000,6 +1004,26 @@ const NoProject = int64(-1)
 // rule that fires on one but not the other would depend on which spelling the
 // scan happened to walk. cleanup.DeleteBlock handles the same pair for the same
 // reason.
+// Origin says whether a rule ships in the binary or arrived from an external
+// overlay (ADR-0062 §6, ADR-0068 §5).
+//
+// It exists before the overlay does, on purpose. ADR-0062 §1 draws its red line
+// with the words "这条线现在不划，以后加不上去", and merging the location guards
+// into this catalog changed the shape of that line: the guards used to be
+// outside the catalog and therefore outside anything remotely updatable, and now
+// they are rules like any other. So the line is redrawn here instead -- a guard
+// is baseline-only, and no overlay rule may outrank one -- and it is redrawn now
+// rather than when the loader arrives.
+type Origin string
+
+const (
+	// OriginBaseline is the zero value: compiled in, and the only origin a rule
+	// carrying a Guard may have.
+	OriginBaseline Origin = ""
+	// OriginOverlay came from a signed external catalog.
+	OriginOverlay Origin = "overlay"
+)
+
 // Anchor is what a rule's pattern is matched against: the path below a home
 // folder, or the whole path.
 //
@@ -1042,6 +1066,31 @@ const (
 	CoversSelfOnly Covers = "self"
 )
 
+// guardedBaseline is a rule that ships in the binary and carries a guard: the
+// class ADR-0068 §5 puts out of an overlay's reach.
+func guardedBaseline(rule *Rule) bool {
+	return rule != nil && rule.Origin == OriginBaseline && rule.Guard != ""
+}
+
+// ValidateOverlay is the gate an overlay loader must pass its rules through
+// before they join the catalog. There is no loader yet (ADR-0062 §8 puts it
+// last); this exists so the constraint is in the code the loader's author will
+// read, rather than only in a decision record they may not.
+func ValidateOverlay(rules []Rule) error {
+	for index := range rules {
+		rule := &rules[index]
+		if rule.Origin != OriginOverlay {
+			return fmt.Errorf("overlay rule %q must declare OriginOverlay", rule.Name)
+		}
+		// A guard is what an overlay must not be able to introduce, remove or
+		// weaken. Refusing the field outright is the cheapest form of that.
+		if rule.Guard != "" {
+			return fmt.Errorf("overlay rule %q carries guard %q: guards are baseline only (ADR-0068 §5)", rule.Name, rule.Guard)
+		}
+	}
+	return nil
+}
+
 // candidate is one rule that matched, with what is needed to rank it.
 type candidate struct {
 	rule *Rule
@@ -1063,6 +1112,17 @@ type candidate struct {
 // Ties go to whichever was considered first, which keeps the absolute catalog
 // ahead of the home-relative one as it was.
 func moreSpecific(a, b candidate) bool {
+	// ADR-0068 §5, and it comes first because it is not a question of
+	// specificity: an overlay rule may never outrank a baseline rule carrying a
+	// guard, however precisely it names the object. Inside the baseline the
+	// ranking below decides, which is what lets a specific identification
+	// supersede a guard reached from above (ADR-0067).
+	if guardedBaseline(b.rule) && a.rule.Origin != OriginBaseline {
+		return false
+	}
+	if guardedBaseline(a.rule) && b.rule.Origin != OriginBaseline {
+		return true
+	}
 	if a.self != b.self {
 		return a.self
 	}
