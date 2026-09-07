@@ -54,17 +54,10 @@ func TestMatchFindsMultiSegmentPatternAtAnyDepth(t *testing.T) {
 // This test used to assert that NOTHING outside a home folder matched, which was
 // the reach bug written down as an invariant: /Library/Developer/CoreSimulator/
 // Caches/dyld is 3.6 GB of regenerable cache and the tool had nothing to say
-// about it. Paths outside a home folder may now match, but only from
-// AbsoluteCatalog, which is checked explicitly.
+// about it. Paths outside a home folder may now match, and only a rule that
+// declares AnchorPath may answer for them.
 func TestHomeRelativeRulesNeverFireOutsideAHomeFolder(t *testing.T) {
-	fromAbsolute := func(rule *Rule) bool {
-		for index := range AbsoluteCatalog {
-			if &AbsoluteCatalog[index] == rule {
-				return true
-			}
-		}
-		return false
-	}
+	fromAbsolute := func(rule *Rule) bool { return rule.Anchor == AnchorPath }
 	// Covered on purpose, and only by an absolute rule.
 	for _, path := range []string{"/Library/Caches/com.example.app", "/Library/Updates"} {
 		rule := Match(MatchContext{Path: path})
@@ -105,18 +98,18 @@ func TestEveryRuleExplainsItself(t *testing.T) {
 			t.Fatalf("rule %q does not say how to restore", rule.Name)
 		}
 		switch rule.Recovery {
-		case RecoveryRegenerable, RecoveryRedownloadable, RecoveryIrreplaceable:
+		case RecoveryRegenerable, RecoveryRedownloadable, RecoveryIrreplaceable, RecoveryReauthenticate:
 		default:
 			t.Fatalf("rule %q has recovery %q", rule.Name, rule.Recovery)
 		}
-		switch rule.Risk {
+		switch rule.DeclaredRisk {
 		case RiskSafe, RiskReview, RiskRisky:
 		default:
-			t.Fatalf("rule %q has risk %q", rule.Name, rule.Risk)
+			t.Fatalf("rule %q has risk %q", rule.Name, rule.DeclaredRisk)
 		}
 		// Nothing irreplaceable may be called safe. This is the one combination
 		// that would turn a suggestion into a trap.
-		if rule.Recovery == RecoveryIrreplaceable && rule.Risk == RiskSafe {
+		if rule.Recovery == RecoveryIrreplaceable && rule.DeclaredRisk == RiskSafe {
 			t.Fatalf("rule %q is irreplaceable and marked safe", rule.Name)
 		}
 	}
@@ -258,8 +251,8 @@ func TestBrowserCacheIsOfferedAndLoginStateIsNot(t *testing.T) {
 			t.Errorf("%s matched %v, expected %q", path, got, want)
 			continue
 		}
-		if got.Risk != RiskSafe {
-			t.Errorf("%s is browser cache and came back %q", path, got.Risk)
+		if got.DeclaredRisk != RiskSafe {
+			t.Errorf("%s is browser cache and came back %q", path, got.DeclaredRisk)
 		}
 	}
 }
@@ -361,8 +354,8 @@ func TestGradleCacheIsSplitByWhatItCostsToGetBack(t *testing.T) {
 		if hit.Recovery != RecoveryRegenerable {
 			t.Errorf("%s is %q; it rebuilds from local inputs", hit.Name, hit.Recovery)
 		}
-		if hit.Risk != RiskSafe {
-			t.Errorf("%s is %q; a slower next build is not a decision to agonise over", hit.Name, hit.Risk)
+		if hit.DeclaredRisk != RiskSafe {
+			t.Errorf("%s is %q; a slower next build is not a decision to agonise over", hit.Name, hit.DeclaredRisk)
 		}
 		if !strings.Contains(hit.WhatBreaks, "不需要联网") {
 			t.Errorf("%s does not say the recovery is offline: %q", hit.Name, hit.WhatBreaks)
@@ -374,9 +367,9 @@ func TestGradleCacheIsSplitByWhatItCostsToGetBack(t *testing.T) {
 	if downloads == nil || downloads.Name != "Gradle 依赖下载" {
 		t.Fatalf("the downloaded dependencies are not named separately: %#v", downloads)
 	}
-	if downloads.Recovery != RecoveryRedownloadable || downloads.Risk != RiskReview {
+	if downloads.Recovery != RecoveryRedownloadable || downloads.DeclaredRisk != RiskReview {
 		t.Errorf("downloads are %q/%q; they cost a download the next build pays again",
-			downloads.Recovery, downloads.Risk)
+			downloads.Recovery, downloads.DeclaredRisk)
 	}
 	// Version numbering moves. build-cache-2 and modules-3 must not silently stop
 	// matching and reappear as an unexplained multi-GB blob.
@@ -433,8 +426,11 @@ func TestAbsoluteRulesReachOutsideAnyHomeFolder(t *testing.T) {
 
 // A manual rule with no command is a finding the user cannot act on, which is the
 // only thing worse than not making it.
+// Widened with the merge: WhatBreaks and HowToRestore were only checked on the
+// root-owned list, and they are required on every rule -- a suggestion a person
+// cannot evaluate is not a suggestion.
 func TestEveryManualRuleCarriesItsCommand(t *testing.T) {
-	for _, rule := range AbsoluteCatalog {
+	for _, rule := range Catalog {
 		if rule.Manual && strings.TrimSpace(rule.Command) == "" {
 			t.Errorf("%s is manual with no command", rule.Name)
 		}

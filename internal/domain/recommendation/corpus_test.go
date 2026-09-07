@@ -104,7 +104,7 @@ func corpusPaths(t *testing.T) []string {
 func answer(path string) string {
 	name, recovery, risk, generic := "—", "—", "—", ""
 	if rule := Match(MatchContext{Path: path, Kind: "directory", AgeDays: 400, ProjectIdleDays: NoProject}); rule != nil {
-		name, recovery, risk = rule.Name, string(rule.Recovery), string(rule.Risk)
+		name, recovery, risk = rule.Name, string(rule.Recovery), string(rule.DeclaredRisk)
 		if rule.Generic {
 			generic = " generic"
 		}

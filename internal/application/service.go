@@ -1770,7 +1770,7 @@ func (s *Service) DescribeNode(snapshotID, nodeID int64) (NodeDescription, error
 		description.Generic = rule.Generic
 		description.Category = rule.Category
 		description.Recovery = string(rule.Recovery)
-		description.Risk = string(rule.Risk)
+		description.Risk = string(rule.DeclaredRisk)
 		description.WhatBreaks = rule.WhatBreaks
 		description.HowToRestore = rule.HowToRestore
 		description.Manual = rule.Manual

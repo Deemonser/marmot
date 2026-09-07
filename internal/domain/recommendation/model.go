@@ -24,6 +24,17 @@ const (
 	RecoveryRedownloadable Recovery = "redownloadable"
 	// Not obtainable again. Nothing in this class may ever be suggested as safe.
 	RecoveryIrreplaceable Recovery = "irreplaceable"
+	// Obtainable again only by the person doing the work: signing in to every
+	// site, re-enrolling two-factor. The other three answers cost a machine's
+	// time; this one costs the user's, which is why it cannot be folded into
+	// them. Browser session state is not irreplaceable -- calling it that would
+	// be a lie in the cautious direction -- and it is not regenerable either,
+	// because nothing rebuilds it on its own.
+	//
+	// The catalog may say this; an advisor may not. It is a local determination
+	// about what a person will have to redo, and a model claiming it would be
+	// guessing at that (see the whitelist in advisor.go).
+	RecoveryReauthenticate Recovery = "reauthenticate"
 )
 
 // Risk is what the user is asked to accept.

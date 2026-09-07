@@ -318,6 +318,9 @@ func hasSegmentSuffix(value, claimed string) bool {
 }
 
 func validEnums(verdict Verdict) bool {
+	// Three, not four. RecoveryReauthenticate is a local determination about work
+	// the person will have to redo, and a model claiming it would be guessing at
+	// that -- so the catalog may say it and an advisor may not.
 	switch Recovery(verdict.Recovery) {
 	case RecoveryRegenerable, RecoveryRedownloadable, RecoveryIrreplaceable:
 	default:

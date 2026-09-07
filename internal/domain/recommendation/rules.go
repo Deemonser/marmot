@@ -38,6 +38,8 @@ type Rule struct {
 	// the following segment sequence at any depth; "*" matches one whole
 	// segment; a trailing "*" on a segment matches a prefix.
 	Pattern string
+	// Anchor is what Pattern is matched against. See the Anchor type.
+	Anchor Anchor
 	// Covers is how far this rule's claim reaches. See the Covers type: the zero
 	// value is the old behaviour, so a rule that has not been reviewed for it
 	// keeps speaking for what is inside it.
@@ -92,7 +94,16 @@ type Rule struct {
 	// artifact is about to be rebuilt.
 	AgeSensitive bool
 	Recovery     Recovery
-	Risk         Risk
+	// DeclaredRisk is this rule author's tier, and it is an INPUT to Assess, not
+	// an answer. Assess reads it as Facts.Declared and may raise it -- a guard or
+	// a live project overrules a comfortable declaration -- but it does not
+	// recompute it, because Recovery cannot: two regenerable objects differ by
+	// whether the rebuild costs three seconds or an hour, and only the author of
+	// the rule knows which.
+	//
+	// Named for what it is. It was Risk, the same word Assessment.Risk uses for
+	// the conclusion, which read as two answers to one question.
+	DeclaredRisk Risk
 	WhatBreaks   string
 	HowToRestore string
 }
@@ -102,6 +113,294 @@ type Rule struct {
 // download cache and not as the generic user cache, because the two have
 // different answers to "how do I get it back".
 var Catalog = []Rule{
+	// --- Whole-path rules, merged in from AbsoluteCatalog. ---
+	//
+	// They are first so that a tie still goes to them, which is what checking
+	// them in a separate pass used to guarantee. Everything about them is now in
+	// the rule: Anchor says what the pattern is matched against, and Manual says
+	// whether it is root-owned and can only be reported.
+	{
+		Anchor: AnchorPath,
+		Name:   "模拟器 dyld 缓存", Category: "构建缓存",
+		Pattern: "/Library/Developer/CoreSimulator/Caches/dyld",
+		Manual:  true, Command: "sudo rm -rf /Library/Developer/CoreSimulator/Caches/dyld",
+		Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
+		WhatBreaks:   "不需要联网。模拟器下次启动会重建共享缓存，第一次启动明显变慢。",
+		HowToRestore: "模拟器自动重建。",
+	},
+	{
+		Anchor: AnchorPath,
+		Name:   "系统更新包残留", Category: "更新器残留",
+		Pattern: "/Library/Updates",
+		Manual:  true, Command: "sudo rm -rf /Library/Updates/*",
+		Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
+		WhatBreaks:   "没有影响。这是已下载的系统与 Rosetta 更新包，需要时会重新下载。",
+		HowToRestore: "系统更新时自动重新下载。",
+	},
+	{
+		Anchor: AnchorPath,
+		Name:   "根级用户缓存", Category: "应用缓存", Generic: true,
+		Pattern: "/Library/Caches",
+		Manual:  true, Command: "sudo rm -rf /Library/Caches/*",
+		Recovery: RecoveryRegenerable, DeclaredRisk: RiskReview,
+		WhatBreaks:   "系统级共享缓存消失，相关服务首次使用时重建。个别项可能包含许可或激活信息。",
+		HowToRestore: "多数自动重建。",
+	},
+	{
+		Anchor: AnchorPath,
+		Name:   "根级日志", Category: "日志", Generic: true,
+		Pattern: "/Library/Logs", MinAgeDays: 30,
+		Manual: true, Command: "sudo rm -rf /Library/Logs/*",
+		Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskReview,
+		WhatBreaks:   "历史诊断日志消失。排查旧问题时会缺少记录，功能不受影响。",
+		HowToRestore: "无法恢复，但新日志会继续写入。",
+	},
+
+	// --- The location guards, merged in from anywhereIrreplaceable,
+	// suffixIrreplaceable, loginStatePaths and PartialInstallReason. ---
+	//
+	// They live here because they are matched against the whole path: a
+	// repository on an external disk is still a repository, and a guard that only
+	// fires inside one home folder is not the guard it looks like.
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableRepository,
+		Name:   "版本库历史", Category: "版本库",
+		Pattern: "**/.git", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是版本库历史。即使远端可能有副本，本工具无法确认，删除后可能永久丢失未推送的提交。",
+		HowToRestore: "只能从远端重新克隆，且未推送的提交无法找回。",
+	},
+	// The exception that used to be a mechanism. gitTransient was a list read by
+	// the guard to suppress itself; a more specific rule does that by itself now.
+	// Both live here rather than in the home-relative catalog because a
+	// repository on an external disk leaves the same artifacts, and an exception
+	// that only holds inside one home folder is not the exception it looks like.
+	{
+		Anchor: AnchorPath,
+		Name:   "git 残留临时包", Category: "残留文件",
+		Pattern: "**/.git/objects/pack/tmp_pack_*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
+		WhatBreaks:   "没有影响。这是 repack 中断后遗留的临时文件，git 不会使用它。",
+		HowToRestore: "无需恢复：它不是版本库内容，删除不丢任何提交。",
+	},
+	{
+		Anchor: AnchorPath,
+		Name:   "git 残留临时索引", Category: "残留文件",
+		Pattern: "**/.git/objects/pack/tmp_idx_*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
+		WhatBreaks:   "没有影响。这是 repack 中断后遗留的临时文件，git 不会使用它。",
+		HowToRestore: "无需恢复：它不是版本库内容，删除不丢任何提交。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableUserData,
+		Name:   "站点本地存储", Category: "用户数据",
+		Pattern: "**/Local Storage", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
+		HowToRestore: "无法恢复，除非服务端仍有副本。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableUserData,
+		Name:   "站点数据库", Category: "用户数据",
+		Pattern: "**/IndexedDB", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
+		HowToRestore: "无法恢复，除非服务端仍有副本。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableUserData,
+		Name:   "站点文件系统", Category: "用户数据",
+		Pattern: "**/File System", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
+		HowToRestore: "无法恢复，除非服务端仍有副本。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableUserData,
+		Name:   "扩展本地设置", Category: "用户数据",
+		Pattern: "**/Local Extension Settings", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
+		HowToRestore: "无法恢复，除非服务端仍有副本。",
+	},
+	// Not a cache despite where it sits: IntelliJ's local file history is how
+	// uncommitted work is recovered, one segment from the index that is disposable.
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableUserData,
+		Name:   "本地文件历史", Category: "用户数据",
+		Pattern: "**/LocalHistory", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是 IDE 保存的本地修改历史，未提交的改动靠它找回，删除后无法重建。",
+		HowToRestore: "无法恢复。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableCredentials,
+		Name:   "SSH 密钥", Category: "凭据",
+		Pattern: "**/.ssh", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是密钥或凭据，删除后无法恢复。",
+		HowToRestore: "无法恢复，只能重新生成密钥并在每个服务上重新登记。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableCredentials,
+		Name:   "GPG 密钥", Category: "凭据",
+		Pattern: "**/.gnupg", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是密钥或凭据，删除后无法恢复。",
+		HowToRestore: "无法恢复，只能重新生成密钥。",
+	},
+	// The bundles, by their own extension. Matched on the segment rather than on
+	// a lowercased whole path, so the comparison is now case sensitive -- the
+	// applications that create these write the extension themselves, so this is
+	// a narrowing on paper more than in practice.
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableUserContent,
+		Name:   "照片图库", Category: "用户内容",
+		Pattern: "**/*.photoslibrary", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableUserContent,
+		Name:   "照片图库（旧版）", Category: "用户内容",
+		Pattern: "**/*.photolibrary", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableUserContent,
+		Name:   "Final Cut 资源库", Category: "用户内容",
+		Pattern: "**/*.fcpbundle", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是你自己的剪辑工程与素材，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableUserContent,
+		Name:   "Logic 工程", Category: "用户内容",
+		Pattern: "**/*.logicx", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是你自己的工程文件，删除后无法再生成。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableVirtualDisk,
+		Name:   "稀疏磁盘映像", Category: "虚拟磁盘",
+		Pattern: "**/*.sparsebundle", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableVirtualDisk,
+		Name:   "虚拟机磁盘", Category: "虚拟磁盘",
+		Pattern: "**/*.vmdk", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableVirtualDisk,
+		Name:   "虚拟机磁盘", Category: "虚拟磁盘",
+		Pattern: "**/*.qcow2", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableVirtualDisk,
+		Name:   "UTM 虚拟机", Category: "虚拟磁盘",
+		Pattern: "**/*.utm", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableVirtualDisk,
+		Name:   "Parallels 虚拟机", Category: "虚拟磁盘",
+		Pattern: "**/*.pvm", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  IrreplaceableVirtualDisk,
+		Name:   "VirtualBox 磁盘", Category: "虚拟磁盘",
+		Pattern: "**/*.vdi", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
+		HowToRestore: "无法恢复，除非你另有备份。",
+	},
+	// Login state is not irreplaceable -- you can sign in again -- so the
+	// correction is on the risk and the wording, not on the recoverability.
+	// Recovery is deliberately left unset rather than filled with a comfortable
+	// answer.
+	{
+		Anchor: AnchorPath,
+		Guard:  LoginState,
+		Name:   "Cookie", Category: "登录状态",
+		Pattern: "**/Cookies", Recovery: RecoveryReauthenticate, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这里保存的是浏览器的登录状态。删除后所有网站都需要重新登录，部分站点的两步验证需要重新设置。",
+		HowToRestore: "只能逐个网站重新登录。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  LoginState,
+		Name:   "Cookie 日志", Category: "登录状态",
+		Pattern: "**/Cookies-journal", Recovery: RecoveryReauthenticate, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这里保存的是浏览器的登录状态。删除后所有网站都需要重新登录。",
+		HowToRestore: "只能逐个网站重新登录。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  LoginState,
+		Name:   "保存的登录信息", Category: "登录状态",
+		Pattern: "**/Login Data", Recovery: RecoveryReauthenticate, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这里保存的是浏览器记住的账号密码，删除后需要重新输入。",
+		HowToRestore: "只能重新输入或从密码管理器恢复。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  LoginState,
+		Name:   "保存的登录信息", Category: "登录状态",
+		Pattern: "**/Login Data For Account", Recovery: RecoveryReauthenticate, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这里保存的是浏览器记住的账号密码，删除后需要重新输入。",
+		HowToRestore: "只能重新输入或从密码管理器恢复。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  LoginState,
+		Name:   "扩展 Cookie", Category: "登录状态",
+		Pattern: "**/Extension Cookies", Recovery: RecoveryReauthenticate, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这里保存的是浏览器扩展的登录状态，删除后扩展需要重新登录。",
+		HowToRestore: "只能逐个扩展重新登录。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  LoginState,
+		Name:   "设备绑定会话", Category: "登录状态",
+		Pattern: "**/Device Bound Sessions", Recovery: RecoveryReauthenticate, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这里保存的是与本机绑定的会话，删除后相关站点需要重新登录并重新验证设备。",
+		HowToRestore: "只能重新登录。",
+	},
+	{
+		Anchor: AnchorPath,
+		Guard:  LoginState,
+		Name:   "Safari 数据", Category: "登录状态",
+		Pattern: "**/Safari", Recovery: RecoveryReauthenticate, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这里保存的是 Safari 的登录状态与浏览数据，删除后所有网站都需要重新登录。",
+		HowToRestore: "只能逐个网站重新登录。",
+	},
+	// Inside an installed toolchain: the installer checks the root and a stamp,
+	// not the files, so nothing self-heals and the toolchain stays broken.
+	{
+		Anchor: AnchorPath,
+		Guard:  PartialInstall,
+		Name:   "工具链内部目录", Category: "工具链",
+		Pattern: "**/flutter/bin/cache/dart-sdk", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
+		WhatBreaks:   "这是已安装工具链的内部目录。安装器只检查根目录和 stamp，不校验里面的文件，所以删掉之后不会自动重新下载——工具链会一直是坏的。",
+		HowToRestore: "真实恢复方式是删除整个缓存目录重新拉取。",
+	},
 	// --- Promoted from advisor findings (R-063 §5). Each recovery claim below is
 	// written from a mechanism that was read out of the tool's own source or
 	// verified on disk, not from the model's wording. Anything an advisor finds
@@ -114,45 +413,45 @@ var Catalog = []Rule{
 	// because no rule named them.
 	{
 		Name: "应用更新包残留", Category: "更新器残留",
-		Pattern: "Library/Caches/*.ShipIt", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		Pattern: "Library/Caches/*.ShipIt", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "没有影响。这是已下载并安装完的应用更新包，Squirrel 装完之后没有清理。",
 		HowToRestore: "无需恢复；下次更新会重新下载。",
 	},
 	{
 		Name: "IDE 索引缓存", Category: "IDE 缓存",
-		Pattern: "Library/Caches/Google/AndroidStudio*/index", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Caches/Google/AndroidStudio*/index", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次打开该 IDE 会重建索引，期间代码跳转与搜索暂时不可用，大项目可能要数分钟。",
 		HowToRestore: "无需操作，打开项目时自动重建。",
 	},
 	{
 		Name: "IDE 编译缓存", Category: "IDE 缓存",
-		Pattern: "Library/Caches/Google/AndroidStudio*/caches", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Caches/Google/AndroidStudio*/caches", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次打开该 IDE 会重新分析工程，第一次打开变慢。",
 		HowToRestore: "无需操作，自动重建。",
 	},
 	{
 		Name: "JetBrains 索引缓存", Category: "IDE 缓存",
-		Pattern: "Library/Caches/JetBrains/*/index", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Caches/JetBrains/*/index", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次打开该 IDE 会重建索引，大项目可能要数分钟。",
 		HowToRestore: "无需操作，自动重建。",
 	},
 	{
 		Name: "JetBrains 编译缓存", Category: "IDE 缓存",
-		Pattern: "Library/Caches/JetBrains/*/caches", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Caches/JetBrains/*/caches", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次打开该 IDE 会重新分析工程，第一次打开变慢。",
 		HowToRestore: "无需操作，自动重建。",
 	},
 	{
 		Name: "旧版本 IDE 配置", Category: "旧版本残留",
 		Pattern: "Library/Application Support/Google/AndroidStudio*", MinAgeDays: 180,
-		Recovery: RecoveryIrreplaceable, Risk: RiskReview,
+		Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "该版本 IDE 的设置、快捷键和插件配置会丢失。若之后回退到这个版本，需要重新配置。",
 		HowToRestore: "无法恢复配置本身；重新安装该版本后需要重新设置。",
 	},
 	{
 		Name: "浏览器扩展", Category: "浏览器扩展",
 		Pattern:  "Library/Application Support/Google/Chrome/*/Extensions",
-		Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "已安装的扩展会消失，需要从商店重新安装。扩展的设置数据保存在别处，重装后多数能恢复。",
 		HowToRestore: "在 Chrome 网上应用店重新安装各扩展。",
 	},
@@ -167,140 +466,140 @@ var Catalog = []Rule{
 	// Code Cache 632 MB, while Cookies and Login Data live elsewhere entirely.
 	{
 		Name: "Chrome 网页缓存", Category: "浏览器缓存",
-		Pattern: "Library/Caches/Google/Chrome/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Caches/Google/Chrome/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "网页首次重新访问时要重新下载资源，短时间内浏览稍慢。登录状态、书签、历史、扩展都不在这里，不受影响。",
 		HowToRestore: "无需操作，浏览时自动重建。",
 	},
 	{
 		Name: "Chromium 系网页缓存", Category: "浏览器缓存",
-		Pattern: "Library/Caches/Chromium/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Caches/Chromium/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "网页首次重新访问时要重新下载资源。登录状态与书签不在这里。",
 		HowToRestore: "无需操作，浏览时自动重建。",
 	},
 	{
 		Name: "Brave 网页缓存", Category: "浏览器缓存",
-		Pattern: "Library/Caches/BraveSoftware/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Caches/BraveSoftware/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "网页首次重新访问时要重新下载资源。登录状态与书签不在这里。",
 		HowToRestore: "无需操作，浏览时自动重建。",
 	},
 	{
 		Name: "Edge 网页缓存", Category: "浏览器缓存",
-		Pattern: "Library/Caches/Microsoft Edge/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Caches/Microsoft Edge/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "网页首次重新访问时要重新下载资源。登录状态与书签不在这里。",
 		HowToRestore: "无需操作，浏览时自动重建。",
 	},
 	{
 		Name: "Safari 网页缓存", Category: "浏览器缓存",
-		Pattern: "Library/Caches/com.apple.Safari/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Caches/com.apple.Safari/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "网页首次重新访问时要重新下载资源。Safari 的 Cookie 与登录信息保存在别处，不受影响。",
 		HowToRestore: "无需操作，浏览时自动重建。",
 	},
 	{
 		Name: "Firefox 网页缓存", Category: "浏览器缓存",
-		Pattern: "Library/Caches/Firefox/Profiles/*/cache2", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Caches/Firefox/Profiles/*/cache2", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "网页首次重新访问时要重新下载资源。登录信息在 profile 目录中，不受影响。",
 		HowToRestore: "无需操作，浏览时自动重建。",
 	},
 	{
 		Name: "浏览器离线资源缓存", Category: "浏览器缓存",
-		Pattern: "**/Service Worker/CacheStorage", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/Service Worker/CacheStorage", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "支持离线使用的网页需要联网重新加载一次；Service Worker 的注册信息不在这里，不会被注销。",
 		HowToRestore: "下次访问该站点时自动重建。",
 	},
 	{
 		Name: "浏览器脚本缓存", Category: "浏览器缓存",
-		Pattern: "**/Service Worker/ScriptCache", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/Service Worker/ScriptCache", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "对应站点的 Service Worker 脚本要重新下载一次。",
 		HowToRestore: "自动重建。",
 	},
 	{
 		Name: "浏览器压缩字典", Category: "浏览器缓存",
-		Pattern: "**/Shared Dictionary", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/Shared Dictionary", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "使用共享字典压缩的站点，首次访问传输量略增。",
 		HowToRestore: "自动重建。",
 	},
 	{
 		Name: "浏览器图形缓存", Category: "浏览器缓存",
-		Pattern: "**/GPUCache", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/GPUCache", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "着色器需要重新编译一次，个别页面首次渲染略慢。",
 		HowToRestore: "自动重建。",
 	},
 	{
 		Name: "浏览器 WebGPU 缓存", Category: "浏览器缓存",
-		Pattern: "**/DawnWebGPUCache", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/DawnWebGPUCache", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "使用 WebGPU 的页面首次渲染略慢。",
 		HowToRestore: "自动重建。",
 	},
 	{
 		Name: "浏览器优化提示缓存", Category: "浏览器缓存",
-		Pattern: "**/optimization_guide_hint_cache_store", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/optimization_guide_hint_cache_store", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "没有可感知的影响。",
 		HowToRestore: "自动重建。",
 	},
 
 	{
 		Name: "Flutter 引擎产物", Category: "SDK 缓存",
-		Pattern: "**/flutter/bin/cache/artifacts/engine", Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		Pattern: "**/flutter/bin/cache/artifacts/engine", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "下次 Flutter 构建要重新下载引擎（GB 级），离线环境会直接失败。",
 		HowToRestore: "删除整个 engine 目录后，flutter precache 或任意构建会重新下载；只删内部子目录不会触发，因为 Flutter 只检查根目录与 stamp。",
 	},
 	{
 		Name: "Kotlin/Native 平台库", Category: "编译器发行版",
-		Pattern: ".konan/*/klib/platform", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: ".konan/*/klib/platform", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次 Kotlin/Native 构建会先花时间重新生成平台库，该次构建明显变慢。",
 		HowToRestore: "无需手动操作：构建时逐个检测缺失的 platform lib 并从 .def 文件本地重新生成。",
 	},
 	{
 		Name: "Rust 离线文档", Category: "离线文档",
-		Pattern: ".rustup/toolchains/*/share/doc", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		Pattern: ".rustup/toolchains/*/share/doc", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "本地 rustup doc 打不开，查文档需要联网。编译不受影响。",
 		HowToRestore: "rustup component add rust-docs --toolchain <该工具链名>。",
 	},
 	{
 		Name: "Gradle JDK 缓存", Category: "工具链缓存",
-		Pattern: ".gradle/jdks/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		Pattern: ".gradle/jdks/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "需要该 JDK 的 Gradle 构建会先重新下载它。",
 		HowToRestore: "Gradle 在需要时按 toolchain 配置自动重新下载。",
 	},
 	{
 		Name: "Gradle 执行历史", Category: "构建缓存",
-		Pattern: "**/executionHistory", ProjectSensitive: true, Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/executionHistory", ProjectSensitive: true, Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "该项目失去增量构建信息，下次构建会重跑部分任务，一次性变慢。",
 		HowToRestore: "无需手动操作，Gradle 下次构建自行重建。",
 	},
 	{
 		Name: "Android 构建输出", Category: "构建产物",
-		Pattern: "**/build/outputs/apk", ProjectSensitive: true, Recovery: RecoveryRegenerable, Risk: RiskReview,
+		Pattern: "**/build/outputs/apk", ProjectSensitive: true, Recovery: RecoveryRegenerable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "已构建的 APK/AAB 消失。若某个是已分发的版本，重新构建不会得到逐字节相同的产物。",
 		HowToRestore: "重新执行对应的 assemble/bundle 任务。",
 	},
 	{
 		Name: "Rust 交叉编译产物", Category: "编译产物",
-		Pattern: "**/target/*/debug", ProjectSensitive: true, Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/target/*/debug", ProjectSensitive: true, Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "该目标平台下次 cargo 构建全量重编。",
 		HowToRestore: "无需手动操作，cargo 自行重建。",
 	},
 	{
 		Name: "代码索引数据库", Category: "工具索引",
-		Pattern: "**/.codegraph", Recovery: RecoveryRegenerable, Risk: RiskReview,
+		Pattern: "**/.codegraph", Recovery: RecoveryRegenerable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "该项目的代码图谱与符号搜索不可用，重建索引需要时间。源码不受影响。",
 		HowToRestore: "重新运行索引命令。",
 	},
 	{
 		Name: "pnpm 内容存储", Category: "包管理器缓存",
-		Pattern: "Library/pnpm/store/*", Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		Pattern: "Library/pnpm/store/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "新的安装要重新下载。若某些项目的 node_modules 依赖存储中的链接，那些项目需要重新 install。",
 		HowToRestore: "在相关项目执行 pnpm install。",
 	},
 	{
 		Name: "Google 更新缓存", Category: "更新器缓存",
-		Pattern: "Library/Application Support/Google/GoogleUpdater/crx_cache/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		Pattern: "Library/Application Support/Google/GoogleUpdater/crx_cache/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "不影响已安装的 Google 软件，只是待安装的更新包副本。",
 		HowToRestore: "更新时自动重新下载。",
 	},
 	{
 		Name: "macOS 动态壁纸", Category: "系统媒体缓存",
-		Pattern: "Library/Application Support/com.apple.wallpaper/aerials/videos/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		Pattern: "Library/Application Support/com.apple.wallpaper/aerials/videos/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "该航拍壁纸暂时不可用。",
 		HowToRestore: "在壁纸设置中重新选择该素材，系统会重新下载。",
 	},
@@ -315,105 +614,105 @@ var Catalog = []Rule{
 	// is one `review` row too many, never a wrong recovery claim.
 	{
 		Name: "下载的安装镜像", Category: "安装包残留", FileOnly: true,
-		Pattern: "Downloads/*.dmg", MinAgeDays: 30, Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		Pattern: "Downloads/*.dmg", MinAgeDays: 30, Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "没有影响。已安装的应用不在这里；这是安装时用过的磁盘镜像。若还没安装，需要重新下载。",
 		HowToRestore: "从原下载地址重新下载。",
 	},
 	{
 		Name: "下载的安装包", Category: "安装包残留", FileOnly: true,
-		Pattern: "Downloads/*.pkg", MinAgeDays: 30, Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		Pattern: "Downloads/*.pkg", MinAgeDays: 30, Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "没有影响。已安装的软件不在这里；这是安装程序本身。若还没安装，需要重新下载。",
 		HowToRestore: "从原下载地址重新下载。",
 	},
 	{
 		Name: "Homebrew 下载缓存", Category: "包管理器缓存",
-		Pattern: "Library/Caches/Homebrew/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		Pattern: "Library/Caches/Homebrew/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "不影响已安装的软件，只是下载过的安装包副本。",
 		HowToRestore: "下次 brew 安装或升级时自动重新下载。",
 	},
 	{
 		Name: "Go 构建缓存", Category: "编译产物",
-		Pattern: "Library/Caches/go-build/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Caches/go-build/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下一次 go build 会全量重编，明显变慢一次。",
 		HowToRestore: "无需操作，编译时自动重建。",
 	},
 	{
 		Name: "pip 缓存", Category: "包管理器缓存",
-		Pattern: "Library/Caches/pip/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		Pattern: "Library/Caches/pip/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "不影响已安装的包，只是 wheel 下载副本。",
 		HowToRestore: "下次 pip install 时重新下载。",
 	},
 	{
 		Name: "CocoaPods 缓存", Category: "包管理器缓存",
-		Pattern: "Library/Caches/CocoaPods/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		Pattern: "Library/Caches/CocoaPods/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "不影响已集成的 Pods，只是缓存副本。",
 		HowToRestore: "下次 pod install 时重新下载。",
 	},
 	{
 		Name: "用户缓存", Category: "应用缓存", Generic: true, AgeSensitive: true,
-		Pattern: "Library/Caches/*", Recovery: RecoveryRegenerable, Risk: RiskReview,
+		Pattern: "Library/Caches/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "对应应用下次启动会慢一些，个别应用会丢失登录态或离线内容。",
 		HowToRestore: "应用自行重建；登录态需要重新登录。",
 	},
 	{
 		Name: "沙盒应用缓存", Category: "应用缓存", Generic: true, AgeSensitive: true,
-		Pattern: "Library/Containers/*/Data/Library/Caches/*", Recovery: RecoveryRegenerable, Risk: RiskReview,
+		Pattern: "Library/Containers/*/Data/Library/Caches/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "对应应用下次启动会慢一些，可能需要重新下载已缓存的内容。",
 		HowToRestore: "应用自行重建。",
 	},
 	{
 		Name: "应用组缓存", Category: "应用缓存", Generic: true, AgeSensitive: true,
-		Pattern: "Library/Group Containers/*/Library/Caches/*", Recovery: RecoveryRegenerable, Risk: RiskReview,
+		Pattern: "Library/Group Containers/*/Library/Caches/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "同一应用组内的应用下次启动会慢一些。",
 		HowToRestore: "应用自行重建。",
 	},
 	{
 		Name: "用户日志", Category: "日志", Generic: true,
-		Pattern: "Library/Logs/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Logs/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "失去历史诊断信息；如果正在排查某个应用的问题，先别删。",
 		HowToRestore: "无法恢复，但会继续产生新日志。",
 	},
 	{
 		Name: "废纸篓", Category: "废纸篓",
-		Pattern: ".Trash/*", Recovery: RecoveryIrreplaceable, Risk: RiskReview,
+		Pattern: ".Trash/*", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "废纸篓里的东西会真正消失。",
 		HowToRestore: "无法恢复。删除前请确认里面没有还想要的东西。",
 	},
 	{
 		Name: "Xcode DerivedData", Category: "编译产物",
-		Pattern: "Library/Developer/Xcode/DerivedData/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Developer/Xcode/DerivedData/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次打开工程会重新索引并全量编译，第一次会明显变慢。",
 		HowToRestore: "Xcode 自动重建。",
 	},
 	{
 		Name: "Xcode 归档", Category: "构建归档",
-		Pattern: "Library/Developer/Xcode/Archives/*", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Library/Developer/Xcode/Archives/*", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "已上架版本的符号表会丢失，之后无法符号化这些版本的崩溃日志。",
 		HowToRestore: "无法恢复，除非重新用完全相同的源码和工具链构建。",
 	},
 	{
 		Name: "Xcode 设备支持文件", Category: "开发工具支持文件",
-		Pattern: "Library/Developer/Xcode/iOS DeviceSupport/*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "Library/Developer/Xcode/iOS DeviceSupport/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "对应 iOS 版本的设备下次连接时要重新拉取符号，需要几分钟。",
 		HowToRestore: "设备再次连接时自动重建。",
 	},
 	{
 		Name: "iOS 模拟器", Category: "开发工具支持文件",
-		Pattern: "Library/Developer/CoreSimulator/*", Recovery: RecoveryRegenerable, Risk: RiskReview,
+		Pattern: "Library/Developer/CoreSimulator/*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "模拟器里已安装的 App 和数据会消失，运行时需要重新下载。",
 		HowToRestore: "Xcode 重新创建模拟器并下载运行时。",
 	},
 	{
 		Guard: IrreplaceableBackup,
 		Name:  "iOS 设备备份", Category: "设备备份",
-		Pattern: "Library/Application Support/MobileSync/Backup/*", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Library/Application Support/MobileSync/Backup/*", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是 iPhone/iPad 的本地完整备份。删掉后无法从本机恢复设备。",
 		HowToRestore: "无法恢复。只有在确认已有 iCloud 备份或不再需要时才删。",
 	},
 	{
 		Guard: IrreplaceableVirtualDisk,
 		Name:  "Docker 数据", Category: "虚拟机磁盘",
-		Pattern: "Library/Containers/com.docker.docker/Data/*", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Library/Containers/com.docker.docker/Data/*", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "所有本地镜像、容器和卷会消失，包括未推送的镜像和容器内数据。",
 		HowToRestore: "镜像可重新拉取；卷里的数据无法恢复。建议改用 docker system prune。",
 	},
@@ -433,13 +732,13 @@ var Catalog = []Rule{
 	// a safe rule absorbs its whole subtree, which is exactly what hid this.
 	{
 		Name: "Gradle 转换产物", Category: "构建缓存",
-		Pattern: ".gradle/caches/*/transforms", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: ".gradle/caches/*/transforms", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "不需要联网。下次构建重新执行 artifact transform（AAR 解包、dex 等），第一次明显变慢。",
 		HowToRestore: "构建时自动重建，输入来自已下载的依赖，不重新下载。",
 	},
 	{
 		Name: "Gradle 构建缓存", Category: "构建缓存",
-		Pattern: ".gradle/caches/build-cache-*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: ".gradle/caches/build-cache-*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "不需要联网。命中过的任务要重新执行，下次构建变慢一次。",
 		HowToRestore: "构建时自动重建。Gradle 本身也会按默认 7 天回收其中不再使用的条目。",
 	},
@@ -450,98 +749,98 @@ var Catalog = []Rule{
 		// those projects buys space that the next build spends again, on the
 		// network. It is the one part of this directory where "删了立刻又下回来"
 		// is literally true.
-		Pattern: ".gradle/caches/modules-*", Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		Pattern: ".gradle/caches/modules-*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
 		WhatBreaks: "要重新下载全部依赖。仍在构建的项目下次构建立刻把它们下回来，删了基本没有意义；只有确定不再构建这些项目才值得。",
 		HowToRestore: "构建时自动重新下载，需要联网且耗时。想按“多久没用过”精细回收的话，" +
 			"用 Gradle 8+ 的缓存保留配置——它有文件访问时间记录，本工具只能看到下载时间（R-063 §4d）。",
 	},
 	{
 		Name: "Gradle 编译分析缓存", Category: "构建缓存",
-		Pattern: ".gradle/caches/*/javaCompile", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: ".gradle/caches/*/javaCompile", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "不需要联网。下次构建重新做编译回避分析，慢一次。",
 		HowToRestore: "构建时自动重建。",
 	},
 	{
 		Name: "Gradle 插桩 jar", Category: "构建缓存",
-		Pattern: ".gradle/caches/jars-*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: ".gradle/caches/jars-*", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "不需要联网。下次构建重新插桩，慢一次。",
 		HowToRestore: "构建时自动重建。",
 	},
 	{
 		Name: "Gradle 生成的 API jar", Category: "构建缓存",
-		Pattern: ".gradle/caches/*/generated-gradle-jars", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: ".gradle/caches/*/generated-gradle-jars", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "不需要联网。下次构建重新生成 Gradle API jar。",
 		HowToRestore: "构建时自动重建。",
 	},
 	{
 		Name: "Gradle Kotlin DSL 缓存", Category: "构建缓存",
-		Pattern: ".gradle/caches/*/kotlin-dsl", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: ".gradle/caches/*/kotlin-dsl", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "不需要联网。下次构建重新编译 .gradle.kts 构建脚本与访问器。",
 		HowToRestore: "构建时自动重建。",
 	},
 	{
 		Name: "Maven 本地仓库", Category: "包管理器缓存",
-		Pattern: ".m2/repository/*", Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		Pattern: ".m2/repository/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "下次构建要重新下载全部依赖。若有本地 install 的私有构件且没有备份，会丢失。",
 		HowToRestore: "公共依赖自动重新下载；本地 install 的构件需要重新构建。",
 	},
 	{
 		Name: "Cargo 注册表缓存", Category: "包管理器缓存",
-		Pattern: ".cargo/registry/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		Pattern: ".cargo/registry/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次构建要重新下载 crate 源码。",
 		HowToRestore: "cargo 自动重新下载。",
 	},
 	{
 		Name: "Go 模块缓存", Category: "包管理器缓存",
-		Pattern: "go/pkg/mod/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		Pattern: "go/pkg/mod/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次构建要重新下载模块。",
 		HowToRestore: "go 自动重新下载。",
 	},
 	{
 		Name: "npm 缓存", Category: "包管理器缓存",
-		Pattern: ".npm/_cacache/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		Pattern: ".npm/_cacache/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次 npm install 要重新下载。",
 		HowToRestore: "自动重新下载。",
 	},
 	{
 		Name: "yarn 缓存", Category: "包管理器缓存",
-		Pattern: ".yarn/cache/*", Recovery: RecoveryRedownloadable, Risk: RiskSafe,
+		Pattern: ".yarn/cache/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次 yarn install 要重新下载。",
 		HowToRestore: "自动重新下载。",
 	},
 	{
 		Name: "pnpm 存储", Category: "包管理器缓存",
-		Pattern: ".pnpm-store/*", Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		Pattern: ".pnpm-store/*", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "pnpm 项目的 node_modules 是指向这里的硬链接，删除后现有项目会失效。",
 		HowToRestore: "在每个项目重新执行 pnpm install。",
 	},
 	{
 		Name: "node_modules", Category: "依赖目录",
-		Pattern: "**/node_modules", Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		Pattern: "**/node_modules", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "对应项目在重新安装依赖前无法构建或运行。",
 		HowToRestore: "在项目目录执行 npm/yarn/pnpm install。",
 	},
 	{
 		Name: "Python 虚拟环境", Category: "依赖目录",
-		Pattern: "**/.venv", Recovery: RecoveryRedownloadable, Risk: RiskReview,
+		Pattern: "**/.venv", Recovery: RecoveryRedownloadable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "对应项目的虚拟环境消失，重建前无法运行。",
 		HowToRestore: "重新 python -m venv 并按依赖文件安装。若没有依赖清单则难以还原。",
 	},
 	{
 		Name: "Python 字节码缓存", Category: "编译产物",
-		Pattern: "**/__pycache__", Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/__pycache__", Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次运行时重新编译，几乎无感。",
 		HowToRestore: "自动重建。",
 	},
 	{
 		Name: "Rust 构建产物", Category: "编译产物",
-		Pattern: "**/target/debug", ProjectSensitive: true, Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/target/debug", ProjectSensitive: true, Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次 cargo build 全量重编，第一次会很慢。",
 		HowToRestore: "自动重建。",
 	},
 	{
 		Name: "Rust 发布产物", Category: "编译产物",
-		Pattern: "**/target/release", ProjectSensitive: true, Recovery: RecoveryRegenerable, Risk: RiskSafe,
+		Pattern: "**/target/release", ProjectSensitive: true, Recovery: RecoveryRegenerable, DeclaredRisk: RiskSafe,
 		WhatBreaks:   "下次 cargo build --release 全量重编。已分发的二进制不受影响。",
 		HowToRestore: "自动重建。",
 	},
@@ -551,13 +850,13 @@ var Catalog = []Rule{
 	// the user is in the middle of, or nothing at all.
 	{
 		Name: "Android 构建中间产物", Category: "编译产物", ProjectSensitive: true,
-		Pattern: "**/build/intermediates", Recovery: RecoveryRegenerable, Risk: RiskReview,
+		Pattern: "**/build/intermediates", Recovery: RecoveryRegenerable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "下次 Gradle 构建全量重建该模块。",
 		HowToRestore: "自动重建。",
 	},
 	{
 		Name: "Android 转换产物", Category: "编译产物", ProjectSensitive: true,
-		Pattern: "**/build/.transforms", Recovery: RecoveryRegenerable, Risk: RiskReview,
+		Pattern: "**/build/.transforms", Recovery: RecoveryRegenerable, DeclaredRisk: RiskReview,
 		WhatBreaks:   "下次 Gradle 构建重新生成该模块的转换产物。",
 		HowToRestore: "自动重建。",
 	},
@@ -575,42 +874,42 @@ var Catalog = []Rule{
 	{
 		Guard: IrreplaceableUserContent,
 		Name:  "用户文档", Category: "用户内容",
-		Pattern: "Documents", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Documents", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
 		HowToRestore: "无法恢复，除非你另有备份。",
 	},
 	{
 		Guard: IrreplaceableUserContent,
 		Name:  "桌面", Category: "用户内容",
-		Pattern: "Desktop", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Desktop", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
 		HowToRestore: "无法恢复，除非你另有备份。",
 	},
 	{
 		Guard: IrreplaceableUserContent,
 		Name:  "图片", Category: "用户内容",
-		Pattern: "Pictures", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Pictures", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
 		HowToRestore: "无法恢复，除非你另有备份。",
 	},
 	{
 		Guard: IrreplaceableUserContent,
 		Name:  "影片", Category: "用户内容",
-		Pattern: "Movies", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Movies", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
 		HowToRestore: "无法恢复，除非你另有备份。",
 	},
 	{
 		Guard: IrreplaceableUserContent,
 		Name:  "音乐", Category: "用户内容",
-		Pattern: "Music", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Music", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
 		HowToRestore: "无法恢复，除非你另有备份。",
 	},
 	{
 		Guard: IrreplaceableUserContent,
 		Name:  "公共目录", Category: "用户内容",
-		Pattern: "Public", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Public", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
 		HowToRestore: "无法恢复，除非你另有备份。",
 	},
@@ -619,56 +918,56 @@ var Catalog = []Rule{
 	{
 		Guard: IrreplaceableUserContent,
 		Name:  "沙盒应用文档", Category: "用户内容",
-		Pattern: "Library/Containers/*/Data/Documents", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Library/Containers/*/Data/Documents", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
 		HowToRestore: "无法恢复，除非你另有备份。",
 	},
 	{
 		Guard: IrreplaceableUserContent,
 		Name:  "应用组文档", Category: "用户内容",
-		Pattern: "Library/Group Containers/*/Documents", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Library/Group Containers/*/Documents", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
 		HowToRestore: "无法恢复，除非你另有备份。",
 	},
 	{
 		Guard: IrreplaceableCredentials,
 		Name:  "钥匙串", Category: "凭据",
-		Pattern: "Library/Keychains", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Library/Keychains", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是密钥或凭据，删除后无法恢复。",
 		HowToRestore: "无法恢复。",
 	},
 	{
 		Guard: IrreplaceableUserData,
 		Name:  "邮件数据", Category: "用户数据",
-		Pattern: "Library/Mail", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Library/Mail", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
 		HowToRestore: "无法恢复，除非服务端仍有副本并重新同步。",
 	},
 	{
 		Guard: IrreplaceableUserData,
 		Name:  "信息记录", Category: "用户数据",
-		Pattern: "Library/Messages", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Library/Messages", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
 		HowToRestore: "无法恢复，除非服务端仍有副本并重新同步。",
 	},
 	{
 		Guard: IrreplaceableUserData,
 		Name:  "日历数据", Category: "用户数据",
-		Pattern: "Library/Calendars", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Library/Calendars", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
 		HowToRestore: "无法恢复，除非服务端仍有副本并重新同步。",
 	},
 	{
 		Guard: IrreplaceableUserData,
 		Name:  "提醒事项数据", Category: "用户数据",
-		Pattern: "Library/Reminders", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Library/Reminders", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
 		HowToRestore: "无法恢复，除非服务端仍有副本并重新同步。",
 	},
 	{
 		Guard: IrreplaceableUserContent,
 		Name:  "照片数据", Category: "用户内容",
-		Pattern: "Library/Photos", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
+		Pattern: "Library/Photos", Recovery: RecoveryIrreplaceable, DeclaredRisk: RiskRisky,
 		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
 		HowToRestore: "无法恢复，除非你另有备份。",
 	},
@@ -701,6 +1000,28 @@ const NoProject = int64(-1)
 // rule that fires on one but not the other would depend on which spelling the
 // scan happened to walk. cleanup.DeleteBlock handles the same pair for the same
 // reason.
+// Anchor is what a rule's pattern is matched against: the path below a home
+// folder, or the whole path.
+//
+// It is a field because it was list membership, and list membership is not
+// something a pattern can be read for. Both catalogs held `**/` patterns, so
+// "does this fire outside a home folder" depended on which of two lists an
+// author had dropped the rule into -- and dropping one in the wrong list is
+// exactly how a stale repack artifact on an external disk kept the guard the
+// exception was written to lift.
+type Anchor string
+
+const (
+	// AnchorHome is the zero value: matched against the path below a home folder,
+	// so it cannot answer for /System or /Library. Most of the catalog is about
+	// one person's files and belongs here.
+	AnchorHome Anchor = ""
+	// AnchorPath is matched against the whole path. For the guards, because a
+	// repository on an external disk is still a repository; for the root-owned
+	// caches, because that is where they are.
+	AnchorPath Anchor = "path"
+)
+
 // Covers says how far a rule's claim reaches: to the object its pattern names,
 // or to everything inside it as well.
 //
@@ -752,299 +1073,36 @@ func moreSpecific(a, b candidate) bool {
 }
 
 func Match(context MatchContext) *Rule {
-	// Absolute patterns first, and they are checked whatever the path looks like.
-	// Everything in Catalog goes through homeRelative, which only recognises
-	// /Users/<account>/..., so on a whole-disk scan the tool knew nothing outside
-	// the user's home folder: /Library/Developer/CoreSimulator/Caches/dyld is 3.6
-	// GB of regenerable cache and matched nothing at all. Same root cause as the
-	// `**/` guard hole, which I fixed on the guard side only.
 	clean := strings.TrimSuffix(filepath.Clean(context.Path), "/")
+	whole := strings.TrimPrefix(clean, "/")
+	relative, insideHome := homeRelative(clean)
 	var best candidate
-	consider := func(catalog []Rule, relative string, trimLeadingSlash bool) {
-		for index := range catalog {
-			rule := &catalog[index]
-			if !rule.conditionsMet(context) {
-				continue
-			}
-			pattern := rule.Pattern
-			if trimLeadingSlash {
-				pattern = strings.TrimPrefix(pattern, "/")
-			}
-			matched, exact := matchPatternScoped(pattern, relative)
-			if !matched {
-				continue
-			}
-			if rule.Covers == CoversSelfOnly && !exact {
-				continue
-			}
-			next := candidate{rule: rule, self: exact, segs: rule.Specificity()}
-			if best.rule == nil || moreSpecific(next, best) {
-				best = next
-			}
+	for index := range Catalog {
+		rule := &Catalog[index]
+		if !rule.conditionsMet(context) {
+			continue
+		}
+		subject, pattern := relative, rule.Pattern
+		if rule.Anchor == AnchorPath {
+			subject, pattern = whole, strings.TrimPrefix(rule.Pattern, "/")
+		} else if !insideHome {
+			// A home-relative pattern must never answer for /System or /Library:
+			// `Library/Caches` is not /System/Library/Caches.
+			continue
+		}
+		matched, exact := matchPatternScoped(pattern, subject)
+		if !matched {
+			continue
+		}
+		if rule.Covers == CoversSelfOnly && !exact {
+			continue
+		}
+		next := candidate{rule: rule, self: exact, segs: rule.Specificity()}
+		if best.rule == nil || moreSpecific(next, best) {
+			best = next
 		}
 	}
-	consider(AbsoluteCatalog, strings.TrimPrefix(clean, "/"), true)
-	if relative, ok := homeRelative(clean); ok {
-		consider(Catalog, relative, false)
-	}
 	return best.rule
-}
-
-// AbsoluteCatalog is matched against the whole path rather than a home-relative
-// one -- that is the only thing the list has in common. Root-owned entries carry
-// Manual and are reported but never staged: see
-// Rule.Manual.
-var AbsoluteCatalog = []Rule{
-	{
-		Name: "模拟器 dyld 缓存", Category: "构建缓存",
-		Pattern: "/Library/Developer/CoreSimulator/Caches/dyld",
-		Manual:  true, Command: "sudo rm -rf /Library/Developer/CoreSimulator/Caches/dyld",
-		Recovery: RecoveryRegenerable, Risk: RiskSafe,
-		WhatBreaks:   "不需要联网。模拟器下次启动会重建共享缓存，第一次启动明显变慢。",
-		HowToRestore: "模拟器自动重建。",
-	},
-	{
-		Name: "系统更新包残留", Category: "更新器残留",
-		Pattern: "/Library/Updates",
-		Manual:  true, Command: "sudo rm -rf /Library/Updates/*",
-		Recovery: RecoveryRedownloadable, Risk: RiskSafe,
-		WhatBreaks:   "没有影响。这是已下载的系统与 Rosetta 更新包，需要时会重新下载。",
-		HowToRestore: "系统更新时自动重新下载。",
-	},
-	{
-		Name: "根级用户缓存", Category: "应用缓存", Generic: true,
-		Pattern: "/Library/Caches",
-		Manual:  true, Command: "sudo rm -rf /Library/Caches/*",
-		Recovery: RecoveryRegenerable, Risk: RiskReview,
-		WhatBreaks:   "系统级共享缓存消失，相关服务首次使用时重建。个别项可能包含许可或激活信息。",
-		HowToRestore: "多数自动重建。",
-	},
-	{
-		Name: "根级日志", Category: "日志", Generic: true,
-		Pattern: "/Library/Logs", MinAgeDays: 30,
-		Manual: true, Command: "sudo rm -rf /Library/Logs/*",
-		Recovery: RecoveryIrreplaceable, Risk: RiskReview,
-		WhatBreaks:   "历史诊断日志消失。排查旧问题时会缺少记录，功能不受影响。",
-		HowToRestore: "无法恢复，但新日志会继续写入。",
-	},
-
-	// --- The location guards, merged in from anywhereIrreplaceable,
-	// suffixIrreplaceable, loginStatePaths and PartialInstallReason. ---
-	//
-	// They live here because they are matched against the whole path: a
-	// repository on an external disk is still a repository, and a guard that only
-	// fires inside one home folder is not the guard it looks like.
-	{
-		Guard: IrreplaceableRepository,
-		Name:  "版本库历史", Category: "版本库",
-		Pattern: "**/.git", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是版本库历史。即使远端可能有副本，本工具无法确认，删除后可能永久丢失未推送的提交。",
-		HowToRestore: "只能从远端重新克隆，且未推送的提交无法找回。",
-	},
-	// The exception that used to be a mechanism. gitTransient was a list read by
-	// the guard to suppress itself; a more specific rule does that by itself now.
-	// Both live here rather than in the home-relative catalog because a
-	// repository on an external disk leaves the same artifacts, and an exception
-	// that only holds inside one home folder is not the exception it looks like.
-	{
-		Name: "git 残留临时包", Category: "残留文件",
-		Pattern: "**/.git/objects/pack/tmp_pack_*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
-		WhatBreaks:   "没有影响。这是 repack 中断后遗留的临时文件，git 不会使用它。",
-		HowToRestore: "无需恢复：它不是版本库内容，删除不丢任何提交。",
-	},
-	{
-		Name: "git 残留临时索引", Category: "残留文件",
-		Pattern: "**/.git/objects/pack/tmp_idx_*", Recovery: RecoveryRegenerable, Risk: RiskSafe,
-		WhatBreaks:   "没有影响。这是 repack 中断后遗留的临时文件，git 不会使用它。",
-		HowToRestore: "无需恢复：它不是版本库内容，删除不丢任何提交。",
-	},
-	{
-		Guard: IrreplaceableUserData,
-		Name:  "站点本地存储", Category: "用户数据",
-		Pattern: "**/Local Storage", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
-		HowToRestore: "无法恢复，除非服务端仍有副本。",
-	},
-	{
-		Guard: IrreplaceableUserData,
-		Name:  "站点数据库", Category: "用户数据",
-		Pattern: "**/IndexedDB", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
-		HowToRestore: "无法恢复，除非服务端仍有副本。",
-	},
-	{
-		Guard: IrreplaceableUserData,
-		Name:  "站点文件系统", Category: "用户数据",
-		Pattern: "**/File System", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
-		HowToRestore: "无法恢复，除非服务端仍有副本。",
-	},
-	{
-		Guard: IrreplaceableUserData,
-		Name:  "扩展本地设置", Category: "用户数据",
-		Pattern: "**/Local Extension Settings", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是应用为你保存的数据，不是缓存，删除后无法重建。",
-		HowToRestore: "无法恢复，除非服务端仍有副本。",
-	},
-	// Not a cache despite where it sits: IntelliJ's local file history is how
-	// uncommitted work is recovered, one segment from the index that is disposable.
-	{
-		Guard: IrreplaceableUserData,
-		Name:  "本地文件历史", Category: "用户数据",
-		Pattern: "**/LocalHistory", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是 IDE 保存的本地修改历史，未提交的改动靠它找回，删除后无法重建。",
-		HowToRestore: "无法恢复。",
-	},
-	{
-		Guard: IrreplaceableCredentials,
-		Name:  "SSH 密钥", Category: "凭据",
-		Pattern: "**/.ssh", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是密钥或凭据，删除后无法恢复。",
-		HowToRestore: "无法恢复，只能重新生成密钥并在每个服务上重新登记。",
-	},
-	{
-		Guard: IrreplaceableCredentials,
-		Name:  "GPG 密钥", Category: "凭据",
-		Pattern: "**/.gnupg", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是密钥或凭据，删除后无法恢复。",
-		HowToRestore: "无法恢复，只能重新生成密钥。",
-	},
-	// The bundles, by their own extension. Matched on the segment rather than on
-	// a lowercased whole path, so the comparison is now case sensitive -- the
-	// applications that create these write the extension themselves, so this is
-	// a narrowing on paper more than in practice.
-	{
-		Guard: IrreplaceableUserContent,
-		Name:  "照片图库", Category: "用户内容",
-		Pattern: "**/*.photoslibrary", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
-		HowToRestore: "无法恢复，除非你另有备份。",
-	},
-	{
-		Guard: IrreplaceableUserContent,
-		Name:  "照片图库（旧版）", Category: "用户内容",
-		Pattern: "**/*.photolibrary", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是你自己的文件，删除后无法再生成。",
-		HowToRestore: "无法恢复，除非你另有备份。",
-	},
-	{
-		Guard: IrreplaceableUserContent,
-		Name:  "Final Cut 资源库", Category: "用户内容",
-		Pattern: "**/*.fcpbundle", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是你自己的剪辑工程与素材，删除后无法再生成。",
-		HowToRestore: "无法恢复，除非你另有备份。",
-	},
-	{
-		Guard: IrreplaceableUserContent,
-		Name:  "Logic 工程", Category: "用户内容",
-		Pattern: "**/*.logicx", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是你自己的工程文件，删除后无法再生成。",
-		HowToRestore: "无法恢复，除非你另有备份。",
-	},
-	{
-		Guard: IrreplaceableVirtualDisk,
-		Name:  "稀疏磁盘映像", Category: "虚拟磁盘",
-		Pattern: "**/*.sparsebundle", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
-		HowToRestore: "无法恢复，除非你另有备份。",
-	},
-	{
-		Guard: IrreplaceableVirtualDisk,
-		Name:  "虚拟机磁盘", Category: "虚拟磁盘",
-		Pattern: "**/*.vmdk", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
-		HowToRestore: "无法恢复，除非你另有备份。",
-	},
-	{
-		Guard: IrreplaceableVirtualDisk,
-		Name:  "虚拟机磁盘", Category: "虚拟磁盘",
-		Pattern: "**/*.qcow2", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
-		HowToRestore: "无法恢复，除非你另有备份。",
-	},
-	{
-		Guard: IrreplaceableVirtualDisk,
-		Name:  "UTM 虚拟机", Category: "虚拟磁盘",
-		Pattern: "**/*.utm", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
-		HowToRestore: "无法恢复，除非你另有备份。",
-	},
-	{
-		Guard: IrreplaceableVirtualDisk,
-		Name:  "Parallels 虚拟机", Category: "虚拟磁盘",
-		Pattern: "**/*.pvm", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
-		HowToRestore: "无法恢复，除非你另有备份。",
-	},
-	{
-		Guard: IrreplaceableVirtualDisk,
-		Name:  "VirtualBox 磁盘", Category: "虚拟磁盘",
-		Pattern: "**/*.vdi", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是虚拟机或容器的磁盘，里面是整个客体文件系统。",
-		HowToRestore: "无法恢复，除非你另有备份。",
-	},
-	// Login state is not irreplaceable -- you can sign in again -- so the
-	// correction is on the risk and the wording, not on the recoverability.
-	// Recovery is deliberately left unset rather than filled with a comfortable
-	// answer.
-	{
-		Guard: LoginState,
-		Name:  "Cookie", Category: "登录状态",
-		Pattern: "**/Cookies", Risk: RiskRisky,
-		WhatBreaks:   "这里保存的是浏览器的登录状态。删除后所有网站都需要重新登录，部分站点的两步验证需要重新设置。",
-		HowToRestore: "只能逐个网站重新登录。",
-	},
-	{
-		Guard: LoginState,
-		Name:  "Cookie 日志", Category: "登录状态",
-		Pattern: "**/Cookies-journal", Risk: RiskRisky,
-		WhatBreaks:   "这里保存的是浏览器的登录状态。删除后所有网站都需要重新登录。",
-		HowToRestore: "只能逐个网站重新登录。",
-	},
-	{
-		Guard: LoginState,
-		Name:  "保存的登录信息", Category: "登录状态",
-		Pattern: "**/Login Data", Risk: RiskRisky,
-		WhatBreaks:   "这里保存的是浏览器记住的账号密码，删除后需要重新输入。",
-		HowToRestore: "只能重新输入或从密码管理器恢复。",
-	},
-	{
-		Guard: LoginState,
-		Name:  "保存的登录信息", Category: "登录状态",
-		Pattern: "**/Login Data For Account", Risk: RiskRisky,
-		WhatBreaks:   "这里保存的是浏览器记住的账号密码，删除后需要重新输入。",
-		HowToRestore: "只能重新输入或从密码管理器恢复。",
-	},
-	{
-		Guard: LoginState,
-		Name:  "扩展 Cookie", Category: "登录状态",
-		Pattern: "**/Extension Cookies", Risk: RiskRisky,
-		WhatBreaks:   "这里保存的是浏览器扩展的登录状态，删除后扩展需要重新登录。",
-		HowToRestore: "只能逐个扩展重新登录。",
-	},
-	{
-		Guard: LoginState,
-		Name:  "设备绑定会话", Category: "登录状态",
-		Pattern: "**/Device Bound Sessions", Risk: RiskRisky,
-		WhatBreaks:   "这里保存的是与本机绑定的会话，删除后相关站点需要重新登录并重新验证设备。",
-		HowToRestore: "只能重新登录。",
-	},
-	{
-		Guard: LoginState,
-		Name:  "Safari 数据", Category: "登录状态",
-		Pattern: "**/Safari", Risk: RiskRisky,
-		WhatBreaks:   "这里保存的是 Safari 的登录状态与浏览数据，删除后所有网站都需要重新登录。",
-		HowToRestore: "只能逐个网站重新登录。",
-	},
-	// Inside an installed toolchain: the installer checks the root and a stamp,
-	// not the files, so nothing self-heals and the toolchain stays broken.
-	{
-		Guard: PartialInstall,
-		Name:  "工具链内部目录", Category: "工具链",
-		Pattern: "**/flutter/bin/cache/dart-sdk", Recovery: RecoveryIrreplaceable, Risk: RiskRisky,
-		WhatBreaks:   "这是已安装工具链的内部目录。安装器只检查根目录和 stamp，不校验里面的文件，所以删掉之后不会自动重新下载——工具链会一直是坏的。",
-		HowToRestore: "真实恢复方式是删除整个缓存目录重新拉取。",
-	},
 }
 
 // Specificity is how many literal segments a pattern pins down. It decides which
@@ -1182,11 +1240,6 @@ func segmentMatches(pattern, segment string) bool {
 		return strings.HasPrefix(segment, prefix)
 	}
 	return pattern == segment
-}
-
-func containsSequence(haystack, needle []string) bool {
-	matched, _ := sequenceScoped(haystack, needle)
-	return matched
 }
 
 // sequenceScoped reports whether the needle appears in the haystack at all, and

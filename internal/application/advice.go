@@ -435,7 +435,7 @@ func (p EvidencePack) RuleFindings() []AdviceItem {
 			Category:         rule.Category,
 			ReclaimableBytes: node.OwnedAllocated,
 			Recovery:         rule.Recovery,
-			DeclaredRisk:     rule.Risk,
+			DeclaredRisk:     rule.DeclaredRisk,
 			Confidence:       rule.Confidence(),
 			Generic:          rule.Generic,
 			Evidence:         nodeEvidence(node, p.GeneratedAt),
@@ -482,7 +482,7 @@ func ruleActivity(rule *recommendation.Rule, node recommendation.EvidenceNode, i
 func ruleAssessment(rule *recommendation.Rule, node recommendation.EvidenceNode, idleDays int64, now time.Time) recommendation.Assessment {
 	activity, days := ruleActivity(rule, node, idleDays, now)
 	return recommendation.Assess(recommendation.Facts{
-		Source: recommendation.SourceRule, Recovery: rule.Recovery, Declared: rule.Risk,
+		Source: recommendation.SourceRule, Recovery: rule.Recovery, Declared: rule.DeclaredRisk,
 		Confidence: rule.Confidence(), Activity: activity, IdleDays: days, Generic: rule.Generic,
 	})
 }

@@ -37,6 +37,7 @@ const recoveryLabels: Record<string, string> = {
 	regenerable: "可重新生成",
 	redownloadable: "可重新下载",
 	irreplaceable: "不可替代",
+	reauthenticate: "需重新登录",
 };
 
 export function recoveryLabel(recovery: string): string {
