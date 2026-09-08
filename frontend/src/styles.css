@@ -277,10 +277,6 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .directory-heading { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 2px 10px; }
 .directory-heading h2 { flex: 1 1 auto; overflow: hidden; margin: 0; color: #e9e9ec; font-size: 21px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .directory-heading strong { flex: 0 0 auto; color: #e9e9ec; font-size: 21px; font-weight: 400; }
-/* Incompleteness, beside the title instead of as a row of its own. The colour is
-   the review tier's, not the destructive red: nothing is wrong, something is
-   missing. */
-.directory-incomplete { display: grid; width: 17px; height: 17px; flex: 0 0 auto; border-radius: 50%; background: #4a3a22; color: #d9bd7e; font-size: 11px; line-height: 1; place-items: center; cursor: default; }
 .directory-title { display: flex; align-items: start; gap: 9px; min-width: 0; }
 /* Twice the diameter of a row's dot, measured, and it takes the node's own
    colour from the component rather than a fixed one. Absent at the scan root. */
@@ -742,29 +738,19 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Root-level free-space rows (ADR-0052 §5). */
 /* The reference separates this block by one row height and keeps it on the same
    right edge as the list (R-060 §3.7). */
-/* The panel's footer: what the object under the pointer is, from the local rule
-   catalog. Fixed height with its own scroll -- the list above it is
-   `flex: 0 1 auto`, so a footer that grew with its content would resize the list
-   under the very pointer that is driving it. */
-.directory-describe { height: 132px; flex: 0 0 auto; margin-top: 12px; padding: 9px 2px 0; overflow: auto; border-top: 1px solid rgba(255, 255, 255, .07); scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
-.directory-describe p { margin: 0 0 3px; }
-.describe-name { overflow: hidden; color: #e9e9ec; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.describe-facts { color: #8e8f96; font-size: 10px; }
-.describe-rule { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 2px; }
-.describe-tag { padding: 1px 5px; border-radius: 3px; background: rgba(255, 255, 255, .09); color: #c9cad0; font-size: 9px; }
-.describe-tag.recovery-regenerable, .describe-tag.recovery-redownloadable { background: #2b3a2e; color: #a6cfa8; }
-.describe-tag.recovery-irreplaceable { background: #46281f; color: #f0b3a3; }
-.describe-tag.is-manual { background: #3d3320; color: #d9bd7e; }
-/* The one thing worth saying about a directory the catalog does not name. */
-.describe-tag.is-project { background: #23303d; color: #9dc0ea; }
-/* The two prose lines are the answer to "what happens if I say yes", which is
-   the question a list of paths and sizes never answers. They get the room. */
-.describe-breaks { color: #c6c7cd; font-size: 10px; line-height: 1.5; }
-.describe-restore { color: #8e8f96; font-size: 10px; line-height: 1.5; }
-/* A refusal, or a property of this object: the one line here that should stop a
-   hand. */
-.describe-guard { color: #e2887c; font-size: 10px; line-height: 1.5; }
-.describe-unknown, .describe-idle { color: #8e8f96; font-size: 10px; line-height: 1.5; }
+/* One line under the heading: what the named object is. The heading is what the
+   wheel switches on hover, so the eye is already here; the verdict lives where
+   the name is read rather than in a corner the eye had to travel to. Fixed
+   height, so its coming and going cannot move the list beneath it. */
+.directory-verdict { display: flex; min-height: 20px; flex: 0 0 auto; align-items: center; gap: 4px; margin: -4px 2px 6px; overflow: hidden; white-space: nowrap; }
+.verdict-tag { flex: 0 0 auto; padding: 1px 6px; border-radius: 3px; background: rgba(255, 255, 255, .09); color: #c9cad0; font-size: 10px; }
+.verdict-tag.recovery-regenerable, .verdict-tag.recovery-redownloadable { background: #2b3a2e; color: #a6cfa8; }
+.verdict-tag.recovery-irreplaceable, .verdict-tag.is-protected { background: #46281f; color: #f0b3a3; }
+/* Costs the person's time rather than a machine's: between the green and the red. */
+.verdict-tag.recovery-reauthenticate, .verdict-tag.is-manual { background: #3d3320; color: #d9bd7e; }
+.verdict-tag.is-project { background: #23303d; color: #9dc0ea; }
+/* The honest fallback: facts, never a reassurance. */
+.verdict-facts { overflow: hidden; color: #8e8f96; font-size: 10px; text-overflow: ellipsis; }
 
 /* Departing arcs during a level change: they sweep out of the circle and fade,
    so the wedges that are not part of the destination do not leave a hole. */

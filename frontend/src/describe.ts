@@ -1,5 +1,6 @@
-// What the panel says about the object under the pointer, from the local rule
-// catalog alone.
+// What the panel says about the object it is showing, from the local rule
+// catalog alone: one line under the heading, a verdict when there is one and
+// the plain facts when there is not.
 //
 // The one rule this module exists to enforce: silence is not a reassurance. An
 // empty `rule` means the catalog recognised nothing, and rendering that as "可以

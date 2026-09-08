@@ -111,9 +111,6 @@ const smallEntryShare = 0.0005;
 // the focus ring go away on their own.
 const focusIdleMs = 3000;
 // Seconds the destructive action waits before running, so it can be stopped.
-// Said in one place, because it is now the only place it is said: the mark in
-// the heading is the whole carrier, and its tooltip is the whole explanation.
-const incompleteReason = "部分结果：有目录未能完整读取，未计入的空间归入隐藏空间。";
 const countdownSeconds = 5;
 // How long a deletion has to run before it is worth drawing a progress ring for.
 // Measured on APFS with four workers: about 62k inodes a second, so most staged
@@ -1267,7 +1264,6 @@ function DirectoryList({
   selectedKey,
   contextEntry,
   description,
-  confidence,
   inCollector,
   onHover,
   onFocus,
@@ -1295,9 +1291,6 @@ function DirectoryList({
   selectedKey: string | null;
   contextEntry: MapEntry | null;
   description: NodeDescription | null;
-  // The scan result's own confidence, passed rather than recomputed: two
-  // expressions for one fact is how they drift apart.
-  confidence: string;
   inCollector: boolean;
   onHover: (entry: MapEntry | null) => void;
   onFocus: (entry: MapEntry) => void;
@@ -1322,26 +1315,35 @@ function DirectoryList({
           ? <span className="directory-parent-dot" style={{ background: preview.color }} />
           : parentDotColor && <span className="directory-parent-dot" style={{ background: parentDotColor }} />}
         <h2>{preview ? preview.name : parent ? crumbLabel(parent.path, parent.parentId === 0 ? 0 : 1) : "当前目录"}</h2>
-        {/* The result is incomplete -- permissions, cloud placeholders, a
-            cancelled run -- and DDD invariant 5 requires that be visible. It was
-            a sentence under the list until that sentence was removed, and the
-            隐藏空间 row alone states the bytes without the reason. So it is a
-            mark beside the title: it costs no row, it rides the heading the
-            description region is anchored to, and the reason is on its tooltip.
-
-            Only "partial". "estimated" is a statement about precision, not about
-            something missing, and a mark that fires on both would stop meaning
-            anything. */}
-        {confidence === "partial" && (
-          <span
-            className="directory-incomplete"
-            role="img"
-            title={incompleteReason}
-            aria-label={incompleteReason}
-          >!</span>
-        )}
         <strong>{formatBytes(preview ? preview.size : total)}</strong>
       </div>
+      {/* What the object named above is, on one line under its name. This
+          heading is what the wheel switches on hover, so the eye is already
+          here -- the verdict lives where the name is read, not in a corner the
+          eye has to travel to (the fixed region that used to sit at the foot of
+          the list, now gone). A verdict when the catalog has one, the plain
+          facts when it does not, never a reassurance. Fixed height, so its
+          coming and going cannot move the list beneath it.
+
+          The caller hands over a description only when it is of THIS heading's
+          node: one still in flight for the previous node would otherwise sit
+          under the new name for a frame, and a wrong verdict under the right
+          name is worse than a blank one. */}
+      <p className="directory-verdict">
+        {description && (hasVerdict(description) ? (
+          <>
+            {description.rule && <span className="verdict-tag">{description.rule}</span>}
+            {recoveryLabel(description.recovery) && (
+              <span className={"verdict-tag recovery-" + description.recovery}>{recoveryLabel(description.recovery)}</span>
+            )}
+            {description.manual && <span className="verdict-tag is-manual">需管理员权限</span>}
+            {description.isProjectRoot && <span className="verdict-tag is-project">项目目录</span>}
+            {description.protection && <span className="verdict-tag is-protected" title={description.protection}>不可删除</span>}
+          </>
+        ) : (
+          <span className="verdict-facts">{factsLine(description, new Date())}</span>
+        ))}
+      </p>
 
       <div className="directory-list" role="listbox" aria-label="当前目录内容">
         {preview ? (
@@ -1406,64 +1408,6 @@ function DirectoryList({
             </div>
           );
         })}
-      </div>
-      {/* What the object under the pointer is, from the local rule catalog. This
-          replaced two free-space rows that used to sit here, which were volume
-          facts at the foot of a directory listing -- and which printed the same
-          number twice, because purgeable space has no separate source yet
-          (ADR-0052 §5). A directory listing's footer should describe the
-          directory.
-
-          Fixed height with its own scroll: the list above is `flex: 0 1 auto`,
-          so a footer that grew with its content would resize the list under the
-          pointer that is driving it.
-
-          Everything is read from `description` and nothing is mixed with the
-          currently hovered entry, so the block is always internally consistent
-          -- the name and the verdict always describe the same object -- at the
-          cost of trailing the pointer by one settle interval. */}
-      <div className="directory-describe">
-        {description ? (
-          <>
-            <p className="describe-name">{description.name}</p>
-            <p className="describe-facts">{factsLine(description, new Date())}</p>
-            {(description.rule || description.isProjectRoot) && (
-              <p className="describe-rule">
-                {description.rule && <span className="describe-tag">{description.rule}</span>}
-                {recoveryLabel(description.recovery) && (
-                  <span className={"describe-tag recovery-" + description.recovery}>
-                    {recoveryLabel(description.recovery)}
-                  </span>
-                )}
-                {/* Root-owned: worth saying, and this tool will not take admin
-                    rights to act on it (ADR-0065). */}
-                {description.manual && <span className="describe-tag is-manual">需管理员权限</span>}
-                {/* No cleanup rule names a source tree, because the catalog is
-                    about what is disposable. This is the one true thing left to
-                    say, and it is the thing that matters most before a delete. */}
-                {description.isProjectRoot && <span className="describe-tag is-project">项目目录</span>}
-              </p>
-            )}
-            {description.whatBreaks && <p className="describe-breaks">{description.whatBreaks}</p>}
-            {description.howToRestore && <p className="describe-restore">{description.howToRestore}</p>}
-            {/* The one refusal. Everything else the object is -- including that
-                losing it would be permanent -- arrives as its rule's own
-                recovery tag and prose, because a guard is a rule now. */}
-            {description.protection && (
-              <p className="describe-guard">不可删除：{description.protection}</p>
-            )}
-            {/* Nothing is known. Said plainly, because the alternative -- printing
-                nothing, or worse printing a reassurance -- is what makes an
-                unrecognised 8 GB directory look approved. The condition has one
-                definition, in describe.ts, so a new signal cannot be added
-                without this line learning about it. */}
-            {!hasVerdict(description) && (
-              <p className="describe-unknown">本机规则不认识这一项，删除前请自行确认。</p>
-            )}
-          </>
-        ) : (
-          <p className="describe-idle">把指针停在一项上，这里说明它是什么。</p>
-        )}
       </div>
 
       {contextEntry?.displayState === "stale" && (
@@ -3051,8 +2995,7 @@ export default function App() {
             focusedKey={focusedKey}
             selectedKey={selectedKey}
             contextEntry={inspectorEntry}
-            description={description}
-            confidence={mapConfidence}
+            description={description && description.nodeId === describedNodeId ? description : null}
             inCollector={inspectedInCollector}
             onHover={setHoveredEntry}
             onFocus={setFocusedEntry}
