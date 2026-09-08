@@ -129,7 +129,12 @@ func answer(path string) string {
 	if rule := Match(MatchContext{Path: path, Kind: "directory", AgeDays: 400, ProjectIdleDays: NoProject}); rule != nil {
 		name, recovery, risk = rule.Name, string(rule.Recovery), string(rule.DeclaredRisk)
 		if rule.Generic {
-			generic = " generic"
+			generic += " generic"
+		}
+		// Recorded so that a guard turning back into a proposal shows up as a diff
+		// line, not as a suggestion to delete ~/Documents.
+		if rule.IdentifyOnly {
+			generic += " identify-only"
 		}
 	}
 	guards := append([]string(nil), GuardsFor(path)...)

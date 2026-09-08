@@ -146,6 +146,15 @@ func (s *Service) buildEvidencePackFor(snapshotID, rootID, floor int64, share fl
 		if rule == nil {
 			continue
 		}
+		// An identification is not a proposal. Excluded here, at the source,
+		// rather than at RuleFindings: hits also drive the fold, the generation
+		// exclusion and the candidate list's `ruled` cover, and a ~/Documents
+		// hit in any of those removes everything beneath it from the advisor's
+		// view. This is exactly the pre-ADR-0068 behaviour, when the guards were
+		// not rules and Match returned nil for these paths.
+		if rule.IdentifyOnly {
+			continue
+		}
 		hits[node.ID] = rule
 		// Folding follows the CONCLUSION, not the catalog's declared tier: an
 		// active project's `target/debug` is declared safe and concluded review,
