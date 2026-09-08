@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"path/filepath"
 	"sort"
@@ -49,6 +50,14 @@ type Service struct {
 	legacyCacheDir   string
 	mu               sync.RWMutex
 	tasks            map[string]*scanTask
+	// One re-read at a time: two would race each other for the same tree. The
+	// live updater applies its batches under the same lock.
+	rereadMu sync.Mutex
+	// fileEvents is optional: without it the result stays as scanned until the
+	// user re-reads or re-scans (ADR-0072).
+	fileEvents       ports.FileEventWatcher
+	liveMu           sync.Mutex
+	live             *liveUpdater
 	plans            map[string]*cleanupPlan
 	serial           atomic.Uint64
 	emit             func(string, any)
@@ -96,8 +105,11 @@ type Dependencies struct {
 	Icons ports.VolumeIcons
 	// VolumeWatcher tells the service when the mounted set changes. Optional.
 	VolumeWatcher ports.VolumeWatcher
-	Credentials   ports.CredentialStore
-	ScanTotals    ports.ScanTotals
+	// FileEvents reports directories whose contents changed, so a finished
+	// result can follow the disk (ADR-0072). Optional.
+	FileEvents  ports.FileEventWatcher
+	Credentials ports.CredentialStore
+	ScanTotals  ports.ScanTotals
 	// AdvisorFactory is injected rather than imported so the application layer
 	// stays free of transport code (PROJECT-STRUCTURE dependency rule).
 	AdvisorFactory AdvisorFactory
@@ -386,7 +398,7 @@ func NewService(deps Dependencies) *Service {
 	if emit == nil {
 		emit = func(string, any) {}
 	}
-	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, icons: deps.Icons, iconCache: make(map[string]string), volumeWatcher: deps.VolumeWatcher, credentials: deps.Credentials, scanTotals: deps.ScanTotals, advisorFactory: deps.AdvisorFactory, legacyCacheDir: deps.LegacyCacheDir, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
+	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, icons: deps.Icons, iconCache: make(map[string]string), volumeWatcher: deps.VolumeWatcher, fileEvents: deps.FileEvents, credentials: deps.Credentials, scanTotals: deps.ScanTotals, advisorFactory: deps.AdvisorFactory, legacyCacheDir: deps.LegacyCacheDir, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
 }
 
 // BeginRecovery lets the Wails window become visible before large legacy cache
@@ -655,6 +667,12 @@ type snapshotIssueStore interface {
 // result stale, and the user is told to re-scan rather than shown a wrong map.
 type subtreeRemovingStore interface {
 	RemoveSubtree(int64, string) (scan.SubtreeRemoval, error)
+}
+
+// subtreeReplacingStore lets one directory be re-read from disk and spliced
+// into the result in place (ADR-0070). Optional like the removal above.
+type subtreeReplacingStore interface {
+	ReplaceSubtree(int64, int64, []scan.Node, map[int64]scan.DirectorySize) (scan.SubtreeReplacement, error)
 }
 
 type snapshotVolumeStore interface {
@@ -1016,6 +1034,9 @@ func (s *Service) StartScan(options ScanOptions) (ScanStatus, error) {
 		return ScanStatus{}, err
 	}
 	s.cancelCacheMaintenance()
+	// The result about to be replaced stops following the disk first: the
+	// stream would otherwise keep patching a tree that CreateSnapshot frees.
+	s.StopLiveUpdate()
 	root, err := s.files.NormalizeScanRoot(options.Root)
 	if err != nil {
 		return ScanStatus{}, err
@@ -1481,6 +1502,9 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 			log.Printf("scan total for %s not stored: %v", task.root, err)
 		}
 	}
+	if finalState == "completed" || finalState == "completed_with_issues" {
+		s.startLiveUpdate(task.snapshotID, task.root)
+	}
 	log.Printf("scan %s finished: state=%s elapsed=%s walk=%s tail=%s nodes=%d files=%d dirs=%d bytes=%d issues=%d",
 		task.taskID, finalState, time.Since(scanStarted).Round(time.Millisecond),
 		walkEnded.Sub(scanStarted).Round(time.Millisecond),
@@ -1604,21 +1628,206 @@ func (s *Service) GetMap(query MapQuery) (MapResult, error) {
 }
 
 func (s *Service) PreviewNode(snapshotID, nodeID int64) (NodeActionResult, error) {
-	return s.nodeAction(snapshotID, nodeID, func(path string) (string, error) {
+	return s.nodeAction(snapshotID, nodeID, func(node scan.Node) (string, error) {
 		if s.preview == nil {
 			return "", errors.New("preview is unavailable")
 		}
-		return s.preview.Preview(path)
+		return s.preview.Preview(node.Path)
 	})
 }
 
 func (s *Service) RevealNode(snapshotID, nodeID int64) (NodeActionResult, error) {
-	return s.nodeAction(snapshotID, nodeID, func(path string) (string, error) {
+	return s.nodeAction(snapshotID, nodeID, func(node scan.Node) (string, error) {
 		if s.preview == nil {
 			return "", errors.New("finder reveal is unavailable")
 		}
-		return s.preview.Reveal(path)
+		return s.preview.Reveal(node.Path)
 	})
+}
+
+// OpenTerminalNode opens a Terminal window at the node when it is a directory,
+// and at its parent otherwise. The substitution is a safety edge, not a
+// convenience: Terminal.app treats a file URL as a script and runs it, so a
+// file must never reach the port (ADR-0069 §5). It shares nodeAction's
+// checks with Preview and Reveal -- snapshot, node kind, device and inode --
+// and the same gate on the frontend side, the reveal capability.
+func (s *Service) OpenTerminalNode(snapshotID, nodeID int64) (NodeActionResult, error) {
+	return s.nodeAction(snapshotID, nodeID, func(node scan.Node) (string, error) {
+		if s.preview == nil {
+			return "", errors.New("terminal is unavailable")
+		}
+		return s.preview.OpenTerminal(terminalDirectory(node))
+	})
+}
+
+func terminalDirectory(node scan.Node) string {
+	if node.Kind == "directory" {
+		return node.Path
+	}
+	return filepath.Dir(node.Path)
+}
+
+// rereadNodeCap bounds what a re-read will take on. The sub-scan is held in
+// memory as scan.Nodes before it is spliced in, at roughly 150 bytes each; a
+// directory past this is the disk, not a folder, and a re-scan is the honest
+// tool for it. Half a million nodes re-read in about three seconds (R-072).
+const rereadNodeCap = 500_000
+
+// RereadResult reports one in-place re-read (ADR-0070). Code follows the node
+// actions' vocabulary: ok, invalid_request, stale_node, permission_denied,
+// unsupported_node, plus busy (a scan or another re-read is running),
+// too_large (over rereadNodeCap) and scan_root (re-read the disk instead).
+type RereadResult struct {
+	OK      bool   `json:"ok"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	NodeID  int64  `json:"nodeId"`
+	Path    string `json:"path"`
+	Nodes   int64  `json:"nodes"`
+	Kept    int64  `json:"kept"`
+	Added   int64  `json:"added"`
+	Removed int64  `json:"removed"`
+	Version int64  `json:"version"`
+}
+
+// RereadDirectory reads one directory from disk again and replaces its subtree
+// in the snapshot, keeping node IDs for objects that are still there (ADR-0070).
+// A file re-reads its parent. It is the answer to a stale node: instead of
+// disabling every action until the whole disk is scanned again, the one
+// directory that changed is brought up to date.
+//
+// The FSEvents-style live map stays out of scope (SDD §14.5d's paragraph on
+// live updates): this is a bounded read the user asked for, of a directory the
+// user is looking at, and the rest of the snapshot keeps its moment.
+func (s *Service) RereadDirectory(snapshotID, nodeID int64) (RereadResult, error) {
+	if snapshotID <= 0 || nodeID <= 0 {
+		return RereadResult{Code: "invalid_request", Message: "snapshot and node are required"}, nil
+	}
+	if _, ok := s.store.(subtreeReplacingStore); !ok {
+		return RereadResult{Code: "unsupported_node", Message: "当前结果不支持就地重读，请重新扫描"}, nil
+	}
+	if s.scanRunning() {
+		return RereadResult{Code: "busy", Message: "扫描进行中，等它结束再重读"}, nil
+	}
+	node, err := s.store.NodeByID(snapshotID, nodeID)
+	if err != nil {
+		return RereadResult{Code: "stale_node", Message: "该对象已不在当前扫描结果中"}, nil
+	}
+	if node.Kind != "directory" {
+		if node.ParentID <= 0 {
+			return RereadResult{Code: "invalid_request", Message: "该对象没有可重读的目录"}, nil
+		}
+		if node, err = s.store.NodeByID(snapshotID, node.ParentID); err != nil {
+			return RereadResult{Code: "stale_node", Message: "该对象所在的目录已不在当前扫描结果中"}, nil
+		}
+	}
+	if node.Kind != "directory" {
+		return RereadResult{Code: "unsupported_node", Message: "该对象不能重读"}, nil
+	}
+	if node.ParentID == 0 {
+		return RereadResult{Code: "scan_root", Message: "扫描根目录请重新扫描（⇧⌘R）", NodeID: node.ID, Path: node.Path}, nil
+	}
+	if facts, factsErr := s.store.SubtreeFacts(snapshotID, node.ID); factsErr == nil && facts.Nodes > rereadNodeCap {
+		return RereadResult{Code: "too_large", Message: fmt.Sprintf("“%s” 有 %d 项，超过就地重读的上限，请重新扫描", node.Name, facts.Nodes), NodeID: node.ID, Path: node.Path}, nil
+	}
+	// The directory itself has to still be the directory the snapshot means.
+	current, err := s.files.CaptureCleanupItem(node.Path)
+	if errors.Is(err, fs.ErrPermission) {
+		return RereadResult{Code: "permission_denied", Message: "macOS 未授权读取该目录", NodeID: node.ID, Path: node.Path}, nil
+	}
+	if err != nil || current.Device != node.Device || current.Inode != node.Inode {
+		return RereadResult{Code: "stale_node", Message: "该目录已移动或删除，请重新扫描", NodeID: node.ID, Path: node.Path}, nil
+	}
+	if !s.rereadMu.TryLock() {
+		return RereadResult{Code: "busy", Message: "另一次重读正在进行"}, nil
+	}
+	defer s.rereadMu.Unlock()
+
+	started := time.Now()
+	replacement, code, err := s.rereadSubtree(snapshotID, node)
+	switch code {
+	case "too_large":
+		return RereadResult{Code: code, Message: fmt.Sprintf("“%s” 超过就地重读的上限，请重新扫描", node.Name), NodeID: node.ID, Path: node.Path}, nil
+	case "unsupported_node":
+		return RereadResult{Code: code, Message: "该目录下挂着其他卷，请重新扫描整盘", NodeID: node.ID, Path: node.Path}, nil
+	case "platform_error":
+		return RereadResult{Code: code, Message: err.Error(), NodeID: node.ID, Path: node.Path}, nil
+	}
+	if s.volumes != nil {
+		if items, listErr := s.volumes.ListVolumes(); listErr == nil {
+			s.refreshSnapshotVolume(snapshotID, items)
+		}
+	}
+	log.Printf("reread: %s 重读完成，%d 节点（保留 %d / 新增 %d / 移除 %d），%s，版本 %d",
+		node.Path, replacement.Nodes, replacement.Kept, replacement.Added, replacement.Removed, time.Since(started).Round(time.Millisecond), replacement.Version)
+	return RereadResult{
+		OK: true, Code: "ok", Message: "已重新读取", NodeID: node.ID, Path: node.Path,
+		Nodes: replacement.Nodes, Kept: replacement.Kept, Added: replacement.Added, Removed: replacement.Removed,
+		Version: replacement.Version,
+	}, nil
+}
+
+// rereadSubtree is the deep re-read itself: a sub-scan rooted at the directory,
+// spliced in by ReplaceSubtree. Shared by RereadDirectory (the user's ⌘R and
+// the stale-node recovery) and by the live updater for directories that arrive
+// new or that the system says to re-scan (ADR-0072). The caller holds rereadMu.
+// code is empty on success, else too_large / unsupported_node / platform_error.
+func (s *Service) rereadSubtree(snapshotID int64, node scan.Node) (scan.SubtreeReplacement, string, error) {
+	replacer, ok := s.store.(subtreeReplacingStore)
+	if !ok {
+		return scan.SubtreeReplacement{}, "platform_error", errors.New("the store cannot replace a subtree")
+	}
+	defer s.memoryLimiter.hold()()
+	var nodes []scan.Node
+	var collectMu sync.Mutex
+	collect := func(batch []scan.Node) error {
+		// Called from several walker threads at once, and the scanner recycles
+		// its batch buffers after the call (ADR-0057 §1): lock, and copy.
+		collectMu.Lock()
+		defer collectMu.Unlock()
+		nodes = append(nodes, batch...)
+		if int64(len(nodes)) > rereadNodeCap {
+			return errRereadTooLarge
+		}
+		return nil
+	}
+	phase := func(scan.Phase) error { return nil }
+	var result scan.Result
+	var scanErr error
+	if batchScanner, ok := s.scanner.(ports.BatchScanner); ok {
+		result, scanErr = batchScanner.ScanBatched(context.Background(), node.Path, collect, phase)
+	} else {
+		result, scanErr = s.scanner.Scan(context.Background(), node.Path, func(one scan.Node) error { return collect([]scan.Node{one}) }, phase)
+	}
+	if errors.Is(scanErr, errRereadTooLarge) || int64(len(nodes)) > rereadNodeCap {
+		return scan.SubtreeReplacement{}, "too_large", errRereadTooLarge
+	}
+	if scanErr != nil {
+		return scan.SubtreeReplacement{}, "platform_error", scanErr
+	}
+	replacement, err := replacer.ReplaceSubtree(snapshotID, node.ID, nodes, result.DirectorySizes)
+	if err != nil {
+		if errors.Is(err, scan.ErrSubtreeHasVolumes) {
+			return scan.SubtreeReplacement{}, "unsupported_node", err
+		}
+		return scan.SubtreeReplacement{}, "platform_error", err
+	}
+	return replacement, "", nil
+}
+
+var errRereadTooLarge = errors.New("reread exceeds the node cap")
+
+// scanRunning says whether any scan task is still walking. A re-read while the
+// disk is being scanned would race the writer for the same tree.
+func (s *Service) scanRunning() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, task := range s.tasks {
+		if task.status().State == scan.JobRunning {
+			return true
+		}
+	}
+	return false
 }
 
 // GetNodeEntry resolves one node ID into the map entry the current level would
@@ -1639,7 +1848,7 @@ func (s *Service) GetNodeEntry(snapshotID, nodeID int64) (MapEntry, error) {
 	return mapEntry(scan.NodeEntry(node)), nil
 }
 
-func (s *Service) nodeAction(snapshotID, nodeID int64, action func(string) (string, error)) (NodeActionResult, error) {
+func (s *Service) nodeAction(snapshotID, nodeID int64, action func(scan.Node) (string, error)) (NodeActionResult, error) {
 	if snapshotID <= 0 || nodeID <= 0 {
 		return NodeActionResult{Code: "invalid_request", Message: "snapshot and node are required"}, nil
 	}
@@ -1651,10 +1860,17 @@ func (s *Service) nodeAction(snapshotID, nodeID int64, action func(string) (stri
 		return NodeActionResult{Code: "unsupported_node", Message: "该对象不能执行此操作"}, nil
 	}
 	current, err := s.files.CaptureCleanupItem(node.Path)
+	// Not being allowed to look is not the same as the object being gone. macOS
+	// data vaults refuse lstat even to a process with Full Disk Access, and the
+	// scan saw the entry in its parent's listing without ever opening it. Say
+	// that, instead of "moved or deleted" (ADR-0015 error semantics, SDD §13f).
+	if errors.Is(err, fs.ErrPermission) {
+		return NodeActionResult{Code: "permission_denied", Message: "macOS 未授权读取该对象，无法确认它还是扫描时的对象"}, nil
+	}
 	if err != nil || current.Device != node.Device || current.Inode != node.Inode {
 		return NodeActionResult{Code: "stale_node", Message: "对象已移动或删除，请重新扫描"}, nil
 	}
-	path, err := action(node.Path)
+	path, err := action(node)
 	if err != nil {
 		return NodeActionResult{Code: "platform_error", Message: err.Error()}, nil
 	}
@@ -2308,12 +2524,16 @@ func (s *Service) validateCleanupItem(item cleanup.Item) (bool, string) {
 	if current.Device != item.Device || current.Inode != item.Inode {
 		return false, "对象已被替换（不是扫描时的那一个）"
 	}
-	if current.Size != item.Size || current.Mode != item.Mode || !current.Modified.Equal(item.Modified) {
-		// The common case by far, and it is not an error: a cache directory that
-		// something is still writing to changes between the scan and the delete.
-		// Saying "metadata changed" left the user with nothing to do about it.
-		return false, "扫描之后内容有变化（多半是仍在被写入的缓存），重新扫描后再试"
+	if current.Kind != item.Kind {
+		return false, "对象类型已变化（不是扫描时的那一种）"
 	}
+	// Size, mode and mtime are deliberately not compared (ADR-0071). They used to
+	// be, and the check fired on almost every live cache: a directory's mtime
+	// moves whenever a direct child is added or removed, which is what a cache
+	// does all day. The user's intent is "delete this object", not "delete the
+	// bytes it held at scan time", and identity above is what pins the object.
+	// The size the user sees is kept honest another way: the frontend re-reads
+	// the staged directories before it builds the plan (ADR-0070).
 	return true, "ready"
 }
 

@@ -722,8 +722,12 @@ type nativeScanContext struct {
 	dirStates  pagedSlice[nativeDirectoryState]
 	dirSizes   pagedSlice[scan.DirectorySize]
 	seen       map[[2]uint64]struct{}
-	result     scan.Result
-	err        error
+	// The system-side path of every firmlink (/Users, /Applications, ...). A
+	// directory entry at one of these paths gets its identity from a path
+	// lookup, not from the bulk record -- see lookupIdentity.
+	firmlinks map[string]struct{}
+	result    scan.Result
+	err       error
 }
 
 func growOrdinals(ordinals []int32, length int64) []int32 {
@@ -840,7 +844,8 @@ func scanConfiguredTree(ctx context.Context, root string, emit scan.BatchEmitter
 	boundaries := newMountBoundaries(root, mounts)
 	native := &nativeScanContext{
 		ctx: scanCtx, emitter: emit, phase: phase, root: root, volumeID: volumeID,
-		seen: map[[2]uint64]struct{}{}, result: scan.Result{DirectorySizes: map[int64]DirectorySize{}},
+		seen: map[[2]uint64]struct{}{}, firmlinks: loadFirmlinkSources(),
+		result: scan.Result{DirectorySizes: map[int64]DirectorySize{}},
 	}
 	rootStat, ok := rootInfo.Sys().(*syscall.Stat_t)
 	if !ok || rootStat == nil {
@@ -1047,6 +1052,16 @@ func (native *nativeScanContext) addNodes(raw []C.marmot_native_entry, includesR
 			node.LogicalSize = 0
 			node.AllocatedSize = 0
 			node.OwnedAllocated = 0
+			// A firmlink's bulk record is the sealed system volume's catalog
+			// entry; lstat("/Users") lands on the data volume's directory. Every
+			// later check -- reveal, preview, cleanup validation -- goes by path,
+			// so the stored identity has to be the one a path finds (SDD §13f).
+			// Nineteen paths on a whole-disk scan; a map probe for the rest.
+			if _, isFirmlink := native.firmlinks[path]; isFirmlink {
+				if device, inode, ok := lookupIdentity(path); ok {
+					node.Device, node.Inode = device, inode
+				}
+			}
 		}
 		prepared.nodes = append(prepared.nodes, node)
 		prepared.linkCount = append(prepared.linkCount, uint32(entry.link_count))

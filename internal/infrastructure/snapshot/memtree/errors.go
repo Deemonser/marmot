@@ -9,7 +9,11 @@
 // A consequence that must not be dressed up: a crash loses the result outright.
 package memtree
 
-import "errors"
+import (
+	"errors"
+
+	"example.com/marmot/internal/domain/scan"
+)
 
 var (
 	// ErrInvalidRequest covers malformed queries: unknown snapshot, negative
@@ -19,6 +23,12 @@ var (
 	// there is nothing consistent to answer with.
 	ErrResultUnavailable = errors.New("scan result is unavailable")
 	ErrNodeNotFound      = errors.New("node not found")
+	// ErrSubtreeHasVolumes refuses a re-read of a directory that holds attached
+	// volume nodes (ADR-0052 §3): they have no on-disk identity and would not
+	// come back from the read, so the subtree would silently lose them. The
+	// value is the domain's so Application can match it without importing this
+	// package.
+	ErrSubtreeHasVolumes = scan.ErrSubtreeHasVolumes
 )
 
 const (

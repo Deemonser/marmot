@@ -99,37 +99,9 @@ func (t *tree) insert(nodes []scan.Node) error {
 		if t.records.len() <= node.ID {
 			t.records.grow(node.ID + 1)
 		}
-		nameOffset, nameLength, err := t.names.put(node.Name)
+		entry, err := t.encode(node, node.ParentID)
 		if err != nil {
 			return err
-		}
-		kind, err := t.kinds.code(node.Kind)
-		if err != nil {
-			return err
-		}
-		volume, err := t.volumes.code(node.VolumeID)
-		if err != nil {
-			return err
-		}
-		basis, err := t.bases.code(node.SizeBasis)
-		if err != nil {
-			return err
-		}
-		confidence, err := t.confidences.code(node.Confidence)
-		if err != nil {
-			return err
-		}
-		entry := record{
-			parentID: node.ParentID, ownedAllocated: node.OwnedAllocated, logicalSize: node.LogicalSize,
-			device: int64(node.Device), inode: int64(node.Inode),
-			nameOffset: nameOffset, nameLength: nameLength,
-			kind: kind, volume: volume, basis: basis, confidence: confidence,
-		}
-		if !node.ModifiedAt.IsZero() {
-			entry.modifiedUnix = node.ModifiedAt.UnixNano()
-		}
-		if node.HasChildren {
-			entry.flags |= flagHasChildren
 		}
 		*t.records.at(node.ID) = entry
 		if node.ParentID == 0 {
@@ -139,6 +111,45 @@ func (t *tree) insert(nodes []scan.Node) error {
 	t.grouped = false
 	t.version++
 	return nil
+}
+
+// encode is the one place a scan.Node becomes a record. The parent is a
+// parameter rather than read off the node because a re-read's nodes arrive
+// numbered by their own sub-scan and are re-parented as they are stored.
+func (t *tree) encode(node scan.Node, parentID int64) (record, error) {
+	nameOffset, nameLength, err := t.names.put(node.Name)
+	if err != nil {
+		return record{}, err
+	}
+	kind, err := t.kinds.code(node.Kind)
+	if err != nil {
+		return record{}, err
+	}
+	volume, err := t.volumes.code(node.VolumeID)
+	if err != nil {
+		return record{}, err
+	}
+	basis, err := t.bases.code(node.SizeBasis)
+	if err != nil {
+		return record{}, err
+	}
+	confidence, err := t.confidences.code(node.Confidence)
+	if err != nil {
+		return record{}, err
+	}
+	entry := record{
+		parentID: parentID, ownedAllocated: node.OwnedAllocated, logicalSize: node.LogicalSize,
+		device: int64(node.Device), inode: int64(node.Inode),
+		nameOffset: nameOffset, nameLength: nameLength,
+		kind: kind, volume: volume, basis: basis, confidence: confidence,
+	}
+	if !node.ModifiedAt.IsZero() {
+		entry.modifiedUnix = node.ModifiedAt.UnixNano()
+	}
+	if node.HasChildren {
+		entry.flags |= flagHasChildren
+	}
+	return entry, nil
 }
 
 // applySizes writes the rolled-up totals straight into the records. A separate
@@ -253,8 +264,13 @@ func (t *tree) children(parentID int64) []int32 {
 	return t.childIDs[start : start+length]
 }
 
+// valid says whether an ID names a node that is still in the tree. A detached
+// record -- removed by a deletion or dropped by a re-read -- has parentID 0 and
+// is not the root, so it reads as absent even though its bytes are still in the
+// table: an old ID held by a client must answer "gone", not describe a node the
+// root can no longer reach.
 func (t *tree) valid(id int64) bool {
-	return id > 0 && id < t.records.len() && (id == t.rootNodeID || t.records.at(int64(id)).parentID != 0 || t.records.at(id).nameLength > 0)
+	return id > 0 && id < t.records.len() && (id == t.rootNodeID || t.records.at(id).parentID != 0)
 }
 
 // path rebuilds an absolute path by walking to the root. Paths are not stored:

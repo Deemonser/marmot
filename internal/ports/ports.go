@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"errors"
+	"time"
 
 	"example.com/marmot/internal/domain/cleanup"
 	"example.com/marmot/internal/domain/recommendation"
@@ -15,6 +16,33 @@ type Scanner interface {
 
 type BatchScanner interface {
 	ScanBatched(context.Context, string, scan.BatchEmitter, scan.PhaseEmitter) (scan.Result, error)
+}
+
+// DirectoryReader lists one directory's direct children as nodes without
+// descending, the way the walk would have emitted them (ADR-0072). The first
+// result is the directory itself with its fresh identity and mtime; the
+// children carry no IDs. Optional: a scanner without it leaves live updates off.
+type DirectoryReader interface {
+	ReadDirectory(path, volumeID string) (scan.Node, []scan.Node, error)
+}
+
+// FileEvent is one coalesced file-system notification: a directory whose
+// contents changed. MustScanSubDirs means the system lost track below it and
+// the whole subtree has to be read again; Dropped means events were lost
+// altogether (kernel or user buffer), so the watcher's picture is incomplete
+// until the affected directories are re-read.
+type FileEvent struct {
+	Path            string
+	MustScanSubDirs bool
+	Dropped         bool
+}
+
+// FileEventWatcher reports directories under root whose contents changed, in
+// batches coalesced by the system over roughly `latency` (ADR-0072). onEvents
+// may be called from any thread; the application layer batches further and
+// resolves each path against its own tree. stop ends the stream.
+type FileEventWatcher interface {
+	WatchFileEvents(root string, latency time.Duration, onEvents func([]FileEvent)) (stop func(), err error)
 }
 
 // SnapshotStore holds the scan result. It is memory-only (ADR-0055): there is no
@@ -171,9 +199,17 @@ type Trash interface {
 	RemoveWithin(cleanup.Item, []string) error
 }
 
+// PreviewPort hands an already-validated path to the system: Quick Look, a
+// Finder selection, or a Terminal window. Every path it receives has been
+// resolved from a snapshot node by Application (DDD invariant 17); the port
+// never sees a path the frontend typed.
 type PreviewPort interface {
 	Preview(string) (string, error)
 	Reveal(string) (string, error)
+	// OpenTerminal opens a Terminal window at a directory. Callers pass a
+	// directory, never a file: Terminal treats a file URL as a script to run
+	// (ADR-0069 §5), so Application substitutes the parent before calling.
+	OpenTerminal(string) (string, error)
 }
 
 // VolumeIcons returns the icon the system itself shows for a mounted volume,

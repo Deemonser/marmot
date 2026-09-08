@@ -11,3 +11,7 @@ func (Adapter) Preview(string) (string, error) {
 func (Adapter) Reveal(string) (string, error) {
 	return "", errors.New("Finder is only available on macOS")
 }
+
+func (Adapter) OpenTerminal(string) (string, error) {
+	return "", errors.New("Terminal is only available on macOS")
+}

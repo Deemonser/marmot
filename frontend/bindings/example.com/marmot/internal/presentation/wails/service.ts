@@ -61,6 +61,10 @@ export function GetCleanupAdvice(snapshotID: number): $CancellablePromise<$model
     return $Call.ByID(4091719120, snapshotID);
 }
 
+export function GetLiveUpdateStatus(): $CancellablePromise<$models.LiveUpdateStatus> {
+    return $Call.ByID(407526245);
+}
+
 export function GetMap(query: $models.MapQuery): $CancellablePromise<$models.MapResult> {
     return $Call.ByID(2827691950, query);
 }
@@ -88,6 +92,25 @@ export function GetStorageSources(): $CancellablePromise<$models.StorageSourceOv
 }
 
 /**
+ * OpenTerminalNode opens Terminal.app at the node's directory -- the node itself
+ * when it is one, its parent otherwise. Same input shape as PreviewNode and
+ * RevealNode: a snapshot and a node, never a path (ADR-0069 §5).
+ */
+export function OpenTerminalNode(snapshotID: number, nodeID: number): $CancellablePromise<$models.NodeActionResult> {
+    return $Call.ByID(1725033928, snapshotID, nodeID);
+}
+
+/**
+ * PrepareNodeMenu rebuilds the result page's node menu for one node and returns
+ * the name the frontend must trigger. The accelerator labels are the original's
+ * hints and nothing more: a context menu's key equivalents only work while it is
+ * open, and the real Space and ⌘⌫ paths stay in the frontend (R-071 §3).
+ */
+export function PrepareNodeMenu(spec: $models.NodeMenuSpec): $CancellablePromise<string> {
+    return $Call.ByID(2492691672, spec);
+}
+
+/**
  * PrepareVolumeMenu rebuilds the native menu for one volume row and returns the
  * name the frontend must trigger. It is rebuilt on every open so the item set
  * always matches the row it belongs to (ADR-0051 §3).
@@ -105,6 +128,15 @@ export function PreviewEvidence(snapshotID: number): $CancellablePromise<$models
 
 export function PreviewNode(snapshotID: number, nodeID: number): $CancellablePromise<$models.NodeActionResult> {
     return $Call.ByID(1900736820, snapshotID, nodeID);
+}
+
+/**
+ * RereadDirectory re-reads one directory from disk and splices the result into
+ * the current snapshot, keeping node IDs for unchanged objects. Same input shape
+ * as the other node actions: a snapshot and a node, never a path (ADR-0070).
+ */
+export function RereadDirectory(snapshotID: number, nodeID: number): $CancellablePromise<$models.RereadResult> {
+    return $Call.ByID(4215800016, snapshotID, nodeID);
 }
 
 export function RevealNode(snapshotID: number, nodeID: number): $CancellablePromise<$models.NodeActionResult> {

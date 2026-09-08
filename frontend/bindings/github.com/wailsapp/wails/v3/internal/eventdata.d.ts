@@ -13,7 +13,9 @@ declare module "@wailsio/runtime" {
     namespace Events {
         interface CustomEvents {
             "cleanup-progress": wails$0.CleanupProgress;
+            "node-menu": wails$0.NodeMenuAction;
             "scan-progress": wails$0.ScanProgress;
+            "snapshot-updated": wails$0.LiveUpdate;
             "storage-sources-changed": void;
             "volume-menu": wails$0.VolumeMenuAction;
         }

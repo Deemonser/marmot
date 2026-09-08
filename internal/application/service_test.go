@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1208,5 +1209,566 @@ func TestCancelledScanDoesNotTeachATotal(t *testing.T) {
 	}
 	if got := totals.LoadScanTotal(root); got.Bytes != 12345 {
 		t.Fatalf("a %s scan overwrote the learned total: %+v", status.State, got)
+	}
+}
+
+// recordingPreview stands in for the macOS bridge and writes down what it was
+// handed, so the test can see which path each action would have given AppKit.
+type recordingPreview struct {
+	terminal []string
+}
+
+func (recordingPreview) Preview(path string) (string, error) { return path, nil }
+func (recordingPreview) Reveal(path string) (string, error)  { return path, nil }
+func (r *recordingPreview) OpenTerminal(path string) (string, error) {
+	r.terminal = append(r.terminal, path)
+	return path, nil
+}
+
+// Terminal.app runs a file URL as a script, so a file node must reach the port
+// as its parent directory and a directory node as itself (ADR-0069 §5). Both go
+// through the same node checks as Preview and Reveal: an id that is not in the
+// snapshot is refused before the port hears about it.
+func TestOpenTerminalNodeHandsTheDirectoryToThePort(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "build")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "output.bin")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := memtree.OpenStore()
+	t.Cleanup(func() { store.Close() })
+	adapter := platform.Adapter{}
+	preview := &recordingPreview{}
+	service := NewService(Dependencies{Store: store, Scanner: scanner.Scanner{}, FileSystem: adapter, Permissions: adapter, Trash: adapter, Preview: preview})
+
+	started, err := service.StartScan(ScanOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := started
+	for i := 0; i < 200 && status.State == "running"; i++ {
+		time.Sleep(5 * time.Millisecond)
+		if status, err = service.GetScanStatus(started.TaskID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status.State != "completed" {
+		t.Fatalf("scan did not complete: %#v", status)
+	}
+
+	level, err := service.GetMap(MapQuery{SnapshotID: status.SnapshotID, ParentID: 1, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dirID int64
+	for _, entry := range level.Entries {
+		if entry.Kind == "node" && entry.Node.Path == dir {
+			dirID = entry.Node.ID
+		}
+	}
+	if dirID == 0 {
+		t.Fatalf("the walked level did not carry the directory: %#v", level.Entries)
+	}
+	inner, err := service.GetMap(MapQuery{SnapshotID: status.SnapshotID, ParentID: dirID, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fileID int64
+	for _, entry := range inner.Entries {
+		if entry.Kind == "node" && entry.Node.Path == file {
+			fileID = entry.Node.ID
+		}
+	}
+	if fileID == 0 {
+		t.Fatalf("the directory level did not carry the file: %#v", inner.Entries)
+	}
+
+	if result, err := service.OpenTerminalNode(status.SnapshotID, dirID); err != nil || !result.OK {
+		t.Fatalf("directory: %#v %v", result, err)
+	}
+	if result, err := service.OpenTerminalNode(status.SnapshotID, fileID); err != nil || !result.OK {
+		t.Fatalf("file: %#v %v", result, err)
+	}
+	if fmt.Sprint(preview.terminal) != fmt.Sprint([]string{dir, dir}) {
+		t.Fatalf("the port must only ever see directories: %v", preview.terminal)
+	}
+
+	if result, err := service.OpenTerminalNode(status.SnapshotID, fileID+9999); err != nil || result.OK || result.Code != "stale_node" {
+		t.Fatalf("an unknown node must be refused before the port: %#v %v", result, err)
+	}
+	if result, err := service.OpenTerminalNode(0, fileID); err != nil || result.OK || result.Code != "invalid_request" {
+		t.Fatalf("a missing snapshot must be refused: %#v %v", result, err)
+	}
+	if len(preview.terminal) != 2 {
+		t.Fatalf("refused calls must not reach the port: %v", preview.terminal)
+	}
+}
+
+// vaultedFS is the file system as a macOS data vault presents it: the parent
+// listing shows the entry, but lstat on it is refused even with Full Disk
+// Access. Everything else is the real adapter.
+type vaultedFS struct {
+	platform.Adapter
+	vaulted string
+}
+
+func (v vaultedFS) CaptureCleanupItem(path string) (cleanup.Item, error) {
+	if path == v.vaulted {
+		return cleanup.Item{}, &fs.PathError{Op: "lstat", Path: path, Err: syscall.EPERM}
+	}
+	return v.Adapter.CaptureCleanupItem(path)
+}
+
+// "Not allowed to look" must not be reported as "moved or deleted": the first
+// is a fact about this process, the second a claim about the disk that nothing
+// supports. Either way the port is not called (ADR-0015 error semantics).
+func TestNodeActionReportsPermissionNotStalenessForVaultedPaths(t *testing.T) {
+	root := t.TempDir()
+	vault := filepath.Join(root, "com.apple.vault")
+	if err := os.Mkdir(vault, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "plain.bin"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := memtree.OpenStore()
+	t.Cleanup(func() { store.Close() })
+	adapter := platform.Adapter{}
+	preview := &recordingPreview{}
+	service := NewService(Dependencies{Store: store, Scanner: scanner.Scanner{}, FileSystem: vaultedFS{Adapter: adapter, vaulted: vault}, Permissions: adapter, Trash: adapter, Preview: preview})
+
+	started, err := service.StartScan(ScanOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := started
+	for i := 0; i < 200 && status.State == "running"; i++ {
+		time.Sleep(5 * time.Millisecond)
+		if status, err = service.GetScanStatus(started.TaskID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	level, err := service.GetMap(MapQuery{SnapshotID: status.SnapshotID, ParentID: 1, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vaultID, plainID int64
+	for _, entry := range level.Entries {
+		if entry.Kind != "node" {
+			continue
+		}
+		switch entry.Node.Path {
+		case vault:
+			vaultID = entry.Node.ID
+		case filepath.Join(root, "plain.bin"):
+			plainID = entry.Node.ID
+		}
+	}
+	if vaultID == 0 || plainID == 0 {
+		t.Fatalf("level did not carry both nodes: %#v", level.Entries)
+	}
+
+	result, err := service.RevealNode(status.SnapshotID, vaultID)
+	if err != nil || result.OK || result.Code != "permission_denied" {
+		t.Fatalf("vaulted path: want permission_denied, got %#v %v", result, err)
+	}
+	if result, err := service.OpenTerminalNode(status.SnapshotID, vaultID); err != nil || result.OK || result.Code != "permission_denied" {
+		t.Fatalf("vaulted path (terminal): want permission_denied, got %#v %v", result, err)
+	}
+	if len(preview.terminal) != 0 {
+		t.Fatalf("a refused node must not reach the port: %v", preview.terminal)
+	}
+	if result, err := service.RevealNode(status.SnapshotID, plainID); err != nil || !result.OK {
+		t.Fatalf("the plain file must still reveal: %#v %v", result, err)
+	}
+}
+
+func scanForTest(t *testing.T, service *Service, root string) ScanStatus {
+	t.Helper()
+	started, err := service.StartScan(ScanOptions{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := started
+	for i := 0; i < 400 && status.State == "running"; i++ {
+		time.Sleep(5 * time.Millisecond)
+		if status, err = service.GetScanStatus(started.TaskID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status.State != "completed" {
+		t.Fatalf("scan did not complete: %#v", status)
+	}
+	return status
+}
+
+func mapEntryByPath(t *testing.T, service *Service, snapshotID, parentID int64, path string) MapEntry {
+	t.Helper()
+	level, err := service.GetMap(MapQuery{SnapshotID: snapshotID, ParentID: parentID, Limit: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range level.Entries {
+		if entry.Kind == "node" && entry.Node.Path == path {
+			return entry
+		}
+	}
+	t.Fatalf("%s is not in level %d: %#v", path, parentID, level.Entries)
+	return MapEntry{}
+}
+
+// The disk changes under a finished scan. Re-reading the one directory that
+// changed brings that directory -- and every ancestor's total -- up to date,
+// keeps the IDs of the objects that are still there, and leaves the rest of the
+// snapshot alone (ADR-0070).
+func TestRereadDirectoryReplacesOneSubtreeInPlace(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "build")
+	other := filepath.Join(root, "src")
+	for _, path := range []string{dir, other} {
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(path string, size int) {
+		if err := os.WriteFile(path, make([]byte, size), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(dir, "keep.bin"), 4096)
+	write(filepath.Join(dir, "gone.bin"), 8192)
+	write(filepath.Join(other, "main.go"), 4096)
+
+	store := memtree.OpenStore()
+	t.Cleanup(func() { store.Close() })
+	adapter := platform.Adapter{}
+	service := NewService(Dependencies{Store: store, Scanner: scanner.Scanner{MountResolver: adapter.ListMounts}, FileSystem: adapter, Permissions: adapter, Trash: adapter, Preview: &recordingPreview{}})
+	status := scanForTest(t, service, root)
+
+	buildBefore := mapEntryByPath(t, service, status.SnapshotID, 1, dir)
+	keepBefore := mapEntryByPath(t, service, status.SnapshotID, buildBefore.Node.ID, filepath.Join(dir, "keep.bin"))
+	goneBefore := mapEntryByPath(t, service, status.SnapshotID, buildBefore.Node.ID, filepath.Join(dir, "gone.bin"))
+	srcBefore := mapEntryByPath(t, service, status.SnapshotID, 1, other)
+	rootBefore, err := service.GetMap(MapQuery{SnapshotID: status.SnapshotID, ParentID: 1, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The world moves on: one file removed, one grown, one added, one new subdirectory.
+	if err := os.Remove(filepath.Join(dir, "gone.bin")); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(dir, "keep.bin"), 16384)
+	write(filepath.Join(dir, "new.bin"), 4096)
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(dir, "sub", "deep.bin"), 4096)
+
+	// Re-reading through the file resolves to its directory.
+	result, err := service.RereadDirectory(status.SnapshotID, keepBefore.Node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.OK || result.NodeID != buildBefore.Node.ID || result.Path != dir {
+		t.Fatalf("re-read did not land on the directory: %#v", result)
+	}
+	// build, keep.bin, new.bin, sub, sub/deep.bin
+	if result.Nodes != 5 || result.Kept != 1 || result.Added != 3 || result.Removed != 1 {
+		t.Fatalf("nodes/kept/added/removed = %d/%d/%d/%d: %#v", result.Nodes, result.Kept, result.Added, result.Removed, result)
+	}
+
+	buildAfter := mapEntryByPath(t, service, status.SnapshotID, 1, dir)
+	if buildAfter.Node.ID != buildBefore.Node.ID {
+		t.Fatalf("the directory must keep its ID: %d -> %d", buildBefore.Node.ID, buildAfter.Node.ID)
+	}
+	keepAfter := mapEntryByPath(t, service, status.SnapshotID, buildAfter.Node.ID, filepath.Join(dir, "keep.bin"))
+	if keepAfter.Node.ID != keepBefore.Node.ID {
+		t.Fatalf("an unchanged-in-place file must keep its ID: %d -> %d", keepBefore.Node.ID, keepAfter.Node.ID)
+	}
+	if keepAfter.OwnedAllocated <= keepBefore.OwnedAllocated {
+		t.Fatalf("keep.bin grew on disk but not in the snapshot: %d -> %d", keepBefore.OwnedAllocated, keepAfter.OwnedAllocated)
+	}
+	newEntry := mapEntryByPath(t, service, status.SnapshotID, buildAfter.Node.ID, filepath.Join(dir, "new.bin"))
+	subEntry := mapEntryByPath(t, service, status.SnapshotID, buildAfter.Node.ID, filepath.Join(dir, "sub"))
+	mapEntryByPath(t, service, status.SnapshotID, subEntry.Node.ID, filepath.Join(dir, "sub", "deep.bin"))
+	if newEntry.Node.ID <= goneBefore.Node.ID || subEntry.Node.ID <= goneBefore.Node.ID {
+		t.Fatalf("new objects must take fresh IDs, not recycle old ones: new=%d sub=%d old max=%d", newEntry.Node.ID, subEntry.Node.ID, goneBefore.Node.ID)
+	}
+	if _, err := service.GetNodeEntry(status.SnapshotID, goneBefore.Node.ID); err == nil {
+		t.Fatal("the removed file's ID still resolves")
+	}
+
+	// The directory's total is the sum of what is in it now, and the root moved
+	// by exactly the same difference. The sibling directory did not move at all.
+	wantBuild := keepAfter.OwnedAllocated + newEntry.OwnedAllocated + subEntry.OwnedAllocated
+	if buildAfter.OwnedAllocated != wantBuild {
+		t.Fatalf("build holds %d, its contents sum to %d", buildAfter.OwnedAllocated, wantBuild)
+	}
+	rootAfter, err := service.GetMap(MapQuery{SnapshotID: status.SnapshotID, ParentID: 1, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootAfter.Parent.OwnedAllocated-rootBefore.Parent.OwnedAllocated != buildAfter.OwnedAllocated-buildBefore.OwnedAllocated {
+		t.Fatalf("root moved by %d, build by %d", rootAfter.Parent.OwnedAllocated-rootBefore.Parent.OwnedAllocated, buildAfter.OwnedAllocated-buildBefore.OwnedAllocated)
+	}
+	if srcAfter := mapEntryByPath(t, service, status.SnapshotID, 1, other); srcAfter.Node.ID != srcBefore.Node.ID || srcAfter.OwnedAllocated != srcBefore.OwnedAllocated {
+		t.Fatalf("the sibling was disturbed: %#v vs %#v", srcAfter, srcBefore)
+	}
+	if version, _ := store.SnapshotVersion(status.SnapshotID); version != result.Version {
+		t.Fatalf("version %d does not match the result's %d", version, result.Version)
+	}
+
+	// After the re-read every action on the kept file works again.
+	if action, err := service.RevealNode(status.SnapshotID, keepAfter.Node.ID); err != nil || !action.OK {
+		t.Fatalf("reveal after re-read: %#v %v", action, err)
+	}
+}
+
+func TestRereadDirectoryRefusesTheRootAndAGoneDirectory(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "build")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.bin"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := memtree.OpenStore()
+	t.Cleanup(func() { store.Close() })
+	adapter := platform.Adapter{}
+	service := NewService(Dependencies{Store: store, Scanner: scanner.Scanner{MountResolver: adapter.ListMounts}, FileSystem: adapter, Permissions: adapter, Trash: adapter})
+	status := scanForTest(t, service, root)
+
+	if result, err := service.RereadDirectory(status.SnapshotID, 1); err != nil || result.OK || result.Code != "scan_root" {
+		t.Fatalf("the scan root must be refused: %#v %v", result, err)
+	}
+	if result, err := service.RereadDirectory(0, 1); err != nil || result.OK || result.Code != "invalid_request" {
+		t.Fatalf("a missing snapshot must be refused: %#v %v", result, err)
+	}
+	build := mapEntryByPath(t, service, status.SnapshotID, 1, dir)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := service.RereadDirectory(status.SnapshotID, build.Node.ID); err != nil || result.OK || result.Code != "stale_node" {
+		t.Fatalf("a directory that is gone must be reported stale, not read: %#v %v", result, err)
+	}
+	if _, err := service.GetNodeEntry(status.SnapshotID, build.Node.ID); err != nil {
+		t.Fatalf("a refused re-read must leave the snapshot alone: %v", err)
+	}
+}
+
+// Identity pins the object; its contents are allowed to move. A cache directory
+// that is still being written to changes its size and mtime between the scan
+// and the delete, and that used to block the delete for no gain (ADR-0071).
+func TestValidateCleanupPlanIgnoresContentChangesButNotReplacement(t *testing.T) {
+	service := testService(t)
+	root := t.TempDir()
+	dir := filepath.Join(root, "Cache")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "entry.bin")
+	if err := os.WriteFile(file, []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snapshotID := scanForTest(t, service, root).SnapshotID
+	plan, err := service.CreateCleanupPlan(CleanupPlanRequest{SnapshotID: snapshotID, Paths: []string{dir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The cache keeps working: a file grows, another appears, the directory's
+	// mtime and size move. None of that changes which object "Cache" is.
+	if err := os.WriteFile(file, []byte("after, and longer"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new.bin"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(2 * time.Hour)
+	if err := os.Chtimes(dir, future, future); err != nil {
+		t.Fatal(err)
+	}
+	validation, err := service.ValidateCleanupPlan(plan.ID, plan.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !validation.Valid {
+		t.Fatalf("content changes must not block the delete: %#v", validation)
+	}
+
+	// Replacing the directory with a different one at the same path is a
+	// different object, and that still blocks.
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	validation, err = service.ValidateCleanupPlan(plan.ID, plan.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validation.Valid || !strings.Contains(validation.Items[0].Reason, "已被替换") {
+		t.Fatalf("a replaced object must still be refused: %#v", validation)
+	}
+}
+
+// fakeFileEvents hands the test the callback the service registered, so events
+// can be injected without a real FSEvents stream.
+type fakeFileEvents struct {
+	mu       sync.Mutex
+	root     string
+	onEvents func([]ports.FileEvent)
+	stopped  int
+}
+
+func (f *fakeFileEvents) WatchFileEvents(root string, _ time.Duration, onEvents func([]ports.FileEvent)) (func(), error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.root = root
+	f.onEvents = onEvents
+	return func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.stopped++
+	}, nil
+}
+
+func (f *fakeFileEvents) fire(events ...ports.FileEvent) {
+	f.mu.Lock()
+	callback := f.onEvents
+	f.mu.Unlock()
+	if callback != nil {
+		callback(events)
+	}
+}
+
+// The result follows the disk (ADR-0072): a directory's event lists it again,
+// files that grew take their new size, new files and directories appear (the
+// directory read in depth), removed ones go, and the ancestors move by the
+// difference. Unchanged objects keep their IDs. One event is emitted per batch.
+func TestLiveUpdateFollowsDirectoryEvents(t *testing.T) {
+	previous := liveUpdateBatch
+	liveUpdateBatch = 20 * time.Millisecond
+	t.Cleanup(func() { liveUpdateBatch = previous })
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "Cache")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(path string, size int) {
+		if err := os.WriteFile(path, make([]byte, size), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(dir, "keep.bin"), 4096)
+	write(filepath.Join(dir, "gone.bin"), 8192)
+
+	var emitted []LiveUpdate
+	var emitMu sync.Mutex
+	watcher := &fakeFileEvents{}
+	store := memtree.OpenStore()
+	t.Cleanup(func() { store.Close() })
+	adapter := platform.Adapter{}
+	service := NewService(Dependencies{
+		Store: store, Scanner: scanner.Scanner{MountResolver: adapter.ListMounts}, FileSystem: adapter, Permissions: adapter, Trash: adapter,
+		FileEvents: watcher,
+		Emit: func(name string, data any) {
+			if name != LiveUpdateEvent {
+				return
+			}
+			emitMu.Lock()
+			emitted = append(emitted, data.(LiveUpdate))
+			emitMu.Unlock()
+		},
+	})
+	t.Cleanup(service.StopLiveUpdate)
+	status := scanForTest(t, service, root)
+	if live := service.GetLiveUpdateStatus(); !live.Active || live.Root != root || live.SnapshotID != status.SnapshotID {
+		t.Fatalf("a finished scan must start following its root: %#v", live)
+	}
+
+	cacheBefore := mapEntryByPath(t, service, status.SnapshotID, 1, dir)
+	keepBefore := mapEntryByPath(t, service, status.SnapshotID, cacheBefore.Node.ID, filepath.Join(dir, "keep.bin"))
+	goneBefore := mapEntryByPath(t, service, status.SnapshotID, cacheBefore.Node.ID, filepath.Join(dir, "gone.bin"))
+	rootBefore, _ := service.GetMap(MapQuery{SnapshotID: status.SnapshotID, ParentID: 1, Limit: 10})
+
+	// The disk moves: keep grows, gone goes, new appears, a subdirectory with
+	// content is created. The system reports the directory (twice, with the
+	// trailing slash FSEvents uses, and as a nested path arriving out of order).
+	write(filepath.Join(dir, "keep.bin"), 16384)
+	if err := os.Remove(filepath.Join(dir, "gone.bin")); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(dir, "new.bin"), 4096)
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(dir, "sub", "deep.bin"), 4096)
+	watcher.fire(ports.FileEvent{Path: filepath.Join(dir, "sub") + "/"})
+	watcher.fire(ports.FileEvent{Path: dir + "/"}, ports.FileEvent{Path: "/nowhere/outside/the/result/"})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		emitMu.Lock()
+		count := len(emitted)
+		emitMu.Unlock()
+		if count > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	emitMu.Lock()
+	got := append([]LiveUpdate(nil), emitted...)
+	emitMu.Unlock()
+	if len(got) != 1 || got[0].SnapshotID != status.SnapshotID || got[0].Directories != 1 {
+		t.Fatalf("expected one update event for one directory, got %#v", got)
+	}
+
+	cacheAfter := mapEntryByPath(t, service, status.SnapshotID, 1, dir)
+	if cacheAfter.Node.ID != cacheBefore.Node.ID {
+		t.Fatalf("the directory must keep its ID: %d -> %d", cacheBefore.Node.ID, cacheAfter.Node.ID)
+	}
+	keepAfter := mapEntryByPath(t, service, status.SnapshotID, cacheAfter.Node.ID, filepath.Join(dir, "keep.bin"))
+	if keepAfter.Node.ID != keepBefore.Node.ID || keepAfter.OwnedAllocated <= keepBefore.OwnedAllocated {
+		t.Fatalf("keep.bin must keep its ID and take its new size: %#v -> %#v", keepBefore, keepAfter)
+	}
+	newEntry := mapEntryByPath(t, service, status.SnapshotID, cacheAfter.Node.ID, filepath.Join(dir, "new.bin"))
+	subEntry := mapEntryByPath(t, service, status.SnapshotID, cacheAfter.Node.ID, filepath.Join(dir, "sub"))
+	deepEntry := mapEntryByPath(t, service, status.SnapshotID, subEntry.Node.ID, filepath.Join(dir, "sub", "deep.bin"))
+	if subEntry.OwnedAllocated != deepEntry.OwnedAllocated || subEntry.OwnedAllocated == 0 {
+		t.Fatalf("a new directory must be read in depth: sub=%d deep=%d", subEntry.OwnedAllocated, deepEntry.OwnedAllocated)
+	}
+	if _, err := service.GetNodeEntry(status.SnapshotID, goneBefore.Node.ID); err == nil {
+		t.Fatal("the removed file's ID still resolves")
+	}
+	wantCache := keepAfter.OwnedAllocated + newEntry.OwnedAllocated + subEntry.OwnedAllocated
+	if cacheAfter.OwnedAllocated != wantCache {
+		t.Fatalf("Cache holds %d, its contents sum to %d", cacheAfter.OwnedAllocated, wantCache)
+	}
+	rootAfter, _ := service.GetMap(MapQuery{SnapshotID: status.SnapshotID, ParentID: 1, Limit: 10})
+	if rootAfter.Parent.OwnedAllocated-rootBefore.Parent.OwnedAllocated != cacheAfter.OwnedAllocated-cacheBefore.OwnedAllocated {
+		t.Fatalf("root moved by %d, Cache by %d", rootAfter.Parent.OwnedAllocated-rootBefore.Parent.OwnedAllocated, cacheAfter.OwnedAllocated-cacheBefore.OwnedAllocated)
+	}
+	live := service.GetLiveUpdateStatus()
+	if live.Batches != 1 || live.Directories != 1 || live.Dropped != 0 || live.Dirty != 0 || live.Version != got[0].Version {
+		t.Fatalf("status: %#v (event %#v)", live, got[0])
+	}
+
+	// A new scan stops the stream before the tree is replaced.
+	service.StopLiveUpdate()
+	watcher.mu.Lock()
+	stopped := watcher.stopped
+	watcher.mu.Unlock()
+	if stopped != 1 || service.GetLiveUpdateStatus().Active {
+		t.Fatalf("stop must end the stream exactly once: stopped=%d status=%#v", stopped, service.GetLiveUpdateStatus())
 	}
 }

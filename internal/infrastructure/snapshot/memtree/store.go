@@ -143,6 +143,31 @@ func (s *Store) RemoveSubtree(snapshotID int64, path string) (scan.SubtreeRemova
 	}, nil
 }
 
+// ReplaceSubtree swaps one directory's subtree for a fresh read of it (ADR-0070).
+// nodes and sizes are numbered by the sub-scan whose root was the directory;
+// see tree.replaceSubtree for how they are re-numbered and which IDs survive.
+func (s *Store) ReplaceSubtree(snapshotID, directoryID int64, nodes []scan.Node, sizes map[int64]scan.DirectorySize) (scan.SubtreeReplacement, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, err := s.treeFor(snapshotID)
+	if err != nil {
+		return scan.SubtreeReplacement{}, err
+	}
+	return result.replaceSubtree(directoryID, nodes, sizes)
+}
+
+// RefreshDirectory brings one directory's direct children up to date from a
+// shallow listing (ADR-0072); see tree.refreshDirectory.
+func (s *Store) RefreshDirectory(snapshotID, directoryID int64, self scan.Node, children []scan.Node) (scan.DirectoryRefresh, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, err := s.treeFor(snapshotID)
+	if err != nil {
+		return scan.DirectoryRefresh{}, err
+	}
+	return result.refreshDirectory(directoryID, self, children)
+}
+
 // FinishScan makes the result queryable. It replaces the old two-step
 // publish-then-persist: with nothing to persist, the visible terminal state is
 // the only terminal state (ADR-0055).

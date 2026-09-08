@@ -25,6 +25,8 @@ func init() {
 	application.RegisterEvent[wails.ScanProgress]("scan-progress")
 	application.RegisterEvent[wails.CleanupProgress]("cleanup-progress")
 	application.RegisterEvent[wails.VolumeMenuAction]("volume-menu")
+	application.RegisterEvent[wails.NodeMenuAction]("node-menu")
+	application.RegisterEvent[wails.LiveUpdate](marmotapp.LiveUpdateEvent)
 	// No payload: the frontend answers by re-reading the source list.
 	application.RegisterEvent[application.Void](marmotapp.StorageSourcesChangedEvent)
 }
@@ -60,6 +62,7 @@ func main() {
 		Preview:        adapter,
 		Icons:          adapter,
 		VolumeWatcher:  adapter,
+		FileEvents:     adapter,
 		Credentials:    adapter,
 		ScanTotals:     adapter,
 		// The composition root is where a transport is chosen; the application
@@ -80,7 +83,10 @@ func main() {
 	app := application.New(application.Options{
 		// The mount observers and their pending debounce must not outlive the
 		// app: an emit during termination has no window to reach.
-		OnShutdown:  core.StopVolumeWatch,
+		OnShutdown: func() {
+			core.StopLiveUpdate()
+			core.StopVolumeWatch()
+		},
 		Name:        "Marmot",
 		Description: "macOS disk space analysis and safe cleanup",
 		Services:    []application.Service{application.NewService(service)},

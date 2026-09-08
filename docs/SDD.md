@@ -521,6 +521,19 @@ Treemap/Sunburst 默认使用 `owned_allocated`；不可得时必须降级并在
 
 标题的色点：**扫描根不画**，下钻时画，直径为子项色点的两倍（`14pt`），颜色取该节点自身的颜色。
 
+**扇区与列表行的右键菜单是原生上下文菜单**（ADR-0069，机制沿用 ADR-0051）。真实右键由 React 的
+`onContextMenu` 截住（`preventDefault` + `stopPropagation`，使其到不了 `@wailsio/runtime` 挂在 `window` 上
+的监听），前端调 `PrepareNodeMenu(spec)` 按该条目的能力集合重建名为 `node-actions` 的菜单，再在同一元素、
+同一坐标派发合成 `contextmenu`；合成事件 `isTrusted === false`，处理器据此放行。`--custom-contextmenu`
+写在列表行和**空间图外层 `div`** 上，不写在 `<path>` 上：运行时对非 HTML 目标取其 `parentElement` 再读
+计算样式，`<path>` 会被读成它的 `<g>`，只有靠自定义属性的继承才能命中；外层 `div` 同时吞掉来自 hub
+和缝隙的真实右键，避免运行时弹出上一次构建的菜单。菜单项与出现条件：
+`展开 "名"`（目录且有 `enter`）、`预览`（有 `preview`，标注空格键）、`在 Finder 中显示`、`在终端中打开`
+（两者同用 `reveal`，终端打开不新增能力码）、`将 "名" 移入/移出收集站`（有 `collect`、无保护理由，标注 ⌘⌫）。
+聚合项、虚拟项、预览行和陈旧条目不弹菜单。外环投影弧右键先按节点 ID 调 `GetNodeEntry` 取真实条目
+（ADR-0048），`展开` 走 `enterProjected`。菜单项只发 `node-menu` 事件（快照 ID、节点 ID、动作），前端核对
+节点 ID 后调既有方法；Go 侧不复制业务判断。快捷键标注只是提示，真实的空格与 ⌘⌫ 仍由既有键盘处理承担。
+
 ### 7.1d 层级切换动画（ADR-0060）
 
 **三段式**，读自原版的原生帧序列（R-061）：
@@ -674,16 +687,21 @@ Wails 对外暴露的接口先按行为定义：
 | 取消扫描 | 任务 ID | 最终状态 |
 | 预览节点 | 快照 ID、节点 ID | Quick Look 调用结果 |
 | Finder 定位节点 | 快照 ID、节点 ID | Finder 调用结果 |
+| 在终端中打开节点 | 快照 ID、节点 ID | Terminal 调用结果；文件节点打开其父目录 |
+| 重读目录 | 快照 ID、节点 ID | 该目录（文件取其父）从磁盘重读并就地换入后的节点数、保留/新增/移除数与新版本（ADR-0070） |
+| 查询跟随状态 | 无 | 结果是否在跟随磁盘、批次数、目录数、丢事件与脏目录计数、当前版本（ADR-0072） |
 | 创建清理计划 | 快照 ID、候选项、策略 | 计划 ID、原因和估算 |
 | 校验清理计划 | 计划 ID、版本 | 总体和逐项结果 |
 | 确认清理计划 | 精确版本 | 确认结果 |
 | 执行清理计划 | 已确认计划 ID | 逐项执行结果 |
 
-Wails 事件至少包括扫描进度、扫描问题、快照更新、清理进度、清理结果和存储源变化（`storage-sources-changed`，无载荷）。扫描事件只携带摘要和受
+Wails 事件至少包括扫描进度、扫描问题、快照更新、清理进度、清理结果、存储源变化（`storage-sources-changed`，无载荷）
+和结果跟随磁盘后的版本推进（`snapshot-updated`：快照 ID、版本、本批目录数，ADR-0072）。扫描事件只携带摘要和受
 影响父节点，不承担节点传输。客户端断线或窗口重开后，必须通过查询恢复状态。
 
-Preview/Reveal 的 Wails 输入只能是 `snapshotId + nodeId`，不能接收任意路径、URL、命令或 Shell
-参数。Application 通过快照取得并校验路径后，调用 macOS Platform 的 Quick Look 或 Finder 端口。
+Preview/Reveal/OpenTerminal 的 Wails 输入只能是 `snapshotId + nodeId`，不能接收任意路径、URL、命令或 Shell
+参数。Application 通过快照取得并校验路径后，调用 macOS Platform 的 Quick Look、Finder 或 Terminal 端口；
+终端打开时非目录节点在调用端口前换成父目录（Terminal 会把文件 URL 当脚本执行，ADR-0069 §5）。
 
 ## 9. macOS 权限
 
@@ -704,10 +722,14 @@ Platform 提供：
 ```text
 PreviewPort.Preview(path, ownerWindow)
 PreviewPort.Reveal(path)
+PreviewPort.OpenTerminal(path)
 ```
 
 macOS 预览使用 `QuickLookUI` 的 `QLPreviewPanel`/`QLPreviewItem`，Finder 定位使用
-`NSWorkspace.activateFileViewerSelectingURLs`，不调用 `qlmanage`、`open`、`osascript` 或任意
+`NSWorkspace.activateFileViewerSelectingURLs`，终端打开使用 `NSWorkspace.URLForApplicationWithBundleIdentifier`
+定位系统自带 Terminal.app 后以 `openURLs:withApplicationAtURL:configuration:completionHandler:` 把**目录** URL
+交给它（Terminal 把目录当文档打开，新开一个 `cd` 到该目录的窗口；Terminal.app 不存在时返回可展示错误，
+不回退到 `open(1)`，ADR-0069）。三者都不调用 `qlmanage`、`open`、`osascript` 或任意
 Shell。原生 bridge 位于 Platform 层并遵守 AppKit 主线程和 Wails 窗口生命周期。
 
 Collector 只是前端会话内的选择视图，最终必须映射为可审查的 `CleanupPlan`；加入 Collector 不
@@ -717,10 +739,16 @@ Collector 只是前端会话内的选择视图，最终必须映射为可审查�
 ## 10. 清理安全
 
 - 清理计划与扫描快照分离。
-- 执行前重新检查路径、卷身份、节点类型、预期元数据和平台能力。
+- 执行前重新检查路径、卷身份、节点身份（device + inode）、节点类型和平台能力。**不比对大小、mode 与修改时间**
+  （ADR-0071，R-073）：它们回答的是"对象有没有变"，而用户的意图是删这个对象；目录 mtime 随直接子项增删变化，
+  对活缓存几乎必发。"看到的大小要准"由创建计划前重读所涉目录承担（ADR-0070 机制），不由拒绝承担。
 - 清理即**直接删除**：不进废纸篓、不可撤销、对不可重建的对象也不例外（ADR-0063，§13c）；倒计时是唯一的确认。
   唯一的硬拒绝是 `cleanup.DeleteBlock`（`/`、系统目录树、家目录根、卷根）。
-- 清理项基于卷、device、inode、类型、大小和修改时间执行前重新校验。
+- 清理项基于卷、device、inode 和类型执行前重新校验；APFS 的 inode 号单调分配不复用（R-073 §3），身份层无需
+  元数据加固。
+- 前端在 `CreateCleanupPlan` 之前对选中项所在目录（目录项即自身，文件项取父目录，嵌套者折进最外层）逐个
+  `RereadDirectory`，按保留的节点 ID 刷新收集区行（新大小），已消失的行移出并提示数量；被拒绝的重读跳过不阻塞。
+  删除按**当前内容**执行，扫描之后新出现的子项一起删——重读让用户在倒计时前看到它现在有多大。
 - 父子清理项默认拒绝重叠计划，不能把扩大删除范围的选择静默替用户完成。
 - 每个清理项独立返回成功、跳过或失败。
 - 不承诺跨多个文件的原子回滚；恢复边界必须在 UI 和 SDD 中明确。
@@ -1336,6 +1364,76 @@ fixed 元素（提示条、收集区、建议角、拖拽芯片、证据遮罩�
 `parentID` 必须一起清掉：`group()` 只从 `parentID` 重建子索引，只改索引的话，
 下一次 `grouped` 失效被删子树就会复活。门禁 4（重建索引后确认没回来）是为这条设的。
 
+### 13f 节点身份必须是路径查找能找回的身份
+
+预览、Finder 定位、终端打开和清理校验都在动手前按**路径**重新 `lstat` 节点，拿 `(device, inode)` 与快照
+比对，不等就报 `stale_node`（对象已移动或删除）。2026-09-08 在结果页右键"在 Finder 中显示"时这条提示出现在
+明显没动过的目录上。全盘扫描后逐节点比对（20,000 节点）找到两个原因，都不是对象变了：
+
+1. **firmlink 的身份被记成了系统卷的目录项。** `getattrlistbulk("/")` 列出 `/Users`、`/Applications`、
+   `/Library`、`/private`、`/opt`、`/Volumes`、`/cores` 时返回的是**封印系统卷上的 firmlink 记录**
+   （inode 落在 `0x0FFFFFFF00000000` 区间，如 `/Users` 为 `1152921500312571373`），而任何按路径的调用
+   （`lstat`、`getattrlist(path)`）都会**穿过 firmlink**落到 Data 卷的目录（`/Users` 为 `16968`）。两者
+   永远不等，于是这几个目录的每个文件操作都被当作"已移动"。macOS 26 上两卷的 `st_dev` 相同
+   （均为 `16777234`），所以"设备号不同于父目录"不能用来识别 firmlink。
+   **修正**：firmlink 只由系统创建，全集在 `/usr/share/firmlinks`（19 行，`<系统路径>\t<Data 相对路径>`）。
+   原生扫描器启动时读一次，目录项路径命中该表时用 `lstat(path)` 的身份**替换** bulk 记录的身份
+   （`scanner.lookupIdentity`）。代价是 19 次 `lstat` 加每个目录一次 map 探测，其余 60 万目录不多一次系统调用。
+   快照里记的从此是"按路径能找回的身份"，这是所有后续校验的前提。
+2. **"没有权限看"被报成了"对象没了"。** `/Library/Caches/com.apple.aneuserd` 之类的 data vault 对
+   `lstat` 返回 `EPERM`，**即便进程持有完全磁盘访问权限**；父目录的列表里却有它们，所以它们在快照里。
+   `nodeAction` 此前把任何 `lstat` 错误一并归入 `stale_node`。**修正**：`errors.Is(err, fs.ErrPermission)`
+   时返回 ADR-0015 早已定义的 `permission_denied`（"macOS 未授权读取该对象，无法确认它还是扫描时的对象"），
+   不调用端口、不标陈旧；前端按普通错误提示，不进入 `markStale`。
+
+两条的共同教训：`stale_node` 是一个**关于磁盘的断言**（对象变了），只有在成功读到身份且身份不等时才成立。
+读不到身份、或快照里的身份本来就找不回，都不是这个断言的证据。
+
+### 13g 陈旧之后不是死路：目录就地重读
+
+`stale_node` 报对了也得有路可走。此前唯一的恢复是重扫整盘（17-25 s），而原版的 `⌘R` 是**重扫当前目录**
+（R-009）——我们的 `⌘R` 只从内存重查，从不碰磁盘。ADR-0070 补上这条：`RereadDirectory(snapshotID, nodeID)`
+以该目录（文件取其父）为根跑一次子扫描，攒齐后在店锁内一次换入（`Store.ReplaceSubtree`）。
+
+换入规则：新节点**按 ID 升序**处理（父先于子只按 ID 序成立，按到达顺序不成立——并发 worker 会让子批先到）；
+节点 1 即目录自身，保留记录与 ID，只更新身份与 mtime；其余节点在已映射的父下找**同名同类且未被认领**的旧子项，
+有则复用其 ID，无则表尾取新 ID；旧子树里无人认领的记录 `parentID=0` 摘下；目录 roll-up 取子扫描结果，祖先按
+差值修正；`version++` 并触发一次 `group()`（2.7M 节点约 70 ms，R-072 §2）。`valid()` 收紧为
+`id == root || parentID != 0`，摘下的记录按 ID 查询答"不存在"。
+
+拒绝：扫描中、另一次重读中（`busy`）；扫描根（`scan_root`，请 ⇧⌘R）；目录自身已变或已删（`stale_node`）；
+无权读取（`permission_denied`）；超过 **500,000 节点**（`too_large`，收集回调里即时生效，理由见 R-072 §6；
+`SubtreeFacts.Nodes` 在 200,000 饱和，**不能**用作预检）；子树含 `kind=volume` 节点（`unsupported_node`）。
+
+两个必须遵守的实现事实：**`BatchEmitter` 回调被多个 walker 线程并发调用**，收集器必须加锁（首版无锁 `append`
+每次丢 1 个节点，且丢的可能是目录）；子扫描的批缓冲在回调返回后被回收（ADR-0057 §1），必须复制。
+
+前端：`⌘R` 重读当前目录；预览 / Finder / 终端返回 `stale_node` 时自动重读该对象所在目录并改提示为
+"“x” 已变化，已重新读取 …"，不自动重试原动作；重读后重查当前页（目录 ID 未变），收集区里该目录下 ID 已不存在的
+行移出并在提示里说明数量。实测 25k-207k 节点的目录重读 0.5-1.4 s，无变化时幂等（R-072 §5）。
+
+### 13h 结果跟随磁盘：目录级事件、浅刷新、2 秒一批
+
+扫描以 `completed` / `completed_with_issues` 结束后，对扫描根开一条 FSEvents 流（目录级、`NoDefer`、latency 2 s，
+`FSEventStreamSetDispatchQueue` 到专用串行队列；`ports.FileEventWatcher`），新扫描开始前与退出时停止。缺监听端口、
+店不支持 `RefreshDirectory` 或扫描器不支持 `DirectoryReader` 时静默不开。
+
+回调只记录：去掉结尾斜杠（R-074 §4），`MustScanSubDirs` 按目录取或，`Dropped` 按批取或；2 s 后一次应用，应用在
+`rereadMu` 下进行（与 ⌘R 同一把锁），扫描进行中丢弃整批。按路径长度排序逐个处理：`NodeByPath` 找不到即跳过
+（另一卷、边界外、或自己已被删——其父的刷新会摘掉它）；`MustScanSubDirs` 走 §13g 的深读，被拒绝者计入 `dirty`；
+否则 `ReadDirectory`（`readDirectoryBulk`，1-2.5 µs/条）浅读 + `Store.RefreshDirectory`：同名同类文件取新大小、
+身份、mtime 并上滚差值；同名目录只更新身份与 mtime，**子树总量不动**；新文件直接加；新目录以空目录加入并立刻
+深读；消失的名字连子树摘下；`kind=volume` 节点不在列表里但**保留**。一批结束：一次 `group()`、一次 `statfs`、
+一个 `snapshot-updated` 事件（快照 ID、版本、目录数）。`GetLiveUpdateStatus` 报告 `active / batches / directories /
+dropped / dirty / version`。
+
+前端至多每 1.5 s 重查一次当前层；拖拽、倒计时、删除中、Map 忙时不重绘，事后补一次；收集区行按保留 ID 刷新，
+消失者移出并提示。创建计划前：跟随中且无丢事件则跳过 §10 的重读，否则照旧。
+
+**删除前的身份核对不变**（ADR-0071 §1）：监听是异步的、可能丢事件，"删的是不是那个对象"只能在动手那一刻由
+一次 `lstat` 回答。硬链接在浅刷新里按全量计（链表是每次扫描一份），与扫描口径有出入，直到下次扫描或深读。
+事件路径与树路径同形（Data 卷以 firmlink 形态 `/Users/...` 报回，`/tmp` 报为 `/private/tmp`），无需转换。
+
 数字的两个来源刻意分开：**各级目录 roll-up 是对扫描测得值的减法**（和当次扫描一样准），
 **卷的总量/已用/可用删除后重新 `statfs`**（精确）。用户最关心的可用空间来自操作系统。
 
@@ -1345,11 +1443,12 @@ fixed 元素（提示条、收集区、建议角、拖拽芯片、证据遮罩�
 ADR-0009 曾禁止回写，那条在当时是对的：**移进废纸篓时字节还在卷上**，减掉就是谎报。
 ADR-0063 之后删除是真删，同一个减法从谎报变成准确陈述——**前提变了，结论要重算。**
 
-**实时更新（FSEvents 全盘监听）仍然不做**，且与本节不矛盾：空间图的价值来自它是**某一时刻
-的一致快照**——residue 分区、证据下限、项目活跃度分级全部建立在"同一时刻"上。
-全盘监听在一台正常使用的机器上是不间断的事件流，图会永远在抖，读不出结论。
-**就地更新反映的是本工具自己发起、结果已确知的一次变化；实时监听要追踪任意外部变化。**
-前者不损害一致性，后者会。
+**实时更新：结果跟随磁盘**（ADR-0072，取代 ADR-0064 §4 的拒绝）。ADR-0064 §4 曾以"分析建立在同一时刻上"
+和"图会永远在抖"拒绝 FSEvents 监听，那一节没有预研支撑。R-074 量出：空闲机器每秒 1-1.5 个事件、落在十来个
+目录，突发集中在极少目录；每次回调最多 32 个事件（系统只按时间合并），应用层攒批 2 s 后按目录去重，一批几十个
+目录的浅刷新是个位数毫秒，成本由一次 `group()`（约 70 ms）主导。"一致性"那条混淆了"树是否变"与"一次读取是否
+一致"——后者靠店锁保证，与监听无关。机制见 §13h。就地更新（ADR-0064）、目录重读（ADR-0070，§13g）与跟随磁盘
+是同一件事的三个触发源：删除、用户、系统事件。
 
 ### 14.5g 规则表必须够到家目录之外，且有些事只能报告
 

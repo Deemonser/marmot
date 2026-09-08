@@ -1,6 +1,9 @@
 package scan
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 type DeviceProfile string
 
@@ -221,6 +224,39 @@ const (
 	JobInterrupted         = "interrupted"
 	JobFailed              = "failed"
 )
+
+// ErrSubtreeHasVolumes is returned when a directory cannot be re-read in place
+// because attached volume nodes live under it; they have no identity on disk and
+// a read of the directory would not bring them back.
+var ErrSubtreeHasVolumes = errors.New("subtree contains attached volumes")
+
+// DirectoryRefresh is what a shallow refresh of one directory changed
+// (ADR-0072): how many direct children were updated, added and removed, the
+// directories that arrived new and empty and still need a read in depth, and
+// the net bytes that rolled up the ancestors.
+type DirectoryRefresh struct {
+	Updated         int64
+	Added           int64
+	Removed         int64
+	NewDirectoryIDs []int64
+	AllocatedDelta  int64
+	Version         int64
+}
+
+// SubtreeReplacement is what re-reading one directory in place changed: the
+// subtree's new size, and how many of its nodes were kept (same name under the
+// same parent, so they keep their IDs), added, or dropped.
+type SubtreeReplacement struct {
+	Nodes          int64
+	Files          int64
+	Directories    int64
+	AllocatedBytes int64
+	Kept           int64
+	Added          int64
+	Removed        int64
+	// Version is the snapshot version after the replacement.
+	Version int64
+}
 
 // SubtreeRemoval is what leaving the tree cost, reported so the caller can log it
 // and the UI can say what changed without another scan.

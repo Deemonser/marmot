@@ -201,6 +201,33 @@ export interface EvidencePreview {
     "text": string;
 }
 
+/**
+ * LiveUpdate is the "snapshot-updated" event: the result followed the disk and
+ * moved to a new version (ADR-0072). The frontend re-queries what it shows.
+ */
+export interface LiveUpdate {
+    "snapshotId": number;
+    "version": number;
+    "directories": number;
+}
+
+/**
+ * LiveUpdateStatus says whether the current result follows the disk, and how
+ * well: dropped batches and dirty directories mean it is behind in ways only a
+ * re-scan fixes (ADR-0072 §4).
+ */
+export interface LiveUpdateStatus {
+    "active": boolean;
+    "snapshotId": number;
+    "root": string;
+    "batches": number;
+    "directories": number;
+    "dropped": number;
+    "dirty": number;
+    "lastAppliedMs": number;
+    "version": number;
+}
+
 export interface MapEntry {
     "kind": string;
     "node": NodeView;
@@ -286,6 +313,34 @@ export interface NodeDescription {
     "guard": string;
 }
 
+/**
+ * NodeMenuAction is emitted when the user picks an item in a node's menu. The
+ * frontend checks the node against the one it opened the menu for, then runs
+ * the same method the keyboard or a click would have (ADR-0069 §4).
+ */
+export interface NodeMenuAction {
+    "snapshotId": number;
+    "nodeId": number;
+    "action": string;
+}
+
+/**
+ * NodeMenuSpec is what the frontend already knows about the node it is about to
+ * open a menu for: the capabilities the map gave it, and its name for the two
+ * items that quote it. The Go side only lays the items out; it decides nothing
+ * about what the node may do (ADR-0069 §4).
+ */
+export interface NodeMenuSpec {
+    "snapshotId": number;
+    "nodeId": number;
+    "name": string;
+    "canEnter": boolean;
+    "canPreview": boolean;
+    "canReveal": boolean;
+    "canCollect": boolean;
+    "collected": boolean;
+}
+
 export interface NodeView {
     "id": number;
     "parentId": number;
@@ -327,6 +382,27 @@ export interface ProjectedEntry {
     "children"?: ProjectedEntry[] | null;
     "total"?: number;
     "more"?: boolean;
+}
+
+/**
+ * RereadResult is what re-reading one directory in place reports (ADR-0070).
+ */
+export interface RereadResult {
+    "ok": boolean;
+    "code": string;
+    "message": string;
+
+    /**
+     * NodeID and Path name the directory that was re-read: the node itself when
+     * it was a directory, its parent otherwise.
+     */
+    "nodeId": number;
+    "path": string;
+    "nodes": number;
+    "kept": number;
+    "added": number;
+    "removed": number;
+    "version": number;
 }
 
 export interface ScanOptions {

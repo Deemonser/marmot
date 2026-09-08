@@ -685,6 +685,65 @@ func (s *Service) PreviewNode(snapshotID, nodeID int64) (NodeActionResult, error
 	return NodeActionResult{OK: result.OK, Code: result.Code, Message: result.Message, Path: result.Path}, err
 }
 
+// LiveUpdate is the "snapshot-updated" event: the result followed the disk and
+// moved to a new version (ADR-0072). The frontend re-queries what it shows.
+type LiveUpdate struct {
+	SnapshotID  int64 `json:"snapshotId"`
+	Version     int64 `json:"version"`
+	Directories int64 `json:"directories"`
+}
+
+// LiveUpdateStatus says whether the current result follows the disk, and how
+// well: dropped batches and dirty directories mean it is behind in ways only a
+// re-scan fixes (ADR-0072 §4).
+type LiveUpdateStatus struct {
+	Active        bool   `json:"active"`
+	SnapshotID    int64  `json:"snapshotId"`
+	Root          string `json:"root"`
+	Batches       int64  `json:"batches"`
+	Directories   int64  `json:"directories"`
+	Dropped       int64  `json:"dropped"`
+	Dirty         int64  `json:"dirty"`
+	LastAppliedMs int64  `json:"lastAppliedMs"`
+	Version       int64  `json:"version"`
+}
+
+func (s *Service) GetLiveUpdateStatus() LiveUpdateStatus {
+	return LiveUpdateStatus(s.application.GetLiveUpdateStatus())
+}
+
+// RereadResult is what re-reading one directory in place reports (ADR-0070).
+type RereadResult struct {
+	OK      bool   `json:"ok"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	// NodeID and Path name the directory that was re-read: the node itself when
+	// it was a directory, its parent otherwise.
+	NodeID  int64  `json:"nodeId"`
+	Path    string `json:"path"`
+	Nodes   int64  `json:"nodes"`
+	Kept    int64  `json:"kept"`
+	Added   int64  `json:"added"`
+	Removed int64  `json:"removed"`
+	Version int64  `json:"version"`
+}
+
+// RereadDirectory re-reads one directory from disk and splices the result into
+// the current snapshot, keeping node IDs for unchanged objects. Same input shape
+// as the other node actions: a snapshot and a node, never a path (ADR-0070).
+func (s *Service) RereadDirectory(snapshotID, nodeID int64) (RereadResult, error) {
+	result, err := s.application.RereadDirectory(snapshotID, nodeID)
+	return RereadResult(result), err
+}
+
+// OpenTerminalNode opens Terminal.app at the node's directory -- the node itself
+// when it is one, its parent otherwise. Same input shape as PreviewNode and
+// RevealNode: a snapshot and a node, never a path (ADR-0069 §5).
+func (s *Service) OpenTerminalNode(snapshotID, nodeID int64) (NodeActionResult, error) {
+	result, err := s.application.OpenTerminalNode(snapshotID, nodeID)
+	return NodeActionResult(result), err
+}
+
 func (s *Service) RevealNode(snapshotID, nodeID int64) (NodeActionResult, error) {
 	result, err := s.application.RevealNode(snapshotID, nodeID)
 	return NodeActionResult{OK: result.OK, Code: result.Code, Message: result.Message, Path: result.Path}, err

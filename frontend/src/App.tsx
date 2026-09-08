@@ -9,7 +9,7 @@ import { analysisAdmits, autoStageable, draggedColor, riskColor } from "./advice
 import { useNotice, NoticeToast } from "./useNotice";
 import { meterColor } from "./meter";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
-import type { CSSProperties, DragEvent as ReactDragEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Dialogs, Events, Window } from "@wailsio/runtime";
 import { Service as MarmotService } from "../bindings/example.com/marmot/internal/presentation/wails";
 import type * as Models from "../bindings/example.com/marmot/internal/presentation/wails/models";
@@ -161,6 +161,21 @@ function foldSmallEntries(entries: MapEntry[], parentTotal: number): MapEntry[] 
 const maxHistory = 32;
 // Must match volumeMenuName in internal/presentation/wails/menu.go.
 const volumeMenuName = "volume-actions";
+// Must match nodeMenuName in internal/presentation/wails/menu.go. Every list row
+// and the chart wrapper carry it as --custom-contextmenu (the arcs inherit it);
+// a real right-click never reaches the runtime with it, though -- the handler
+// below stops the trusted event, rebuilds the menu for that node, and
+// re-dispatches a synthetic one, which the runtime then resolves through this
+// property (ADR-0069 §1).
+const nodeMenuName = "node-actions";
+// How often the map may redraw for live updates (ADR-0072). The backend already
+// batches events at two seconds; this only keeps a burst from redrawing twice.
+const liveRefreshIntervalMs = 1500;
+const nodeMenuStyle = { "--custom-contextmenu": nodeMenuName } as CSSProperties;
+// What the wheel or the list knows about the thing under the right-click. An arc
+// on an outer ring has no entry, only a node id and the trail the wheel drew to
+// reach it (ADR-0048); the menu looks the entry up before it opens.
+type NodeMenuSource = { entry: MapEntry | null; nodeId: number; trail: Breadcrumb[]; geom?: ArcGeom };
 
 // The native menu is opened by the @wailsio/runtime contextmenu handler, which
 // reads --custom-contextmenu off the event target. Dispatching a synthetic
@@ -479,6 +494,7 @@ function Sunburst({
   levelEndAngle,
   onEnterProjected,
   onDragEntry,
+  onContextMenu,
   collectedKeys,
   draggingKey,
 }: {
@@ -505,6 +521,9 @@ function Sunburst({
   // breadcrumb needs, and only the wheel knows it.
   onEnterProjected: (trail: Breadcrumb[]) => void;
   onDragEntry: (source: DragSource, event: ReactPointerEvent) => void;
+  // Right-click on any ring. Projected arcs pass their id and trail, and the
+  // handler decides what the menu may offer (ADR-0069 §3).
+  onContextMenu: (source: NodeMenuSource, event: ReactMouseEvent) => void;
   // Staged in the dock. These arcs keep their slot and stay drawn -- faded back
   // and non-interactive -- because the object is not gone: it is queued for
   // deletion and still on disk until the dock's own action runs.
@@ -888,7 +907,19 @@ function Sunburst({
     : sliceColor(hueRange.center, baseDepth);
 
   return (
-    <div className="sunburst-wrap" aria-label="空间图">
+    <div
+      className="sunburst-wrap"
+      aria-label="空间图"
+      // The menu property lives here, not on the arcs: the runtime resolves a
+      // non-HTML event target to its parentElement before reading it, so a
+      // right-clicked <path> is read as its <g>. Custom properties inherit, so
+      // every arc's ancestor sees this one (ADR-0069 §1, R-071 §2).
+      style={nodeMenuStyle}
+      // A trusted right-click that reaches here came from the hub or a gap, not
+      // an arc (arcs stop theirs). Swallow it, or the runtime would open whatever
+      // menu was built last. Synthetic re-dispatches are let through.
+      onContextMenu={(event) => { if (event.nativeEvent.isTrusted) { event.preventDefault(); event.stopPropagation(); } }}
+    >
       {/* The pointer being outside the wheel must mean nothing in the wheel is
           breathing, and one arc's own pointerleave cannot promise that: it does
           not fire if the arc is rebuilt or unmounted while the pointer stands
@@ -956,6 +987,7 @@ function Sunburst({
                 onPointerDown={(event) => {
                   if (collectable) onDragEntry({ key, name, size, color, entry, nodeId: id, protection }, event);
                 }}
+                onContextMenu={(event) => onContextMenu({ entry, nodeId: id, trail, geom }, event)}
                 className={
                   "sunburst-slice" +
                   " depth-" + depth +
@@ -1274,6 +1306,7 @@ function DirectoryList({
   onEnter,
   onCollect,
   onDragEntry,
+  onContextMenu,
   pulledKeys,
 }: {
   entryColors_: Record<string, string>;
@@ -1303,6 +1336,8 @@ function DirectoryList({
   // Rows drag to the dock the same way arcs do, through the pointer path in
   // beginEntryDrag rather than HTML5 drag and drop.
   onDragEntry: (source: DragSource, event: ReactPointerEvent) => void;
+  // Right-click on a row: the same native menu the wheel's arcs get (ADR-0069).
+  onContextMenu: (source: NodeMenuSource, event: ReactMouseEvent) => void;
   // Rows whose object has left the current directory: the one being dragged, and
   // everything already in the dock. R-014 SS3.6 -- dragging an item back out of
   // the Collector restores it to this list, so it is out of the list while it is
@@ -1387,6 +1422,8 @@ function DirectoryList({
               onMouseLeave={() => onHover(null)}
               onFocus={() => onFocus(entry)}
               onClick={() => onActivate(entry)}
+              style={nodeMenuStyle}
+              onContextMenu={(event) => { if (!pulled) onContextMenu({ entry, nodeId: entryNode(entry)?.id ?? 0, trail: [] }, event); }}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
@@ -1641,6 +1678,22 @@ export default function App() {
   const dockLocked = countdown !== null || deleting;
   const [ringFraction, setRingFraction] = useState(1);
   const collectorRef = useRef<HTMLElement | null>(null);
+  // Live updates (ADR-0072): a pending flag and the timer that drains it.
+  const liveUpdatePending = useRef(false);
+  const liveRefreshTimer = useRef<number | undefined>(undefined);
+  // What the redraw must not interrupt, read through refs so the event handler
+  // (registered once) sees the current values.
+  const liveBlockedRef = useRef(false);
+  const collectorRefForLive = useRef<MapEntry[]>([]);
+  useEffect(() => {
+    liveBlockedRef.current = mapBusy || drag !== null || countdown !== null || deleting;
+  }, [mapBusy, drag, countdown, deleting]);
+  useEffect(() => {
+    collectorRefForLive.current = collector;
+  }, [collector]);
+  // The node the native menu was built for. The menu's click comes back as an
+  // event naming a node id; it is acted on only if it is still this one.
+  const nodeMenuTarget = useRef<{ entry: MapEntry; trail: Breadcrumb[]; geom?: ArcGeom; projected: boolean } | null>(null);
   const mapRequest = useRef(0);
   // Same guard for the source list: a mount event can start a second read while
   // a slow first one (diskutil per never-seen volume) is still out, and the
@@ -1981,11 +2034,25 @@ export default function App() {
     const offMenu = Events.On("volume-menu", (event: { data: { sourceId: string; action: string } }) => {
       void runVolumeMenuAction(event.data.sourceId, event.data.action);
     });
+    const offNodeMenu = Events.On("node-menu", (event: { data: { snapshotId: number; nodeId: number; action: string } }) => {
+      void runNodeMenuAction(event.data.nodeId, event.data.action);
+    });
+    // The result followed the disk (ADR-0072): re-query what is on screen. At
+    // most once per interval, and not while the user is in the middle of
+    // something the redraw would disturb -- a drag, a countdown, a delete.
+    const offLive = Events.On("snapshot-updated", (event: { data: { snapshotId: number; version: number; directories: number } }) => {
+      if (event.data.snapshotId !== statusRef.current?.snapshotId) return;
+      liveUpdatePending.current = true;
+      scheduleLiveRefresh();
+    });
     return () => {
       off();
       offCleanup();
       offSources();
       offMenu();
+      offNodeMenu();
+      offLive();
+      if (liveRefreshTimer.current !== undefined) window.clearTimeout(liveRefreshTimer.current);
       if (refreshTimer.current !== undefined) window.clearTimeout(refreshTimer.current);
     };
   }, []);
@@ -2517,10 +2584,6 @@ export default function App() {
     }, "push");
   }
 
-  function refreshCurrent() {
-    if (currentPage) void goToPage(currentPage, "replace");
-  }
-
   async function runVolumeMenuAction(sourceID: string, action: string): Promise<void> {
     const source = storageSourcesRef.current.find((item) => item.id === sourceID);
     if (!source) return;
@@ -2600,6 +2663,139 @@ export default function App() {
     notify("对象已变化，已停用文件操作。请重新读取当前目录。");
   }
 
+  // A stale answer used to freeze every action until the whole disk was scanned
+  // again. Now the one directory that changed is read again in place (ADR-0070):
+  // the node itself when it is a directory, its parent otherwise -- the backend
+  // resolves that. The action is not retried; the user sees what is there now
+  // and decides again. markStale stays as the fallback for when even the re-read
+  // cannot say what happened.
+  async function recoverStale(entry: MapEntry) {
+    const node = entryNode(entry);
+    if (!node) {
+      markStale(entry);
+      return;
+    }
+    const outcome = await rereadDirectory(node.id, "“" + entry.name + "” 已变化，");
+    if (!outcome) markStale(entry);
+  }
+
+  // Drains the live-update flag: one re-query of the current level, then
+  // another interval before the next. Blocked moments are retried, not lost.
+  function scheduleLiveRefresh() {
+    if (liveRefreshTimer.current !== undefined) return;
+    liveRefreshTimer.current = window.setTimeout(() => {
+      liveRefreshTimer.current = undefined;
+      if (!liveUpdatePending.current) return;
+      if (liveBlockedRef.current || !pageRef.current || !loadMapRef.current) {
+        scheduleLiveRefresh();
+        return;
+      }
+      liveUpdatePending.current = false;
+      void loadMapRef.current(pageRef.current, "replace", undefined, false);
+      const snapshotId = statusRef.current?.snapshotId ?? 0;
+      if (snapshotId > 0 && collectorRefForLive.current.length > 0) {
+        void refreshCollector(snapshotId, ["/"], collectorRefForLive.current).then((refreshed) => {
+          setCollector(refreshed.next);
+          if (refreshed.gone > 0) notify(refreshed.gone + " 个已收集的对象在磁盘上已不存在，已从收集区移出");
+        });
+      }
+    }, liveRefreshIntervalMs);
+  }
+
+  function rereadCurrentDirectory() {
+    const page = pageRef.current;
+    if (!page || page.parentId <= 0) return;
+    void rereadDirectory(page.parentId, "");
+  }
+
+  // Re-reads one directory from disk and splices it into the snapshot, keeping
+  // node IDs for the objects still there (ADR-0070). Returns whether it happened.
+  // Afterwards the current level is queried again -- the same page, since the
+  // directory kept its ID -- and anything staged in the dock under that
+  // directory that no longer exists is let go, with a word about it.
+  async function rereadDirectory(nodeId: number, prefix: string): Promise<boolean> {
+    const snapshotId = statusRef.current?.snapshotId ?? 0;
+    if (snapshotId <= 0 || nodeId <= 0 || mapBusy) return false;
+    setMapBusy(true);
+    try {
+      const result = await MarmotService.RereadDirectory(snapshotId, nodeId);
+      if (!result.ok) {
+        notify(result.message);
+        return false;
+      }
+      setStaleEntry(null);
+      const page = pageRef.current;
+      if (page) await loadMap(page, "replace", undefined, false);
+      const refreshed = await refreshCollector(snapshotId, [result.path], collector);
+      setCollector(refreshed.next);
+      const name = result.path.split("/").filter(Boolean).pop() ?? result.path;
+      const changes = result.added || result.removed
+        ? "（新增 " + result.added + "，移除 " + result.removed + (refreshed.gone ? "，收集区移出 " + refreshed.gone : "") + "）"
+        : "，没有变化";
+      notify(prefix + "已重新读取 “" + name + "”，" + result.nodes.toLocaleString() + " 项" + changes);
+      return true;
+    } catch (error) {
+      notify(String(error));
+      return false;
+    } finally {
+      setMapBusy(false);
+    }
+  }
+
+  // Staged rows under re-read directories, brought up to date. A row whose
+  // object is still there kept its ID (ADR-0070 §2) and takes the fresh entry,
+  // so the dock shows what the object weighs now; a row whose object has gone
+  // no longer resolves and is let go -- it cannot be deleted and must not sit
+  // there looking deletable. Pure over `base`: the caller stores the result.
+  async function refreshCollector(snapshotId: number, directories: string[], base: MapEntry[]): Promise<{ next: MapEntry[]; gone: number }> {
+    const within = (path: string) => directories.some((directory) => path === directory || path.startsWith(directory.endsWith("/") ? directory : directory + "/"));
+    const fresh = new Map<string, MapEntry | null>();
+    await Promise.all(base.map(async (item) => {
+      const node = entryNode(item);
+      if (!node || !within(node.path)) return;
+      try {
+        fresh.set(entryKey(item), await MarmotService.GetNodeEntry(snapshotId, node.id));
+      } catch {
+        fresh.set(entryKey(item), null);
+      }
+    }));
+    if (fresh.size === 0) return { next: base, gone: 0 };
+    const goneKeys = new Set(Array.from(fresh.entries()).filter(([, entry]) => entry === null).map(([key]) => key));
+    const next = base.flatMap((item) => {
+      const key = entryKey(item);
+      if (goneKeys.has(key)) return [];
+      const entry = fresh.get(key);
+      return [entry ?? item];
+    });
+    if (goneKeys.size > 0) {
+      const drop = <T,>(current: Record<string, T>) => Object.fromEntries(Object.entries(current).filter(([key]) => !goneKeys.has(key)));
+      setUnchecked((current) => new Set(Array.from(current).filter((key) => !goneKeys.has(key))));
+      setCollectorColors(drop);
+      setCollectorVerdicts(drop);
+    }
+    return { next, gone: goneKeys.size };
+  }
+
+  // The directories a set of staged rows lives in: a staged directory itself,
+  // a staged file's parent. Nested ones fold into the outermost, since one read
+  // of the outer covers the inner.
+  function stagedDirectories(items: MapEntry[]): Array<{ nodeId: number; path: string }> {
+    const targets = new Map<string, number>();
+    for (const item of items) {
+      const node = entryNode(item);
+      if (!node) continue;
+      const path = node.kind === "directory" ? node.path : node.path.slice(0, node.path.lastIndexOf("/")) || "/";
+      if (!targets.has(path)) targets.set(path, node.id);
+    }
+    const ordered = Array.from(targets.entries()).sort((a, b) => a[0].length - b[0].length);
+    const kept: Array<{ nodeId: number; path: string }> = [];
+    for (const [path, nodeId] of ordered) {
+      if (kept.some((outer) => path === outer.path || path.startsWith(outer.path.endsWith("/") ? outer.path : outer.path + "/"))) continue;
+      kept.push({ nodeId, path });
+    }
+    return kept;
+  }
+
   // mode "add" is what a drop does: the dock only ever takes things in, so
   // dropping something already collected must not quietly remove it again.
   // Removing is the row's own cross, and the keyboard's toggle.
@@ -2662,7 +2858,7 @@ export default function App() {
     }
     try {
       const result = await MarmotService.PreviewNode(statusRef.current?.snapshotId ?? 0, node.id);
-      if (result.code === "stale_node") markStale(entry);
+      if (result.code === "stale_node") void recoverStale(entry);
       else notify(result.ok ? "Quick Look 已打开" : result.message);
     } catch (error) {
       notify(String(error));
@@ -2677,19 +2873,144 @@ export default function App() {
     }
     try {
       const result = await MarmotService.RevealNode(statusRef.current?.snapshotId ?? 0, node.id);
-      if (result.code === "stale_node") markStale(entry);
+      if (result.code === "stale_node") void recoverStale(entry);
       else notify(result.ok ? "已在 Finder 中定位" : result.message);
     } catch (error) {
       notify(String(error));
     }
   }
 
+  // Gated by the same capability as Finder: both need a real node with a path,
+  // and nothing more (ADR-0069 §2). A file opens at its parent -- the backend
+  // does the substitution, because Terminal would run a file URL as a script.
+  async function openTerminalEntry(entry: MapEntry | null) {
+    const node = entryNode(entry);
+    if (!entry || !node || !hasCapability(entry, "reveal") || (staleEntry && entryKey(staleEntry) === entryKey(entry))) {
+      notify("该对象不能在终端中打开。");
+      return;
+    }
+    try {
+      const result = await MarmotService.OpenTerminalNode(statusRef.current?.snapshotId ?? 0, node.id);
+      if (result.code === "stale_node") void recoverStale(entry);
+      else notify(result.ok ? "已在终端中打开" : result.message);
+    } catch (error) {
+      notify(String(error));
+    }
+  }
+
+  // The result page's right-click menu (ADR-0069). The runtime opens a native
+  // menu for any contextmenu event whose target carries --custom-contextmenu,
+  // but it would open whatever was built last. So the trusted event is stopped
+  // here before it can reach the runtime's window listener, the menu is rebuilt
+  // for this node, and a synthetic event is dispatched at the same spot. That
+  // synthetic event comes back through this handler too -- isTrusted tells the
+  // two apart, and it is let through to the runtime.
+  function handleNodeContextMenu(source: NodeMenuSource, event: ReactMouseEvent) {
+    if (!event.nativeEvent.isTrusted) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void openNodeMenu(source, event.currentTarget, event.clientX, event.clientY);
+  }
+
+  async function openNodeMenu(source: NodeMenuSource, target: Element, x: number, y: number) {
+    const snapshotId = statusRef.current?.snapshotId ?? 0;
+    if (snapshotId <= 0) return;
+    let entry = source.entry;
+    // An outer ring's arc is a projection: no path, no capabilities. Look the
+    // node up, the way a drop on the dock does (ADR-0048).
+    const projected = entry === null;
+    if (!entry) {
+      if (source.nodeId <= 0) return;
+      try {
+        entry = await MarmotService.GetNodeEntry(snapshotId, source.nodeId);
+      } catch {
+        return;
+      }
+    }
+    const node = entryNode(entry);
+    if (!node) return;
+    if (staleEntry && entryKey(staleEntry) === entryKey(entry)) return;
+    const collected = collectedKeys.has(entryKey(entry));
+    const spec = {
+      snapshotId,
+      nodeId: node.id,
+      name: entry.name,
+      canEnter: node.kind === "directory" && hasCapability(entry, "enter"),
+      canPreview: hasCapability(entry, "preview"),
+      canReveal: hasCapability(entry, "reveal"),
+      canCollect: !collected && !entry.protection && hasCapability(entry, "collect"),
+      collected,
+    };
+    if (!spec.canEnter && !spec.canPreview && !spec.canReveal && !spec.canCollect && !spec.collected) return;
+    nodeMenuTarget.current = { entry, trail: source.trail, geom: source.geom, projected };
+    try {
+      await MarmotService.PrepareNodeMenu(spec);
+    } catch (error) {
+      notify(String(error));
+      return;
+    }
+    target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  }
+
+  function runNodeMenuAction(nodeId: number, action: string) {
+    const target = nodeMenuTarget.current;
+    if (!target || entryNode(target.entry)?.id !== nodeId) return;
+    const { entry, trail, geom, projected } = target;
+    switch (action) {
+      case "enter":
+        if (projected) enterProjected(trail);
+        else activateEntry(entry, geom);
+        return;
+      case "preview":
+        void previewEntry(entry);
+        return;
+      case "reveal":
+        void revealEntry(entry);
+        return;
+      case "terminal":
+        void openTerminalEntry(entry);
+        return;
+      case "collect":
+        toggleCollector(entry);
+        return;
+    }
+  }
+
   async function createPlan() {
     if (!status || selected.length === 0) return;
     try {
+      // The plan is built from what is on disk now, not from the scan (ADR-0071).
+      // When the result is following the disk (ADR-0072) it already is current;
+      // otherwise the staged directories are re-read first, so the number under
+      // the ring and the sizes on the rows are current when the countdown
+      // starts. Reads that are refused (too large, a scan is running) are
+      // skipped -- the identity check at execution still pins every object.
+      setMapBusy(true);
+      let staged = selected;
+      try {
+        const live = await MarmotService.GetLiveUpdateStatus().catch(() => null);
+        const following = Boolean(live && live.active && live.snapshotId === status.snapshotId && live.dropped === 0);
+        const directories = following ? [] : stagedDirectories(selected);
+        const reread: string[] = [];
+        for (const target of directories) {
+          const result = await MarmotService.RereadDirectory(status.snapshotId, target.nodeId);
+          if (result.ok) reread.push(result.path);
+        }
+        if (reread.length > 0) {
+          const page = pageRef.current;
+          if (page) await loadMap(page, "replace", undefined, false);
+          const refreshed = await refreshCollector(status.snapshotId, reread, collector);
+          setCollector(refreshed.next);
+          staged = refreshed.next.filter((item) => !unchecked.has(entryKey(item)));
+          if (refreshed.gone > 0) notify(refreshed.gone + " 个已收集的对象在磁盘上已不存在，已从收集区移出");
+        }
+      } finally {
+        setMapBusy(false);
+      }
+      if (staged.length === 0) return;
       const next = await MarmotService.CreateCleanupPlan({
         snapshotId: status.snapshotId,
-        paths: selected.map((item) => entryNode(item)?.path ?? ""),
+        paths: staged.map((item) => entryNode(item)?.path ?? ""),
       });
       const nextValidation = await MarmotService.ValidateCleanupPlan(next.id, next.version);
       setPlan(nextValidation.valid ? { ...next, state: "validated" } : next);
@@ -2896,8 +3217,10 @@ export default function App() {
       }
       if (command && event.key.toLowerCase() === "r") {
         event.preventDefault();
+        // ⌘R re-reads the current directory from disk, as the reference does
+        // (R-009 §keyboard); ⇧⌘R scans the whole disk again.
         if (event.shiftKey) void startScan(statusRef.current?.root || rootRef.current);
-        else refreshCurrent();
+        else void rereadCurrentDirectory();
         return;
       }
       if (command && event.key === "Delete") {
@@ -3043,6 +3366,7 @@ export default function App() {
                 onActivate={activateEntry}
                 onPreview={(entry) => void previewEntry(entry)}
                 onReveal={(entry) => void revealEntry(entry)}
+                onContextMenu={handleNodeContextMenu}
                 onGoParent={goParent}
               />
             </div>
@@ -3077,6 +3401,7 @@ export default function App() {
             onEnter={(entry) => entry.kind === "node" ? openDirectory(entry) : expandEntry(entry)}
             onCollect={toggleCollector}
             onDragEntry={beginEntryDrag}
+            onContextMenu={handleNodeContextMenu}
             pulledKeys={pulledKeys}
           />
         </section>
