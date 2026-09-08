@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { autoStageable, inlineRiskReasons, riskReasonLabel, stageSummary } from "./advice.ts";
+import { analysisAdmits, autoStageable, inlineRiskReasons, riskReasonLabel, stageSummary, riskColor } from "./advice.ts";
 
 const item = (over: Partial<Parameters<typeof autoStageable>[0]> = {}) => ({
   source: "rule", risk: "safe", recovery: "regenerable", ...over,
@@ -105,4 +105,37 @@ test("inline reasons leave out the restatements", () => {
   assert.deepEqual(inlineRiskReasons(["partial_install", "project_dormant"]), ["partial_install", "project_dormant"]);
   assert.deepEqual(inlineRiskReasons(null), []);
   assert.deepEqual(inlineRiskReasons(undefined), []);
+});
+
+test("an analysis admits safe and review, and nothing risky", () => {
+  assert.equal(analysisAdmits(item({ risk: "safe" })), true);
+  assert.equal(analysisAdmits(item({ risk: "review" })), true);
+  assert.equal(analysisAdmits(item({ risk: "risky" })), false);
+});
+
+test("an analysis never admits the irreplaceable or the root-owned", () => {
+  assert.equal(analysisAdmits(item({ risk: "review", recovery: "irreplaceable" })), false);
+  assert.equal(analysisAdmits(item({ risk: "safe", manual: true })), false);
+});
+
+// The two decisions nest: everything ticked on arrival is admitted, and what is
+// admitted but not ticked is exactly the review tier.
+test("what arrives ticked is a subset of what is admitted", () => {
+  for (const risk of ["safe", "review", "risky"]) {
+    const it = item({ risk });
+    if (autoStageable(it)) assert.equal(analysisAdmits(it), true);
+  }
+  assert.equal(autoStageable(item({ risk: "review" })), false);
+  assert.equal(analysisAdmits(item({ risk: "review" })), true);
+});
+
+test("riskColor paints the three tiers the way the old 待确认 dot did", () => {
+  assert.equal(riskColor("safe"), "#7fb96a");
+  assert.equal(riskColor("review"), "#d3a44b");
+  assert.equal(riskColor("risky"), "#d0453a");
+});
+
+test("riskColor claims nothing for a tier it does not know", () => {
+  assert.equal(riskColor(""), undefined);
+  assert.equal(riskColor("weird"), undefined);
 });

@@ -341,7 +341,12 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    column's share of the width. Folding 待确认 changes the height and nothing
    else -- a fold that also moved the left edge and changed the width read as
    the panel jumping (ADR-0066 修订). */
-.app-shell-result .collector-dock { right: auto; bottom: 24px; left: 33px; width: auto; max-width: none; border: 0; background: transparent; box-shadow: none; }
+/* The panel reaches 21px further left than it originally did (33px), and the
+   badge does not move with it: it is positioned off the panel's edge, so the
+   edge coming closer to the window is paid back by the badge's offset shrinking
+   by the same amount (see .collector-bar .collector-target) and the bar's left
+   padding growing by it. The badge stays at window x=11px, where it always was. */
+.app-shell-result .collector-dock { right: auto; bottom: 24px; left: 12px; width: auto; max-width: none; border: 0; background: transparent; box-shadow: none; }
 /* The collector target is one 50px element whose rings are drawn by a border
    and four box-shadows, so its three states -- measured off the reference at
    2x -- are the same list with different lengths and colours, and CSS
@@ -418,7 +423,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* min-height: 0 and flex are load-bearing: a grid inside a shrinking flex
    column keeps its content height and runs under the action bar; with them it
    gives way and scrolls, which is the only honest thing a capped list can do. */
-.collector-list { display: grid; min-height: 0; max-height: 26vh; flex: 1 1 auto; overflow: auto; padding: 4px 0 0; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
+.collector-list { display: grid; min-height: 0; max-height: 26vh; flex: 1 1 auto; overflow: hidden auto; padding: 4px 0 0; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
 .plan-review { display: grid; gap: 7px; margin-top: 10px; padding: 10px; border: 1px solid #5c625b; background: #333a35; }
 .plan-review > div:not(.plan-result) { display: flex; justify-content: space-between; gap: 10px; color: #aab0a8; font-size: 9px; }
 .plan-review strong { color: #e2e7df; font-weight: 500; }
@@ -441,7 +446,9 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
   .directory-panel { min-height: 360px; padding: 14px 0 94px; border-top: 1px solid #47484e; border-left: 0; }
   .directory-list { max-height: 300px; }
   .directory-context { margin-top: 6px; }
-  .app-shell-result .collector-dock { bottom: 20px; left: 26px; }
+  .app-shell-result .collector-dock { bottom: 20px; left: 12px; }
+  .collector-bar .collector-target { left: -8px; }
+  .collector-bar { padding-left: 58px; }
 }
 
 @media (max-width: 520px) {
@@ -459,7 +466,9 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
   .directory-row { padding-inline: 6px; }
   .directory-heading { padding-inline: 6px; }
   .directory-footer { padding-inline: 6px; }
-  .collector-dock, .app-shell-result .collector-dock { left: 24px; }
+  .collector-dock, .app-shell-result .collector-dock { left: 10px; }
+  .collector-bar .collector-target { left: -8px; }
+  .collector-bar { padding-left: 58px; }
   .notice { right: 10px; bottom: 10px; max-width: calc(100% - 20px); }
 }
 
@@ -515,9 +524,21 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Two lines, and the metrics are the ones the 待确认 list used: with one list
    left it should read the way the denser of the two did. The cross and the size
    stay centred on the pair because only the middle column stacks. */
-.collector-item { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 6px 7px; border-radius: 6px; color: #e6e6ea; font-size: 13px; -webkit-user-drag: element; }
+/* Four columns: checkbox, text, size, cross. The cross column is 0 wide until
+   the pointer is on the row, so the size slides left to make room for it -- the
+   cross is the one control that removes, and it only exists while asked for. */
+.collector-item { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto 0px; align-items: center; gap: 8px; padding: 6px 6px 7px; border-radius: 6px; color: #e6e6ea; font-size: 13px; transition: grid-template-columns 120ms ease; -webkit-user-drag: element; }
+.collector-item:hover, .collector-item:focus-within { grid-template-columns: 20px minmax(0, 1fr) auto 20px; }
 .collector-item:hover { background: rgba(255, 255, 255, .08); }
+/* Not selected: still in the dock, not about to be deleted. Dimmed rather than
+   struck through, because it is waiting for a decision, not rejected. */
+.collector-item.is-unchecked .collector-text, .collector-item.is-unchecked b { opacity: .5; }
 .collector-text { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+/* Name and tags share the first line; the name yields, the tags do not. */
+.collector-title { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.collector-title strong { min-width: 0; flex: 0 1 auto; }
+.collector-tags { display: flex; flex: 0 0 auto; gap: 4px; }
+.collector-tags .verdict-tag { padding: 0 4px; font-size: 8px; line-height: 14px; }
 .collector-text strong { overflow: hidden; color: #eeeef1; font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 /* The path is what tells two like-named objects apart, so it may shrink but must
    not wrap: a dock row is a line, not a paragraph. */
@@ -532,12 +553,20 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* No hover fill and no hand: the row already highlights under the pointer, and a
    third tone on top of the panel and the row was one layer too many. The dot
    turning into a cross is the whole affordance. */
-.collector-remove { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #a8a9b0; font-size: 13px; line-height: 1; cursor: default; -webkit-user-drag: none; }
+.collector-remove { display: grid; place-items: center; width: 100%; min-width: 0; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #a8a9b0; font-size: 13px; line-height: 1; cursor: default; -webkit-user-drag: none; opacity: 0; overflow: hidden; }
 .collector-remove:hover { color: #fff; }
+.collector-item:hover .collector-remove, .collector-item:focus-within .collector-remove { opacity: 1; }
+/* The checkbox is the deletion selection. It wears the arc's colour the row
+   arrived with (--check-color), which is what the dot used to do; a row from an
+   analysis has none and takes the dock's blue. */
+.collector-check { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; background: transparent; cursor: default; -webkit-user-drag: none; }
+.collector-check-box { display: grid; width: 12px; height: 12px; border: 1.5px solid var(--check-color, #7a7b83); border-radius: 3px; place-items: center; transition: background 100ms ease, border-color 100ms ease; }
+.collector-check[aria-checked="true"] .collector-check-box { border-color: var(--check-color, #6b8fc3); background: var(--check-color, #6b8fc3); }
+.collector-check[aria-checked="true"] .collector-check-box::after { content: ""; width: 3px; height: 6px; margin-top: -2px; border: solid #16171b; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+.collector-check:hover .collector-check-box { border-color: var(--check-color, #a8b8d8); }
 /* Both faces sit in the button's own single cell and never take a hit of their
    own: the button is the target, whichever face is showing. */
-.collector-remove > span { grid-area: 1 / 1; pointer-events: none; }
-.collector-cross { opacity: 0; }
+.collector-remove > span { pointer-events: none; }
 
 /* Collector, matching the reference's two states.
    Empty: just the drop ring and one line. Filled: a panel of rows whose last
@@ -576,7 +605,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    the 50pt disc hangs 22pt out and 11pt down). The panel therefore starts 17px
    in from the page gutter to keep the badge off the window edge, and the width
    gives those 17px back so the right edge still meets the map column's. */
-.collector-panel { display: flex; width: calc((100vw - 32px) * .62 - 17px); max-height: calc(100vh - 54px); flex-direction: column; padding: 6px 6px 0; border: 0; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); transition: background-color 160ms ease, box-shadow 160ms ease; }
+.collector-panel { display: flex; width: calc((100vw - 32px) * .62 - 3px); max-height: calc(100vh - 54px); flex-direction: column; padding: 6px 6px 0; border: 0; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); transition: background-color 160ms ease, box-shadow 160ms ease; }
 /* Two sections, one object in exactly one of them (ADR-0066). Each list has
    its own ceiling rather than sharing the panel's: a 58-row 已收集 must not
    push 待确认 down to a sliver, and the other way round. */
@@ -644,8 +673,8 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* The bar is shorter than the badge on purpose: the badge is centred on it,
    so a 34px bar puts the centre 17px above the panel's bottom edge and the
    disc hangs 8px below the panel, which is the reference's silhouette. */
-.collector-bar { position: relative; display: flex; align-items: center; gap: 8px; min-height: 34px; margin: 4px -6px 0; padding: 0 10px 0 44px; }
-.collector-bar .collector-target { position: absolute; left: -22px; top: 50%; transform: translateY(-50%); }
+.collector-bar { position: relative; display: flex; align-items: center; gap: 8px; min-height: 34px; margin: 4px -6px 0; padding: 0 10px 0 65px; }
+.collector-bar .collector-target { position: absolute; left: -1px; top: 50%; transform: translateY(-50%); }
 .collector-bar .collector-caption { flex: 1 1 auto; color: #d6d7db; font-size: 12px; }
 /* At rest the caption is two tones, measured off the reference: the unit a
    shade lighter than the words after it. Messages (deleting, refused) keep
@@ -681,12 +710,6 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* Colour dot by default, cross on hover. The name never shifts, because the two
    faces share the button's cell and the button's size never changes. */
 /* Nothing known about the object -- dragged in by hand, never assessed. */
-.collector-dot { width: 8px; height: 8px; border-radius: 50%; background: #6b6c73; }
-.risk-safe .collector-dot { background: #7fb96a; }
-.risk-review .collector-dot { background: #d3a44b; }
-.risk-risky .collector-dot { background: #d0453a; }
-.collector-item:hover .collector-dot, .collector-item:focus-within .collector-dot { opacity: 0; }
-.collector-item:hover .collector-cross, .collector-item:focus-within .collector-cross { opacity: 1; }
 
 /* Projected descendants are visual only: no pointer affordance. */
 .sunburst-slice.is-projected { cursor: default; }

@@ -39,11 +39,39 @@ export function autoStageable(item: StageableItem): boolean {
   return item.source === "rule" && item.risk === "safe" && item.recovery !== "irreplaceable";
 }
 
+// analysisAdmits is which findings an analysis puts in the dock at all. Safe
+// arrives ticked, review arrives unticked and waits for the person; risky is not
+// admitted -- the dock is a list of things about to be deleted, and a risky
+// finding is something the catalog is warning about, not offering. Nothing
+// irreplaceable is admitted whatever its tier, and nothing root-owned: staging
+// either would put a row in the dock that must not, or cannot, be acted on.
+export function analysisAdmits(item: StageableItem): boolean {
+  if (item.manual || item.recovery === "irreplaceable") return false;
+  return item.risk === "safe" || item.risk === "review";
+}
+
 // stageSummary phrases what was staged and what deliberately was not, so the
 // pre-filled cart is never a surprise the user has to discover in the dock.
 // One short sentence about what the app did on the user's behalf. It does not
 // repeat what is already on screen: the staged count is the 已收集 header, the
 // bytes are the badge, the remaining count is the 全部加入 button.
+// riskColor is the colour a row from analysis arrives with -- the risk tier the
+// old 待确认 list painted on its dot (green / amber / red), now on the checkbox.
+// A dragged row keeps its slice colour instead: it says where the thing is, not
+// how safe it is, and the two must not be confused. Unknown tiers fall through
+// to undefined so the checkbox shows its default and nothing is claimed.
+// draggedColor is the one colour every dragged row arrives with. The slice
+// colour was tried and dropped: beside the risk tiers it reads as a fourth
+// tier that means nothing, and two greens in one list would be a lie. Blue is
+// the dock's own colour (the badge ring, the filled target), so it says
+// "you put this here" and nothing about how safe it is.
+export const draggedColor = "#6b8fc3";
+
+const riskColors: Record<string, string> = { safe: "#7fb96a", review: "#d3a44b", risky: "#d0453a" };
+export function riskColor(risk: string): string | undefined {
+  return riskColors[risk];
+}
+
 export function stageSummary(staged: number, remaining: number): string {
   if (staged === 0 && remaining === 0) return "";
   if (staged === 0) return "没有可自动加入的项，都需要你确认。";

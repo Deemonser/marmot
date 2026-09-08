@@ -5,6 +5,7 @@ import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstHiddenS
 import type { HueBand } from "./sunburst";
 import { countdownDigit, countdownFraction, deleteFraction, progressHoldMs, ringOffset } from "./countdown";
 import { factsLine, hasVerdict, recoveryLabel } from "./describe";
+import { analysisAdmits, autoStageable, draggedColor, riskColor } from "./advice";
 import { useNotice, NoticeToast } from "./useNotice";
 import { meterColor } from "./meter";
 import { sliceColor, sunburstGeometry, projectionMinSweeps, minArcPixels, ringWidthFor } from "./sunburst";
@@ -1534,6 +1535,21 @@ export default function App() {
   const [selectedEntry, setSelectedEntry] = useState<MapEntry | null>(null);
   const [staleEntry, setStaleEntry] = useState<MapEntry | null>(null);
   const [collector, setCollector] = useState<MapEntry[]>([]);
+  // Which collected rows are NOT selected for deletion; absence means selected.
+  // A drop selects, because the person chose that object. A row an analysis put
+  // here is selected only when the catalog concluded safe, and otherwise waits
+  // for a tick -- that is what 待确认 means now, one list instead of two
+  // (ADR-0066's second section is this set).
+  const [unchecked, setUnchecked] = useState<Set<string>>(() => new Set());
+  // The arc colour a row arrived with, so its checkbox keeps the identity the
+  // drag chip had. A row from an analysis has no arc to take it from and stays
+  // neutral, which is also how the two kinds tell apart.
+  const [collectorColors, setCollectorColors] = useState<Record<string, string>>({});
+  // What the catalog says each collected row is -- the same DescribeNode the
+  // heading's verdict line reads, so a row wears the same tags there as here.
+  // Fetched once on arrival; a row waiting for a tick is unreadable without it.
+  const [collectorVerdicts, setCollectorVerdicts] = useState<Record<string, NodeDescription>>({});
+  const [analysing, setAnalysing] = useState(false);
   // The badge in the action bar folds the panel body down to the bar itself, and
   // folded is the default: the reference answers a drop with the amount in the
   // badge and "GB 已收集" in the bar, not with the list. The badge unfolds it.
@@ -1726,7 +1742,47 @@ export default function App() {
     // explanation nobody asked for out loud, and it must not interrupt.
     call.then(setDescription).catch(() => setDescription(null));
   }, [describedNodeId, describedSnapshotId]);
-  const collectorBytes = collector.reduce((sum, item) => sum + entrySize(item), 0);
+  // Only what is selected is about to be deleted, so only that is counted.
+  const selected = collector.filter((item) => !unchecked.has(entryKey(item)));
+  const collectorBytes = selected.reduce((sum, item) => sum + entrySize(item), 0);
+  function toggleChecked(entry: MapEntry) {
+    const key = entryKey(entry);
+    setUnchecked((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
+  }
+  // runAnalysis is the local catalog, no advisor: GetCleanupAdvice is rule
+  // findings only. What it admits and what arrives ticked are two tested
+  // decisions in advice.ts; here they are only applied.
+  async function runAnalysis() {
+    if (!status || analysing || dockLocked) return;
+    setAnalysing(true);
+    try {
+      const snapshotId = status.snapshotId;
+      const advice = await MarmotService.GetCleanupAdvice(snapshotId);
+      const admitted = (advice.items ?? []).filter(analysisAdmits);
+      const present = new Set(collector.map(entryKey));
+      const looked = await Promise.all(admitted.map((item) =>
+        MarmotService.GetNodeEntry(snapshotId, item.nodeId).then((entry) => ({ item, entry })).catch(() => null)));
+      let added = 0;
+      let waiting = 0;
+      for (const pair of looked) {
+        if (!pair || present.has(entryKey(pair.entry))) continue;
+        const checked = autoStageable(pair.item);
+        toggleCollector(pair.entry, "add", { checked, color: riskColor(pair.item.risk) });
+        added++;
+        if (!checked) waiting++;
+      }
+      if (added === 0) {
+        notify(admitted.length === 0 ? "本机规则没有找到可清理的对象。" : "可清理的对象都已在收集区。");
+      } else {
+        setDockOpen(true);
+        notify(waiting > 0 ? `已加入 ${added} 项，其中 ${waiting} 项待勾选确认。` : `已加入 ${added} 项。`);
+      }
+    } catch (error) {
+      notify("分析失败：" + String(error));
+    } finally {
+      setAnalysing(false);
+    }
+  }
   // Staged in the dock, or on its way there while its lookup runs. These arcs
   // stay drawn: the object is still on disk until the dock's own action runs, so
   // an empty slot would overstate it, and in a space map the slot's position is
@@ -2359,7 +2415,7 @@ export default function App() {
       dragSuppressesClick.current = true;
       window.setTimeout(() => { dragSuppressesClick.current = false; }, 0);
       if (upEvent.type !== "pointerup" || !overDock(upEvent.clientX, upEvent.clientY)) return;
-      if (source.entry) toggleCollector(source.entry, "add");
+      if (source.entry) toggleCollector(source.entry, "add", { color: draggedColor });
       else void collectProjected(source);
     };
     window.addEventListener("pointermove", move);
@@ -2376,7 +2432,7 @@ export default function App() {
     if (snapshotId <= 0) return;
     setPendingCollect(source.key);
     try {
-      toggleCollector(await MarmotService.GetNodeEntry(snapshotId, source.nodeId), "add");
+      toggleCollector(await MarmotService.GetNodeEntry(snapshotId, source.nodeId), "add", { color: draggedColor });
     } catch (error) {
       notify("无法收集该对象：" + String(error));
     } finally {
@@ -2547,7 +2603,11 @@ export default function App() {
   // mode "add" is what a drop does: the dock only ever takes things in, so
   // dropping something already collected must not quietly remove it again.
   // Removing is the row's own cross, and the keyboard's toggle.
-  function toggleCollector(entry: MapEntry | null, mode: "toggle" | "add" = "toggle") {
+  function toggleCollector(
+    entry: MapEntry | null,
+    mode: "toggle" | "add" = "toggle",
+    arrival: { checked?: boolean; color?: string } = {},
+  ) {
     if (!entry) return;
     if (staleEntry && entryKey(staleEntry) === entryKey(entry)) {
       notify("对象已变化，不能加入收集区。");
@@ -2569,12 +2629,24 @@ export default function App() {
       notify("聚合对象和受限对象不能加入收集区。");
       return;
     }
-    if (!collector.some((item) => entryKey(item) === entryKey(entry))) {
-      setCollector((current) => current.some((item) => entryKey(item) === entryKey(entry)) ? current : current.concat(entry));
+    const key = entryKey(entry);
+    if (!collector.some((item) => entryKey(item) === key)) {
+      setCollector((current) => current.some((item) => entryKey(item) === key) ? current : current.concat(entry));
+      if (arrival.checked === false) setUnchecked((current) => new Set(current).add(key));
+      if (arrival.color) setCollectorColors((current) => ({ ...current, [key]: arrival.color! }));
+      const node = entryNode(entry);
+      if (status && node) {
+        MarmotService.DescribeNode(status.snapshotId, node.id)
+          .then((verdict) => setCollectorVerdicts((current) => ({ ...current, [key]: verdict })))
+          .catch(() => {});
+      }
       return;
     }
     if (mode === "add") return;
-    setCollector((current) => current.filter((item) => entryKey(item) !== entryKey(entry)));
+    setCollector((current) => current.filter((item) => entryKey(item) !== key));
+    setUnchecked((current) => { if (!current.has(key)) return current; const next = new Set(current); next.delete(key); return next; });
+    setCollectorColors((current) => { if (!(key in current)) return current; const { [key]: _, ...rest } = current; return rest; });
+    setCollectorVerdicts((current) => { if (!(key in current)) return current; const { [key]: _, ...rest } = current; return rest; });
     // The row being removed is, as often as not, the row under the pointer: its
     // pointerenter pointed the wheel at this arc, and an unmounted row sends no
     // pointerleave. Without this the arc went on breathing after the cross.
@@ -2613,11 +2685,11 @@ export default function App() {
   }
 
   async function createPlan() {
-    if (!status || collector.length === 0) return;
+    if (!status || selected.length === 0) return;
     try {
       const next = await MarmotService.CreateCleanupPlan({
         snapshotId: status.snapshotId,
-        paths: collector.map((item) => entryNode(item)?.path ?? ""),
+        paths: selected.map((item) => entryNode(item)?.path ?? ""),
       });
       const nextValidation = await MarmotService.ValidateCleanupPlan(next.id, next.version);
       setPlan(nextValidation.valid ? { ...next, state: "validated" } : next);
@@ -3099,7 +3171,7 @@ export default function App() {
                     const path = node?.path ?? "";
                     return (
                       <div
-                        className="collector-item"
+                        className={"collector-item" + (unchecked.has(entryKey(item)) ? " is-unchecked" : "")}
                         key={entryKey(item)}
                         draggable={Boolean(node)}
                         onDragStart={(event) => {
@@ -3116,27 +3188,62 @@ export default function App() {
                         onPointerEnter={() => { if (node) hoverNode(node.id); }}
                         onPointerLeave={() => hoverNode(null)}
                       >
-                        {/* The dot and the cross live *inside* the button rather than
-                            beside it. Stacked as siblings in one grid cell they were
-                            ambiguous about which one a press landed on, and the dot won
-                            -- measured: a press dead centre on the cross reported
-                            `collector-dot` as its target, so the cross did nothing. One
-                            element owns the cell now, and whatever is painted in it is
-                            a child of the thing being pressed.
-                            pointerdown rather than click, with preventDefault, because
-                            the row around it is draggable so it can go out to Finder and
-                            a press here would otherwise start that drag and eat the
-                            click. Deliberately not also on click: toggleCollector would
-                            run twice and put the item straight back, so Enter and Space
-                            are handled explicitly. */}
+                        {/* Left: a checkbox in the arc's colour, which is the
+                            deletion selection -- a dropped row arrives ticked,
+                            an analysis row only when the catalog concluded safe.
+                            Right: the cross, which removes the row entirely and
+                            only shows under the pointer, sliding the size left to
+                            make room. Both are pointerdown with preventDefault,
+                            because the row is draggable out to Finder and a plain
+                            click would start that drag and eat the press;
+                            Enter/Space are handled explicitly for the same reason. */}
                         <button
+                          type="button"
+                          role="checkbox"
+                          aria-checked={!unchecked.has(entryKey(item))}
+                          className="collector-check"
+                          style={collectorColors[entryKey(item)] ? ({ "--check-color": collectorColors[entryKey(item)] } as CSSProperties) : undefined}
+                          draggable={false}
+                          onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); toggleChecked(item); }}
+                          onClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return;
+                            event.preventDefault();
+                            toggleChecked(item);
+                          }}
+                          aria-label={(unchecked.has(entryKey(item)) ? "勾选 " : "取消勾选 ") + item.name}
+                        >
+                          <span className="collector-check-box" aria-hidden="true" />
+                        </button>
+                        {/* Tags are the verdict line's vocabulary, so a row says the
+                            same thing here as its arc's heading does. WhatBreaks rides
+                            the tooltip: this is the moment a person decides, and it is
+                            the sentence that decision needs. */}
+                        <span className="collector-text" title={collectorVerdicts[entryKey(item)]?.whatBreaks || undefined}>
+                          <span className="collector-title">
+                            <strong>{item.name}</strong>
+                            {(() => {
+                              const verdict = collectorVerdicts[entryKey(item)];
+                              if (!verdict || !hasVerdict(verdict)) return null;
+                              return (
+                                <span className="collector-tags">
+                                  {verdict.rule && <span className="verdict-tag">{verdict.rule}</span>}
+                                  {recoveryLabel(verdict.recovery) && (
+                                    <span className={"verdict-tag recovery-" + verdict.recovery}>{recoveryLabel(verdict.recovery)}</span>
+                                  )}
+                                  {verdict.isProjectRoot && <span className="verdict-tag is-project">项目目录</span>}
+                                </span>
+                              );
+                            })()}
+                          </span>
+                          <span className="collector-path">{homePath(path)}</span>
+                        </span>
+                        <b>{formatBytes(item.ownedAllocated)}</b>
+                        <button
+                          type="button"
                           className="collector-remove"
                           draggable={false}
-                          onPointerDown={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            toggleCollector(item);
-                          }}
+                          onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); toggleCollector(item); }}
                           onClick={(event) => event.stopPropagation()}
                           onKeyDown={(event) => {
                             if (event.key !== "Enter" && event.key !== " ") return;
@@ -3145,19 +3252,8 @@ export default function App() {
                           }}
                           aria-label={"移除 " + item.name}
                         >
-                          <span className="collector-dot" aria-hidden="true" />
                           <span className="collector-cross" aria-hidden="true">×</span>
                         </button>
-                        {/* Two lines, which is the shape the 待确认 list had: the name
-                            on the first with the size at the right edge, the path on the
-                            second. The path is what tells two like-named objects apart,
-                            and a dock of rows all reading "Cache" could not be read at
-                            all. The row's gesture is unchanged -- the cross removes. */}
-                        <span className="collector-text">
-                          <strong>{item.name}</strong>
-                          <span className="collector-path">{homePath(path)}</span>
-                        </span>
-                        <b>{formatBytes(item.ownedAllocated)}</b>
                       </div>
                     );
                   })}
@@ -3224,7 +3320,7 @@ export default function App() {
                             ? "正在删除…"
                             : validation && !validation.valid
                               ? "校验未通过，不能执行"
-                              : <><span className="collector-unit">{formatBytes(collectorBytes).split(" ")[1]}</span> <span className="collector-dim">已收集</span></>}
+                              : <><span className="collector-unit">{formatBytes(collectorBytes).split(" ")[1]}</span> <span className="collector-dim">已选中</span>{unchecked.size > 0 && <span className="collector-dim"> · {unchecked.size} 项待勾选</span>}</>}
                   </span>
                   {/* One action, and it deletes outright -- the trash is on the same
                       volume, so moving there reclaims nothing. Nothing is rerouted and
@@ -3238,6 +3334,22 @@ export default function App() {
           </div>
         )}
       </section>}
+
+      {/* The analysis entry takes the corner opposite the dock (ADR-0018). It runs
+          the local catalog only -- no advisor, no network -- and puts what it
+          finds straight into the dock: safe rows ticked, review rows waiting for
+          one. The dock is the only route to a deletion either way. */}
+      {view === "result" && !slide && (
+        <div className="advice-corner">
+          <button
+            className="advice-button"
+            onClick={() => void runAnalysis()}
+            disabled={analysing || dockLocked || !status}
+          >
+            {analysing ? <><span className="advice-spinner" aria-hidden="true" />分析中…</> : "分析优化"}
+          </button>
+        </div>
+      )}
 
     </div>
   );
