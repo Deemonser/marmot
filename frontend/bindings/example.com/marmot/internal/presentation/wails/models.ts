@@ -335,7 +335,6 @@ export interface NodeMenuSpec {
     "nodeId": number;
     "name": string;
     "canEnter": boolean;
-    "canPreview": boolean;
     "canReveal": boolean;
     "canCollect": boolean;
     "collected": boolean;

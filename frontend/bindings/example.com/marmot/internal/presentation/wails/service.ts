@@ -102,9 +102,13 @@ export function OpenTerminalNode(snapshotID: number, nodeID: number): $Cancellab
 
 /**
  * PrepareNodeMenu rebuilds the result page's node menu for one node and returns
- * the name the frontend must trigger. The accelerator labels are the original's
- * hints and nothing more: a context menu's key equivalents only work while it is
- * open, and the real Space and ⌘⌫ paths stay in the frontend (R-071 §3).
+ * the name the frontend must trigger. The accelerator label is the original's
+ * hint and nothing more: a context menu's key equivalents only work while it is
+ * open, and the real ⌘⌫ path stays in the frontend (R-071 §3).
+ * 
+ * No "预览" item: the original has one, but Quick Look from a menu was judged
+ * useless in use (2026-09-09) -- Space on a focused row does the same with no
+ * round trip. ADR-0069's revision note records the removal.
  */
 export function PrepareNodeMenu(spec: $models.NodeMenuSpec): $CancellablePromise<string> {
     return $Call.ByID(2492691672, spec);

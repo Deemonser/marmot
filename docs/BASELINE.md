@@ -152,7 +152,7 @@ DDD 领域规则
 
 - 结果页扇区与列表行的右键菜单以 [ADR-0069](adr/0069-结果页节点原生上下文菜单与终端打开.md) 为准：沿用
   ADR-0051 的原生菜单机制，真实右键由前端截住、按条目能力重建 `node-actions` 菜单后派发合成 `contextmenu`
-  （R-071 读运行时源码确认监听在 `window` 上、且不区分 `isTrusted`）。五项齐全：展开 / 预览（空格键）/
+  （R-071 读运行时源码确认监听在 `window` 上、且不区分 `isTrusted`）。四项（原版的"预览"于 2026-09-09 按使用方判定去掉，空格预览仍在）：展开 /
   在 Finder 中显示 / 在终端中打开 / 移入（移出）收集站（⌘⌫），每项只发 `node-menu` 事件，动作走既有服务方法。
   `在终端中打开` 是新平台能力：`PreviewPort.OpenTerminal` 用 `NSWorkspace.openURLs:withApplicationAtURL:`
   把目录交给系统自带 Terminal.app，不经 `open`/`osascript`/Shell；**文件节点换成父目录**（Terminal 把文件 URL

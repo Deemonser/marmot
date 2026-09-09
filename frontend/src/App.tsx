@@ -1694,6 +1694,7 @@ export default function App() {
   // The node the native menu was built for. The menu's click comes back as an
   // event naming a node id; it is acted on only if it is still this one.
   const nodeMenuTarget = useRef<{ entry: MapEntry; trail: Breadcrumb[]; geom?: ArcGeom; projected: boolean } | null>(null);
+  const runNodeMenuActionRef = useRef<((nodeId: number, action: string) => void) | null>(null);
   const mapRequest = useRef(0);
   // Same guard for the source list: a mount event can start a second read while
   // a slow first one (diskutil per never-seen volume) is still out, and the
@@ -2034,8 +2035,12 @@ export default function App() {
     const offMenu = Events.On("volume-menu", (event: { data: { sourceId: string; action: string } }) => {
       void runVolumeMenuAction(event.data.sourceId, event.data.action);
     });
+    // Through a ref, not the closure: this effect runs once, at mount, when
+    // there is no page yet. The handler it captured would open directories
+    // against a currentPage of null -- which is exactly what "展开 did nothing"
+    // looked like. The ref always holds the latest render's handler.
     const offNodeMenu = Events.On("node-menu", (event: { data: { snapshotId: number; nodeId: number; action: string } }) => {
-      void runNodeMenuAction(event.data.nodeId, event.data.action);
+      runNodeMenuActionRef.current?.(event.data.nodeId, event.data.action);
     });
     // The result followed the disk (ADR-0072): re-query what is on screen. At
     // most once per interval, and not while the user is in the middle of
@@ -2936,12 +2941,11 @@ export default function App() {
       nodeId: node.id,
       name: entry.name,
       canEnter: node.kind === "directory" && hasCapability(entry, "enter"),
-      canPreview: hasCapability(entry, "preview"),
       canReveal: hasCapability(entry, "reveal"),
       canCollect: !collected && !entry.protection && hasCapability(entry, "collect"),
       collected,
     };
-    if (!spec.canEnter && !spec.canPreview && !spec.canReveal && !spec.canCollect && !spec.collected) return;
+    if (!spec.canEnter && !spec.canReveal && !spec.canCollect && !spec.collected) return;
     nodeMenuTarget.current = { entry, trail: source.trail, geom: source.geom, projected };
     try {
       await MarmotService.PrepareNodeMenu(spec);
@@ -2952,6 +2956,7 @@ export default function App() {
     target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: x, clientY: y }));
   }
 
+  runNodeMenuActionRef.current = runNodeMenuAction;
   function runNodeMenuAction(nodeId: number, action: string) {
     const target = nodeMenuTarget.current;
     if (!target || entryNode(target.entry)?.id !== nodeId) return;
@@ -2960,9 +2965,6 @@ export default function App() {
       case "enter":
         if (projected) enterProjected(trail);
         else activateEntry(entry, geom);
-        return;
-      case "preview":
-        void previewEntry(entry);
         return;
       case "reveal":
         void revealEntry(entry);

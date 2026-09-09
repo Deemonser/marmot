@@ -64,7 +64,6 @@ type NodeMenuSpec struct {
 	NodeID     int64  `json:"nodeId"`
 	Name       string `json:"name"`
 	CanEnter   bool   `json:"canEnter"`
-	CanPreview bool   `json:"canPreview"`
 	CanReveal  bool   `json:"canReveal"`
 	CanCollect bool   `json:"canCollect"`
 	Collected  bool   `json:"collected"`
@@ -80,14 +79,18 @@ type NodeMenuAction struct {
 }
 
 // PrepareNodeMenu rebuilds the result page's node menu for one node and returns
-// the name the frontend must trigger. The accelerator labels are the original's
-// hints and nothing more: a context menu's key equivalents only work while it is
-// open, and the real Space and ⌘⌫ paths stay in the frontend (R-071 §3).
+// the name the frontend must trigger. The accelerator label is the original's
+// hint and nothing more: a context menu's key equivalents only work while it is
+// open, and the real ⌘⌫ path stays in the frontend (R-071 §3).
+//
+// No "预览" item: the original has one, but Quick Look from a menu was judged
+// useless in use (2026-09-09) -- Space on a focused row does the same with no
+// round trip. ADR-0069's revision note records the removal.
 func (s *Service) PrepareNodeMenu(spec NodeMenuSpec) (string, error) {
 	if spec.SnapshotID <= 0 || spec.NodeID <= 0 {
 		return "", fmt.Errorf("snapshot and node are required")
 	}
-	if !spec.CanEnter && !spec.CanPreview && !spec.CanReveal && !spec.CanCollect && !spec.Collected {
+	if !spec.CanEnter && !spec.CanReveal && !spec.CanCollect && !spec.Collected {
 		return "", fmt.Errorf("the node has no menu actions")
 	}
 	app := wailsapp.Get()
@@ -103,9 +106,6 @@ func (s *Service) PrepareNodeMenu(spec NodeMenuSpec) (string, error) {
 	menu := app.ContextMenu.New()
 	if spec.CanEnter {
 		menu.Add("展开 " + quoted).OnClick(emit("enter"))
-	}
-	if spec.CanPreview {
-		menu.Add("预览").SetAccelerator("space").OnClick(emit("preview"))
 	}
 	if spec.CanReveal {
 		menu.Add("在 Finder 中显示").OnClick(emit("reveal"))
