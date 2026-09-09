@@ -3421,7 +3421,7 @@ export default function App() {
   const barOnly = !(!dockLocked && collector.length > 0 && dockOpen);
 
   return (
-    <div className={"app-shell " + (chromeView === "result" ? "app-shell-result" : "app-shell-source") + (slide ? " is-sliding" : "") + (drag ? " is-dragging" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
+    <div className={"app-shell " + (chromeView === "result" ? "app-shell-result" : "app-shell-source") + (slide ? " is-sliding" : "") + (drag ? " is-dragging" : "") + (!barOnly ? " is-dock-open" : "")} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
       {/* One chrome row per page, like the reference: window buttons, navigation
           and the breadcrumb trail. Both pages sit on a double-width track; idle,
           only the current one is mounted and the track is inert. While a slide

@@ -226,7 +226,13 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .has-result .crumb-separator { display: none; }
 
 .workbench { display: grid; min-width: 0; min-height: 0; }
-.has-result .workbench { grid-template-columns: minmax(0, 62fr) minmax(320px, 38fr); flex: 1; gap: 0; }
+.has-result .workbench { grid-template-columns: minmax(0, 62fr) minmax(320px, 38fr); flex: 1; gap: 0; transition: grid-template-columns 240ms ease; }
+/* With the dock open the list column widens to 46% and the wheel gives up 8%:
+   the panel needs the room for two-line rows with tags, and a wheel a tenth
+   smaller beats a wheel half hidden (ADR-0073). The panel is sized for the open
+   column in every state, so opening moves the column edge, not the panel. */
+.app-shell.is-dock-open .has-result .workbench { grid-template-columns: minmax(0, 54fr) minmax(320px, 46fr); }
+@media (prefers-reduced-motion: reduce) { .has-result .workbench { transition: none; } }
 .map-panel, .directory-panel { min-width: 0; min-height: 0; background: transparent; }
 .map-panel { display: flex; flex-direction: column; }
 .map-heading { display: none; }
@@ -337,16 +343,14 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 @media (prefers-reduced-motion: reduce) { .notice { animation: none; } }
 
 .collector-dock { position: fixed; z-index: 25; }
-/* One geometry for every state of the dock: the page's 16px gutter, the map
-   column's share of the width. Folding 待确认 changes the height and nothing
-   else -- a fold that also moved the left edge and changed the width read as
-   the panel jumping (ADR-0066 修订). */
-/* The panel reaches 21px further left than it originally did (33px), and the
-   badge does not move with it: it is positioned off the panel's edge, so the
-   edge coming closer to the window is paid back by the badge's offset shrinking
-   by the same amount (see .collector-bar .collector-target) and the bar's left
-   padding growing by it. The badge stays at window x=11px, where it always was. */
-.app-shell-result .collector-dock { right: auto; bottom: 24px; left: 12px; width: auto; max-width: none; border: 0; background: transparent; box-shadow: none; }
+/* The dock lives under the directory list, bottom-right (ADR-0073). It used to
+   sit bottom-left under the wheel, and its open panel covered the wheel -- the
+   very arcs a hovered row is supposed to breathe (ADR-0066 §3). Under the list
+   it covers a list with a list, and the wheel stays whole. The panel's right
+   edge meets the list column's, on the page's 16px gutter; its width is one
+   geometry for every state (ADR-0066 修订: a fold that also moved an edge read
+   as the panel jumping), so the badge, off the panel's left edge, never moves. */
+.app-shell-result .collector-dock { right: 16px; bottom: 24px; left: auto; width: auto; max-width: none; border: 0; background: transparent; box-shadow: none; }
 /* The collector target is one 50px element whose rings are drawn by a border
    and four box-shadows, so its three states -- measured off the reference at
    2x -- are the same list with different lengths and colours, and CSS
@@ -423,7 +427,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* min-height: 0 and flex are load-bearing: a grid inside a shrinking flex
    column keeps its content height and runs under the action bar; with them it
    gives way and scrolls, which is the only honest thing a capped list can do. */
-.collector-list { display: grid; min-height: 0; max-height: 26vh; flex: 1 1 auto; overflow: hidden auto; padding: 4px 0 0; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
+.collector-list { display: grid; min-height: 0; flex: 1 1 auto; overflow: hidden auto; padding: 4px 0 0; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
 .plan-review { display: grid; gap: 7px; margin-top: 10px; padding: 10px; border: 1px solid #5c625b; background: #333a35; }
 .plan-review > div:not(.plan-result) { display: flex; justify-content: space-between; gap: 10px; color: #aab0a8; font-size: 9px; }
 .plan-review strong { color: #e2e7df; font-weight: 500; }
@@ -446,7 +450,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
   .directory-panel { min-height: 360px; padding: 14px 0 94px; border-top: 1px solid #47484e; border-left: 0; }
   .directory-list { max-height: 300px; }
   .directory-context { margin-top: 6px; }
-  .app-shell-result .collector-dock { bottom: 20px; left: 12px; }
+  .app-shell-result .collector-dock { bottom: 20px; right: 12px; left: auto; }
   .collector-bar .collector-target { left: -8px; }
   .collector-bar { padding-left: 58px; }
 }
@@ -602,10 +606,14 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 
 /* The badge straddles the panel's bottom-left corner the way the reference's
    does (measured: centre 3pt inside the left edge, 14pt above the bottom, so
-   the 50pt disc hangs 22pt out and 11pt down). The panel therefore starts 17px
-   in from the page gutter to keep the badge off the window edge, and the width
-   gives those 17px back so the right edge still meets the map column's. */
-.collector-panel { display: flex; width: calc((100vw - 32px) * .62 - 3px); max-height: calc(100vh - 54px); flex-direction: column; padding: 6px 6px 0; border: 0; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); transition: background-color 160ms ease, box-shadow 160ms ease; }
+   the 50pt disc hangs 22pt out and 11pt down). The panel is exactly the open
+   list column (46% of the content width): flush with the column's left edge,
+   or the list's dots peek out beside it. The badge's 22px overhang lands in the
+   wheel column below the wheel's bottom edge, which sits 131px above the
+   stage's bottom at the result window's height (R-075). Full height
+   less the top bar and a 20px breath: the collected list has no cap of its own
+   any more (ADR-0073), it takes whatever the panel has. */
+.collector-panel { display: flex; width: calc((100vw - 32px) * .46); max-height: calc(100vh - 54px); flex-direction: column; padding: 6px 6px 0; border: 0; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); transition: background-color 160ms ease, box-shadow 160ms ease; }
 /* Two sections, one object in exactly one of them (ADR-0066). Each list has
    its own ceiling rather than sharing the panel's: a 58-row 已收集 must not
    push 待确认 down to a sliver, and the other way round. */
@@ -648,7 +656,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    see, then dropped.) The rows fade as they fold, and the panel's background
    waits for them -- see .collector-panel.is-bar-only -- so no text is ever
    left standing on the bare page. */
-.dock-staged { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; overflow: hidden; transition: grid-template-rows 240ms ease, margin 240ms ease; }
+.dock-staged { display: grid; flex: 1 1 auto; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; overflow: hidden; transition: grid-template-rows 240ms ease, margin 240ms ease; }
 .dock-staged.is-folded { grid-template-rows: 0fr; margin: 0; border-top: 0; }
 .dock-staged-body { display: flex; min-width: 0; min-height: 0; flex-direction: column; transition: opacity 160ms ease 40ms; }
 .dock-staged.is-folded .dock-staged-body { opacity: 0; transition: opacity 140ms ease; }
@@ -788,7 +796,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* The advice corner is the dock's opposite number: the dock stages what you are
    about to delete (bottom-left, ADR-0018), this proposes what is worth staging.
    Both are fixed-position and neither reserves layout space. */
-.advice-corner { position: fixed; right: 22px; bottom: 18px; z-index: 26; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.advice-corner { position: fixed; left: 22px; bottom: 18px; z-index: 26; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 /* The transient notice used to own this corner. On the result page it moves up
    so the two never sit on top of each other. */
 .app-shell-result .notice { bottom: 62px; }
