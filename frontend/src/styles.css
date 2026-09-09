@@ -749,7 +749,19 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    by frame during a level change, and the two multiply instead of fighting, so a
    faded arc travels with everything else and stays faded while it does. */
 .sunburst-slice.is-collected { fill-opacity: .17; }
-.sunburst-slice.is-collected.is-breathing { fill-opacity: .6; }
+/* A staged arc breathes with the full range, not the normal arc's 1 -> .45 on
+   top of a .6 fill: that came out as .6 -> .27, a flicker inside the fade that
+   nobody noticed (2026-09-09). Here the fill itself swings from solid to the
+   staged fade and back, so the arc alternates between "here" and "queued" --
+   the two things it is -- and reads from across the wheel. */
+.sunburst-slice.is-collected.is-breathing { animation: slice-breathe-staged .9s ease-in-out infinite; }
+@keyframes slice-breathe-staged {
+  0%, 100% { fill-opacity: 1; }
+  50% { fill-opacity: .2; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sunburst-slice.is-collected.is-breathing { animation: none; fill-opacity: .85; }
+}
 
 /* The same object's row leaves the list with it: collapsed to nothing and slid
    to the right, towards the dock. The base max-height gives the collapse
