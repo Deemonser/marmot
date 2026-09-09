@@ -3636,21 +3636,21 @@ export default function App() {
                         ? Math.round(deleteProgress * 100) + "%"
                         : countdown !== null
                           ? countdown
-                          : formatBytes(collectorBytes).split(" ")[0]}
+                          : <>{formatBytes(collectorBytes).split(" ")[0]}<span className="collector-badge-unit">{formatBytes(collectorBytes).split(" ")[1]}</span></>}
                     </span>
                   </button>
                   <span className="collector-caption">
                     {drag?.blocked
                       ? drag.blocked
                       : countdown !== null
-                        ? <>秒后开始。选中的文件将被<strong className="destructive-note">直接删除，无法撤销</strong></>
+                        ? <>倒计时结束后，选中的文件将被<strong className="destructive-note">直接删除，无法撤销</strong></>
                         : showDeleteProgress && cleanupAt
                           ? `正在删除 ${Math.min(cleanupAt.done + 1, cleanupAt.total)}/${cleanupAt.total}：${cleanupAt.current.split("/").pop()}`
                           : deleting
                             ? "正在删除…"
                             : validation && !validation.valid
                               ? "校验未通过，不能执行"
-                              : <><span className="collector-unit">{formatBytes(collectorBytes).split(" ")[1]}</span> <span className="collector-dim">已选中</span>{unchecked.size > 0 && <span className="collector-dim"> · {unchecked.size} 项待勾选</span>}</>}
+                              : <><span className="collector-dim">已选中</span>{unchecked.size > 0 && <span className="collector-dim"> · {unchecked.size} 项待勾选</span>}</>}
                   </span>
                   {/* One action, and it deletes outright -- the trash is on the same
                       volume, so moving there reclaims nothing. Nothing is rerouted and

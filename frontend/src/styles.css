@@ -451,8 +451,8 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
   .directory-list { max-height: 300px; }
   .directory-context { margin-top: 6px; }
   .app-shell-result .collector-dock { bottom: 20px; right: 12px; left: auto; }
-  .collector-bar .collector-target { left: -8px; }
-  .collector-bar { padding-left: 58px; }
+  .collector-bar .collector-target { right: -8px; }
+  .collector-bar { padding-right: 58px; }
 }
 
 @media (max-width: 520px) {
@@ -593,7 +593,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    badge grew its own rounded left end there, which is not the shape. z-index
    -1 puts it under the panel's own background, so it is only ever seen when
    that background is off. Idle and empty, nothing. */
-.collector-bar::before { content: ""; position: absolute; z-index: -1; left: 3px; right: 0; top: -1px; bottom: -1px; border-radius: 999px; background: #30343c; opacity: 0; transition: opacity .2s ease; }
+.collector-bar::before { content: ""; position: absolute; z-index: -1; left: 0; right: 3px; top: -1px; bottom: -1px; border-radius: 999px; background: #30343c; opacity: 0; transition: opacity .2s ease; }
 /* In the pill the action is the reference's red capsule. */
 .collector-bar .danger-button.compact { border-radius: 999px; border-color: #b5352e; background: #9b2823; color: #fff; }
 .collector-bar .danger-button.compact:hover { background: #ad2d27; }
@@ -681,9 +681,18 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* The bar is shorter than the badge on purpose: the badge is centred on it,
    so a 34px bar puts the centre 17px above the panel's bottom edge and the
    disc hangs 8px below the panel, which is the reference's silhouette. */
-.collector-bar { position: relative; display: flex; align-items: center; gap: 8px; min-height: 34px; margin: 4px -6px 0; padding: 0 10px 0 65px; }
-.collector-bar .collector-target { position: absolute; left: -1px; top: 50%; transform: translateY(-50%); }
-.collector-bar .collector-caption { flex: 1 1 auto; color: #d6d7db; font-size: 12px; }
+/* Mirrored for the dock's new corner (ADR-0073 修订): the badge rides the
+   panel's bottom-RIGHT edge, the caption reads towards it, and the action sits
+   at the far left -- the same bar as the reference's, flipped, so the badge
+   stays at the window's corner where the eye expects the drop target. The
+   number's unit moves into the badge's second line (the wheel's hub already
+   writes "4 / GB" that way), because nothing can follow the badge on its right. */
+.collector-bar { position: relative; display: flex; align-items: center; gap: 8px; min-height: 34px; margin: 4px -6px 0; padding: 0 65px 0 10px; }
+.collector-bar .collector-target { position: absolute; right: -1px; top: 50%; transform: translateY(-50%); }
+.collector-bar .collector-caption { flex: 1 1 auto; color: #d6d7db; font-size: 12px; text-align: right; }
+.collector-bar .danger-button, .collector-bar .quiet-button { order: -1; }
+.collector-badge .collector-count { display: grid; justify-items: center; line-height: 1; }
+.collector-badge-unit { display: block; margin-top: 2px; color: #a9abb3; font-size: 9px; font-weight: 400; letter-spacing: .02em; line-height: 1; }
 /* At rest the caption is two tones, measured off the reference: the unit a
    shade lighter than the words after it. Messages (deleting, refused) keep
    the plain caption colour, because they are things to read, not a label. */
