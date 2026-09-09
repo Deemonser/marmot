@@ -227,11 +227,13 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 
 .workbench { display: grid; min-width: 0; min-height: 0; }
 .has-result .workbench { grid-template-columns: minmax(0, 62fr) minmax(320px, 38fr); flex: 1; gap: 0; transition: grid-template-columns 240ms ease; }
-/* With the dock open the list column widens to 46% and the wheel gives up 8%:
-   the panel needs the room for two-line rows with tags, and a wheel a tenth
-   smaller beats a wheel half hidden (ADR-0073). The panel is sized for the open
-   column in every state, so opening moves the column edge, not the panel. */
-.app-shell.is-dock-open .has-result .workbench { grid-template-columns: minmax(0, 54fr) minmax(320px, 46fr); }
+/* With the dock open the list column widens to 44% and the wheel column keeps
+   56%: the panel needs the room for two-line rows with tags, and the wheel must
+   still fit -- 0.56 * 828 - 16 (its right padding) = 447px against a 445px
+   wheel -- so it is the same size open or shut, with equal air on both sides
+   (ADR-0073, R-075). The panel is sized for the open column in every state, so
+   opening moves the column edge, not the panel. */
+.app-shell.is-dock-open .has-result .workbench { grid-template-columns: minmax(0, 56fr) minmax(320px, 44fr); }
 @media (prefers-reduced-motion: reduce) { .has-result .workbench { transition: none; } }
 .map-panel, .directory-panel { min-width: 0; min-height: 0; background: transparent; }
 .map-panel { display: flex; flex-direction: column; }
@@ -241,10 +243,14 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    With the dock under the list (ADR-0073) the corner holds only the analysis
    button and the notice, both outside the circle, and the band is what keeps
    the wheel from being wider than the open-dock column: 0.855 * (588 - 68) =
-   445px against 447px of column at 860 wide, so the wheel is the same size
+   445px against 447px of stage (56% less the 16px right padding) at 860 wide, so the wheel is the same size
    whether the dock is open or shut (R-075 §3). Any less and it would shrink
    with the column while the panel is open. */
-.map-stage { position: relative; display: grid; min-height: 0; flex: 1; place-items: center; padding-bottom: 68px; overflow: hidden; }
+/* padding-right mirrors the workspace's 16px left gutter, so the wheel is
+   centred between the window's edge and the column's edge -- not between the
+   gutter and the column's edge, which put 16px more air on its left than on
+   its right and read as lopsided (2026-09-09). */
+.map-stage { position: relative; display: grid; min-height: 0; flex: 1; place-items: center; padding-right: 16px; padding-bottom: 68px; overflow: hidden; }
 /* Sized off the stage's height, not the viewport: the five main rings have to
    land at ~75% of the available height to match the reference (ADR-0059 §2), and
    they are 0.809 of the whole chart's radius once the thin outer levels are
@@ -621,13 +627,13 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* The badge straddles the panel's bottom-left corner the way the reference's
    does (measured: centre 3pt inside the left edge, 14pt above the bottom, so
    the 50pt disc hangs 22pt out and 11pt down). The panel is exactly the open
-   list column (46% of the content width): flush with the column's left edge,
+   list column (44% of the content width): flush with the column's left edge,
    or the list's dots peek out beside it. The badge's 22px overhang lands in the
    wheel column below the wheel's bottom edge, which sits 131px above the
    stage's bottom at the result window's height (R-075). Full height
    less the top bar and a 20px breath: the collected list has no cap of its own
    any more (ADR-0073), it takes whatever the panel has. */
-.collector-panel { display: flex; width: calc((100vw - 32px) * .46); max-height: calc(100vh - 54px); flex-direction: column; padding: 6px 6px 0; border: 0; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); transition: background-color 160ms ease, box-shadow 160ms ease; }
+.collector-panel { display: flex; width: calc((100vw - 32px) * .44); max-height: calc(100vh - 54px); flex-direction: column; padding: 6px 6px 0; border: 0; border-radius: 9px; background: #2c2d33; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); transition: background-color 160ms ease, box-shadow 160ms ease; }
 /* Two sections, one object in exactly one of them (ADR-0066). Each list has
    its own ceiling rather than sharing the panel's: a 58-row 已收集 must not
    push 待确认 down to a sliver, and the other way round. */
