@@ -959,7 +959,10 @@ function Sunburst({
             // carries no path, so it can neither be activated nor collected
             // (ADR-0048, ADR-0017 §2).
             const interactive = entry !== null;
-            const canActivate = interactive && (!aggregate || depth === 0);
+            // A staged arc still answers the pointer -- it breathes, the list
+            // follows it, its menu offers "移出收集站" -- but it is not entered
+            // by click and not dragged again: the object is queued for deletion.
+            const canActivate = interactive && (!aggregate || depth === 0) && !collected && !dragging;
             // Every ring is clickable, not only the innermost. A projected arc
             // navigates by node id (ADR-0060 §6); it stays non-interactive for
             // hover, focus, collect and reveal, all of which need a path.

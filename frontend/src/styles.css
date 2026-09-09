@@ -715,8 +715,13 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .sunburst-slice.is-projected { cursor: default; }
 
 /* Being dragged out, or already staged in the dock -- one state, on purpose. The
-   arc stays in its slot and fades to a fraction of its paint, and it is out of
-   reach for pointer and focus alike.
+   arc stays in its slot and fades to a fraction of its paint. It still answers
+   the pointer -- hover breathes it and swings the list to it, right-click offers
+   to unstage it -- but it cannot be clicked into or dragged again (App.tsx gates
+   both); focus skips it. It used to carry pointer-events: none and animation:
+   none here, which made the arc itself deaf to hover and, worse, overrode
+   .is-breathing at equal specificity, so hovering the dock row lit the arc
+   without breathing it -- the opposite of what ADR-0066's hover link intends.
    Dragging used to slide the arc out and take it to zero, which meant the drop
    played a second animation putting a translucent arc back where the first one
    had just removed it. The wedge popped. Fading straight to the staged look makes
@@ -726,7 +731,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    fill-opacity, not opacity, on purpose: paintMorph writes `style.opacity` frame
    by frame during a level change, and the two multiply instead of fighting, so a
    faded arc travels with everything else and stays faded while it does. */
-.sunburst-slice.is-collected { fill-opacity: .17; pointer-events: none; animation: none; }
+.sunburst-slice.is-collected { fill-opacity: .17; }
 .sunburst-slice.is-collected.is-breathing { fill-opacity: .6; }
 
 /* The same object's row leaves the list with it: collapsed to nothing and slid
