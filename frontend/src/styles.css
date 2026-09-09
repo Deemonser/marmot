@@ -427,7 +427,15 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 /* min-height: 0 and flex are load-bearing: a grid inside a shrinking flex
    column keeps its content height and runs under the action bar; with them it
    gives way and scrolls, which is the only honest thing a capped list can do. */
-.collector-list { display: grid; min-height: 0; flex: 1 1 auto; overflow: hidden auto; padding: 4px 0 0; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
+/* The list's ceiling is the panel's, worked out here rather than left to the
+   panel's max-height: 100vh - 54 (panel top) - 6 (panel padding) - 4 (list
+   padding) - 38 (bar 34 + margin 4), with 4px of slack. The fold below is a
+   grid row going 1fr -> 0fr, and that only animates while the grid container
+   is content-sized. Let the panel clamp it instead and the container gets a
+   definite height, in which a single fr track fills everything at any positive
+   factor and snaps to nothing at zero -- which is what "the fold has no
+   animation" looked like once the 26vh cap was gone (2026-09-09). */
+.collector-list { display: grid; min-height: 0; max-height: calc(100vh - 106px); flex: 1 1 auto; overflow: hidden auto; padding: 4px 0 0; scrollbar-width: thin; scrollbar-color: #4a4b51 transparent; }
 .plan-review { display: grid; gap: 7px; margin-top: 10px; padding: 10px; border: 1px solid #5c625b; background: #333a35; }
 .plan-review > div:not(.plan-result) { display: flex; justify-content: space-between; gap: 10px; color: #aab0a8; font-size: 9px; }
 .plan-review strong { color: #e2e7df; font-weight: 500; }
@@ -656,7 +664,7 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    see, then dropped.) The rows fade as they fold, and the panel's background
    waits for them -- see .collector-panel.is-bar-only -- so no text is ever
    left standing on the bare page. */
-.dock-staged { display: grid; flex: 1 1 auto; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; overflow: hidden; transition: grid-template-rows 240ms ease, margin 240ms ease; }
+.dock-staged { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; overflow: hidden; transition: grid-template-rows 240ms ease, margin 240ms ease; }
 .dock-staged.is-folded { grid-template-rows: 0fr; margin: 0; border-top: 0; }
 .dock-staged-body { display: flex; min-width: 0; min-height: 0; flex-direction: column; transition: opacity 160ms ease 40ms; }
 .dock-staged.is-folded .dock-staged-body { opacity: 0; transition: opacity 140ms ease; }
