@@ -1860,14 +1860,24 @@ export default function App() {
     if (draggingKey) keys.add(draggingKey);
     return keys;
   }, [collectedKeys, draggingKey]);
-  // A pulled arc cannot be hovered -- it does not hit-test -- so a hover that
-  // still names one is stale by definition. This is the guard for every route
-  // into that state, not only the drag: staging from the advice list pulls an
-  // arc the pointer may be resting on right now. The dock's own rows point at
-  // collected arcs through hoveredEntry, which this leaves alone.
+  // The arc being dragged stops hit-testing (the whole wheel does, while a drag
+  // is under way), so a hover that still names it is stale by definition and
+  // is cleared here. Staged arcs are deliberately NOT cleared any more: they
+  // hit-test again (8a4a623), so a hover on one is a real hover, and it is what
+  // makes the arc breathe and the dock row light up below. The old guard
+  // covered every pulled key and was why a staged arc never breathed under
+  // the pointer (2026-09-10).
   useEffect(() => {
-    if (hoveredArcKey && pulledKeys.has(hoveredArcKey)) setHoveredArcKey(null);
-  }, [hoveredArcKey, pulledKeys]);
+    if (hoveredArcKey && draggingKey === hoveredArcKey) setHoveredArcKey(null);
+  }, [hoveredArcKey, draggingKey]);
+  // The wheel -> dock half of the hover link (ADR-0066 §3 had only dock ->
+  // wheel): hovering a staged arc lights its row and brings it into view, so
+  // the person can see which of the queued things the pointer is on.
+  useEffect(() => {
+    if (!hoveredArcKey || !dockOpen || dockLocked) return;
+    const row = collectorRef.current?.querySelector<HTMLElement>('[data-collector-key="' + CSS.escape(hoveredArcKey) + '"]');
+    row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [hoveredArcKey, dockOpen, dockLocked]);
   // At the root the displayed total is the volume's used bytes, so the number in
   // the hub is the number the entries add up to — the tree total alone excludes
   // the balancing entry and would not add up (ADR-0052 §4).
@@ -3501,8 +3511,9 @@ export default function App() {
                     const path = node?.path ?? "";
                     return (
                       <div
-                        className={"collector-item" + (unchecked.has(entryKey(item)) ? " is-unchecked" : "")}
+                        className={"collector-item" + (unchecked.has(entryKey(item)) ? " is-unchecked" : "") + (hoveredArcKey === entryKey(item) ? " is-breathing" : "")}
                         key={entryKey(item)}
+                        data-collector-key={entryKey(item)}
                         draggable={Boolean(node)}
                         onDragStart={(event) => {
                           if (!node) return;

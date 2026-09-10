@@ -554,6 +554,14 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .collector-item { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto 0px; align-items: center; gap: 8px; padding: 6px 6px 7px; border-radius: 6px; color: #e6e6ea; font-size: 13px; transition: grid-template-columns 120ms ease; -webkit-user-drag: element; }
 .collector-item:hover, .collector-item:focus-within { grid-template-columns: 20px minmax(0, 1fr) auto 20px; }
 .collector-item:hover { background: rgba(255, 255, 255, .08); }
+/* The row of the arc under the pointer breathes its background at the wheel's
+   rhythm (.9s), so wheel and dock say "this one" in the same voice. */
+.collector-item.is-breathing { animation: row-breathe .9s ease-in-out infinite; }
+@keyframes row-breathe {
+  0%, 100% { background-color: rgba(255, 255, 255, .16); }
+  50% { background-color: rgba(255, 255, 255, .05); }
+}
+@media (prefers-reduced-motion: reduce) { .collector-item.is-breathing { animation: none; background-color: rgba(255, 255, 255, .12); } }
 /* Not selected: still in the dock, not about to be deleted. Dimmed rather than
    struck through, because it is waiting for a decision, not rejected. */
 .collector-item.is-unchecked .collector-text, .collector-item.is-unchecked b { opacity: .5; }
