@@ -4,7 +4,17 @@
 export interface Advice {
     "snapshotId": number;
     "items": AdviceItem[] | null;
+
+    /**
+     * TotalBytes is the set answer: what deleting every suggestion together
+     * gives back, with a clone or hardlink group's shared extent counted once
+     * and only when the whole group is in the list (ADR-0074 §2). UpperBound
+     * exceeds it when some object's reclaimable size is unknown.
+     */
     "totalBytes": number;
+    "totalUpperBound": number;
+    "totalSharedExcluded": number;
+    "totalUnknown": boolean;
     "ruleItems": number;
     "advisorItems": number;
 
@@ -60,6 +70,12 @@ export interface AdviceItem {
     "ruleName": string;
     "category": string;
     "reclaimableBytes": number;
+
+    /**
+     * ReclaimableUnknown: the bytes above are the allocated size because the
+     * volume did not say what deleting the object gives back (ADR-0074 §4).
+     */
+    "reclaimableUnknown": boolean;
     "recovery": string;
     "risk": string;
 
@@ -384,6 +400,21 @@ export interface ProjectedEntry {
 }
 
 /**
+ * ReclaimableSummary mirrors the application type: ADR-0074's figure for the
+ * collector's whole selection. Bytes is certain, UpperBound the most that could
+ * come back, SharedExcluded what stays because a group is not wholly selected.
+ */
+export interface ReclaimableSummary {
+    "snapshotId": number;
+    "bytes": number;
+    "upperBound": number;
+    "sharedExcluded": number;
+    "unknown": boolean;
+    "unknownBytes": number;
+    "files": number;
+}
+
+/**
  * RereadResult is what re-reading one directory in place reports (ADR-0070).
  */
 export interface RereadResult {
@@ -431,6 +462,7 @@ export interface ScanProgress {
     "volumeUsedBytes": number;
     "expectedTotalBytes": number;
     "expectedTotalNodes": number;
+    "warm": boolean;
 }
 
 export interface ScanStatus {
@@ -460,6 +492,11 @@ export interface ScanStatus {
      */
     "expectedTotalBytes": number;
     "expectedTotalNodes": number;
+
+    /**
+     * Warm: brought up from a seed and a journal replay, not walked (ADR-0075).
+     */
+    "warm": boolean;
 }
 
 export interface StorageSourceOverview {

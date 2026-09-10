@@ -204,68 +204,7 @@ func (s *Service) applyLiveBatch(updater *liveUpdater) {
 	}
 	s.rereadMu.Lock()
 	defer s.rereadMu.Unlock()
-
-	refresher := s.store.(directoryRefreshingStore)
-	reader := s.scanner.(ports.DirectoryReader)
-	paths := make([]string, 0, len(pending))
-	for path := range pending {
-		paths = append(paths, path)
-	}
-	// Parents before children: a new subdirectory is added by its parent's
-	// refresh and read in depth right there, so its own event finds it present.
-	sort.Slice(paths, func(i, j int) bool {
-		if len(paths[i]) != len(paths[j]) {
-			return len(paths[i]) < len(paths[j])
-		}
-		return paths[i] < paths[j]
-	})
-
-	var touched, dirty int64
-	deepRead := make(map[int64]struct{})
-	for _, path := range paths {
-		node, err := s.store.NodeByPath(updater.snapshotID, path)
-		if err != nil || node.Kind != "directory" {
-			// Outside the result (another volume, a boundary), or a directory
-			// that is itself gone -- its parent's refresh removes it.
-			continue
-		}
-		if _, done := deepRead[node.ID]; done {
-			continue
-		}
-		if pending[path] {
-			// The system lost track below this directory: read the whole subtree.
-			if _, code, err := s.rereadSubtree(updater.snapshotID, node); code != "" {
-				dirty++
-				log.Printf("live: %s 需要深读但被拒绝（%s）：%v", path, code, err)
-			} else {
-				touched++
-				deepRead[node.ID] = struct{}{}
-			}
-			continue
-		}
-		self, children, err := reader.ReadDirectory(node.Path, node.VolumeID)
-		if err != nil {
-			continue
-		}
-		refresh, err := refresher.RefreshDirectory(updater.snapshotID, node.ID, self, children)
-		if err != nil {
-			log.Printf("live: %s 刷新失败：%v", path, err)
-			continue
-		}
-		touched++
-		for _, newID := range refresh.NewDirectoryIDs {
-			fresh, err := s.store.NodeByID(updater.snapshotID, newID)
-			if err != nil {
-				continue
-			}
-			if _, code, err := s.rereadSubtree(updater.snapshotID, fresh); code != "" {
-				dirty++
-				log.Printf("live: 新目录 %s 深读被拒绝（%s）：%v", fresh.Path, code, err)
-			} else {
-				deepRead[newID] = struct{}{}
-			}
-		}
-	}
+	touched, dirty := s.spliceDirectories(updater.snapshotID, pending)
 
 	version, _ := s.store.SnapshotVersion(updater.snapshotID)
 	if touched > 0 && s.volumes != nil {
@@ -289,4 +228,104 @@ func (s *Service) applyLiveBatch(updater *liveUpdater) {
 	if touched > 0 {
 		s.emit(LiveUpdateEvent, LiveUpdate{SnapshotID: updater.snapshotID, Version: version, Directories: touched})
 	}
+}
+
+// spliceDirectories brings every directory in pending up to date in one pass:
+// the body of a live batch (ADR-0072 §3), also run by a warm start on the
+// directories the FSEvents replay named (ADR-0075 §4). The caller holds
+// rereadMu. pending maps a directory path to whether its whole subtree must be
+// re-read. Returns how many directories were brought up to date and how many
+// deep reads were refused.
+type refreshBatchStore interface {
+	BeginRefreshBatch(int64) error
+	EndRefreshBatch(int64) error
+}
+
+func (s *Service) spliceDirectories(snapshotID int64, pending map[string]bool) (touched, dirty int64) {
+	// One child-index rebuild for the whole batch, not one per changed directory.
+	if batcher, ok := s.store.(refreshBatchStore); ok {
+		if err := batcher.BeginRefreshBatch(snapshotID); err == nil {
+			defer batcher.EndRefreshBatch(snapshotID)
+		}
+	}
+	refresher := s.store.(directoryRefreshingStore)
+	reader := s.scanner.(ports.DirectoryReader)
+	paths := make([]string, 0, len(pending))
+	for path := range pending {
+		paths = append(paths, path)
+	}
+	// Parents before children: a new subdirectory is added by its parent's
+	// refresh and read in depth right there, so its own event finds it present.
+	sort.Slice(paths, func(i, j int) bool {
+		if len(paths[i]) != len(paths[j]) {
+			return len(paths[i]) < len(paths[j])
+		}
+		return paths[i] < paths[j]
+	})
+
+	deepRead := make(map[int64]struct{})
+	// A directory that takes a noticeable fraction of a second is worth a log
+	// line: it is what a slow batch or a slow warm start is made of. Timed from
+	// one iteration to the next rather than with a defer, which would only fire
+	// when the whole batch is done.
+	var slowPath string
+	var slowStarted time.Time
+	noteSlow := func() {
+		if slowPath == "" {
+			return
+		}
+		if elapsed := time.Since(slowStarted); elapsed > 300*time.Millisecond {
+			log.Printf("live: %s 用了 %s（深读=%v）", slowPath, elapsed.Round(time.Millisecond), pending[slowPath])
+		}
+		slowPath = ""
+	}
+	defer noteSlow()
+	for _, path := range paths {
+		noteSlow()
+		slowPath, slowStarted = path, time.Now()
+		node, err := s.store.NodeByPath(snapshotID, path)
+		if err != nil || node.Kind != "directory" {
+			// Outside the result (another volume, a boundary), or a directory
+			// that is itself gone -- its parent's refresh removes it.
+			continue
+		}
+		if _, done := deepRead[node.ID]; done {
+			continue
+		}
+		if pending[path] {
+			// The system lost track below this directory: read the whole subtree.
+			if _, code, err := s.rereadSubtree(snapshotID, node); code != "" {
+				dirty++
+				log.Printf("live: %s 需要深读但被拒绝（%s）：%v", path, code, err)
+			} else {
+				touched++
+				deepRead[node.ID] = struct{}{}
+			}
+			continue
+		}
+		self, children, err := reader.ReadDirectory(node.Path, node.VolumeID)
+		if err != nil {
+			continue
+		}
+		refresh, err := refresher.RefreshDirectory(snapshotID, node.ID, self, children)
+		if err != nil {
+			log.Printf("live: %s 刷新失败：%v", path, err)
+			continue
+		}
+		touched++
+		for _, newID := range refresh.NewDirectoryIDs {
+			fresh, err := s.store.NodeByID(snapshotID, newID)
+			if err != nil {
+				continue
+			}
+			if _, code, err := s.rereadSubtree(snapshotID, fresh); code != "" {
+				dirty++
+				log.Printf("live: 新目录 %s 深读被拒绝（%s）：%v", fresh.Path, code, err)
+			} else {
+				deepRead[newID] = struct{}{}
+			}
+		}
+	}
+
+	return touched, dirty
 }

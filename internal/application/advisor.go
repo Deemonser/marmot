@@ -297,10 +297,9 @@ func (s *Service) RunAdvisorAnalysis(ctx context.Context, snapshotID int64) (Adv
 	merged, dropped := mergeAdvisorItems(advice.Items, accepted, shown)
 	advice.Items = merged
 	advice.Rejected = append(advice.Rejected, dropped...)
+	s.applyReclaimable(snapshotID, &advice)
 	advice.AdvisorItems = 0
-	advice.TotalBytes = 0
 	for _, item := range advice.Items {
-		advice.TotalBytes += item.ReclaimableBytes
 		if item.Source == recommendation.SourceAdvisor {
 			advice.AdvisorItems++
 		}

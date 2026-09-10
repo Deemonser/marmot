@@ -14,6 +14,12 @@ type directoryEntry struct {
 	device        uint64
 	inode         uint64
 	linkCount     uint64
+	// The reclaim attributes (ADR-0074), when the read path reports them. The
+	// portable fallback does not, and hasPrivate stays false: unknown, not zero.
+	privateSize   int64
+	hasPrivate    bool
+	cloneID       uint64
+	cloneRefCount uint32
 	modifiedAt    time.Time
 	isDirectory   bool
 	isSymlink     bool
@@ -101,6 +107,11 @@ func (entry directoryEntry) node(id, parentID int64, path, volumeID string) Node
 		Device:         entry.device,
 		Inode:          entry.inode,
 		ModifiedAt:     entry.modifiedAt,
+		LinkCount:      uint32(min(entry.linkCount, 1<<32-1)),
+		PrivateSize:    entry.privateSize,
+		HasPrivate:     entry.hasPrivate,
+		CloneID:        entry.cloneID,
+		CloneRefCount:  entry.cloneRefCount,
 	}
 	if entry.isDirectory {
 		node.Kind = "directory"

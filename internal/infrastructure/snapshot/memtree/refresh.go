@@ -72,6 +72,7 @@ func (t *tree) refreshDirectory(keep int64, self scan.Node, children []scan.Node
 					logicalDelta += child.LogicalSize - old.logicalSize
 					old.ownedAllocated = child.OwnedAllocated
 					old.logicalSize = child.LogicalSize
+					t.noteReclaim(oldID, child, old)
 					if code, err := t.confidences.code(child.Confidence); err == nil && child.Confidence != "" {
 						old.confidence = code
 					}
@@ -91,6 +92,7 @@ func (t *tree) refreshDirectory(keep int64, self scan.Node, children []scan.Node
 		if err != nil {
 			return scan.DirectoryRefresh{}, err
 		}
+		t.noteReclaim(id, child, &entry)
 		if child.Kind == "directory" {
 			// Arrives empty; the caller reads it in depth. Until then it must not
 			// claim children it does not have.
@@ -150,9 +152,9 @@ func (t *tree) refreshDirectory(keep int64, self scan.Node, children []scan.Node
 	if result.Added > 0 || result.Removed > 0 {
 		// Only a change in membership invalidates the child index; a size change
 		// alone would re-sort the group, and that is what group() does.
-		t.grouped = false
+		t.markGroupsStale()
 	} else if allocatedDelta != 0 {
-		t.grouped = false
+		t.markGroupsStale()
 	}
 	t.version++
 	result.AllocatedDelta = allocatedDelta

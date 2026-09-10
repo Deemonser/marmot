@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"example.com/marmot/internal/domain/recommendation"
+	"example.com/marmot/internal/domain/scan"
 	"example.com/marmot/internal/ports"
 )
 
@@ -16,6 +17,13 @@ type stubEvidenceStore struct {
 	result recommendation.EvidenceResult
 	query  recommendation.EvidenceQuery
 	calls  int
+}
+
+// Reclaimable is not what these tests are about; declining keeps each item's
+// allocated figure, which is what they assert against (ADR-0074 §6 falls back
+// the same way when the store cannot answer).
+func (s *stubEvidenceStore) Reclaimable(int64, []int64) (scan.Reclaimable, error) {
+	return scan.Reclaimable{}, errors.New("stub: no reclaim figures")
 }
 
 func (s *stubEvidenceStore) EvidenceNodes(query recommendation.EvidenceQuery) (recommendation.EvidenceResult, error) {

@@ -456,6 +456,7 @@ function statusFromProgress(progress: ScanProgress): ScanStatus {
     root: progress.root,
     state: progress.state,
     phase: progress.phase,
+    warm: progress.warm,
     nodes: progress.nodes,
     files: progress.files,
     directories: progress.directories,
@@ -1104,10 +1105,12 @@ function VolumeTile({
 	// chrome — the original shows none of them — but they must stay available, so
 	// they live in the progress bar's accessible label. No aria-valuenow: the
 	// total is unknown until the walk ends (ADR-0027, ADR-0050 §3).
-	const scanLabel = scanStatus
-		? `${phaseLabels[scanStatus.phase] ?? "扫描中"}：已处理 ${scanStatus.nodes.toLocaleString()} 项、`
-			+ `${scanStatus.files.toLocaleString()} 个文件、文件树占用 ${formatBytes(scanStatus.bytes)}`
-		: "扫描中";
+	const scanLabel = scanStatus?.warm
+		? "正在核对变化"
+		: scanStatus
+			? `${phaseLabels[scanStatus.phase] ?? "扫描中"}：已处理 ${scanStatus.nodes.toLocaleString()} 项、`
+				+ `${scanStatus.files.toLocaleString()} 个文件、文件树占用 ${formatBytes(scanStatus.bytes)}`
+			: "扫描中";
 	// ADR-0053: the fill's width is a real ratio — bytes accounted for over the
 	// volume's used bytes, both measured. Without a denominator the bar stays
 	// indeterminate instead of guessing one. It tops out short of 100% because
@@ -1245,7 +1248,9 @@ function VolumeTile({
 	            was redundant anyway -- a marching bar already says a scan is running.
 	            "正在整理结果" stays: that is not a phase but the state after the walk
 	            ends, when the bar is full and nothing else explains the wait. */}
-	        {finishing ? <em>正在整理结果…</em> : scanning ? <em>扫描中…</em> : (
+	        {/* A warm start (ADR-0075 §6) is not a scan: the seed is being checked
+	            against what changed since. Neutral words, no "上次结果", no "缓存". */}
+	        {finishing ? <em>正在整理结果…</em> : scanning ? <em>{scanStatus?.warm ? "正在核对变化…" : "扫描中…"}</em> : (
 	          <>
 	            {/* The reference reveals the used figure on the left of this line
 	                only while the pointer is over the meter; at rest the free space
@@ -1802,6 +1807,34 @@ export default function App() {
   // Only what is selected is about to be deleted, so only that is counted.
   const selected = collector.filter((item) => !unchecked.has(entryKey(item)));
   const collectorBytes = selected.reduce((sum, item) => sum + entrySize(item), 0);
+  // ADR-0074: the badge shows what deleting the selection gives back, asked of
+  // the tree for the whole set at once -- two clones of one stream are one
+  // stream, and two hardlinks one inode, so the rows' sizes do not add. The
+  // per-row sum above is only the placeholder until the answer arrives.
+  const [reclaim, setReclaim] = useState<Models.ReclaimableSummary | null>(null);
+  const reclaimCall = useRef(0);
+  const reclaimSnapshotId = status?.snapshotId ?? 0;
+  const selectedIdsKey = selected.filter((item) => item.kind === "node").map((item) => item.node.id).sort((a, b) => a - b).join(",");
+  useEffect(() => {
+    const call = ++reclaimCall.current;
+    if (!reclaimSnapshotId || selectedIdsKey === "") {
+      setReclaim(null);
+      return;
+    }
+    const ids = selectedIdsKey.split(",").map(Number);
+    // Debounced: a drag that drops several arcs asks once, and a stale answer
+    // (older call, or another snapshot) is dropped rather than shown.
+    const timer = window.setTimeout(() => {
+      MarmotService.GetReclaimable(reclaimSnapshotId, ids)
+        .then((result) => { if (reclaimCall.current === call && result.snapshotId === reclaimSnapshotId) setReclaim(result); })
+        .catch(() => { if (reclaimCall.current === call) setReclaim(null); });
+    }, 120);
+    return () => window.clearTimeout(timer);
+    // collector is a dependency on purpose: a live refresh replaces the rows
+    // with the same IDs, and the answer may have changed underneath them.
+  }, [reclaimSnapshotId, selectedIdsKey, collector]);
+  const reclaimCurrent = reclaim && reclaim.snapshotId === reclaimSnapshotId ? reclaim : null;
+  const badgeBytes = reclaimCurrent ? (reclaimCurrent.unknown ? reclaimCurrent.upperBound : reclaimCurrent.bytes) : collectorBytes;
   function toggleChecked(entry: MapEntry) {
     const key = entryKey(entry);
     setUnchecked((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
@@ -3647,7 +3680,7 @@ export default function App() {
                         ? Math.round(deleteProgress * 100) + "%"
                         : countdown !== null
                           ? countdown
-                          : <>{formatBytes(collectorBytes).split(" ")[0]}<span className="collector-badge-unit">{formatBytes(collectorBytes).split(" ")[1]}</span></>}
+                          : <>{reclaimCurrent?.unknown ? "≤" : ""}{formatBytes(badgeBytes).split(" ")[0]}<span className="collector-badge-unit">{formatBytes(badgeBytes).split(" ")[1]}</span></>}
                     </span>
                   </button>
                   <span className="collector-caption">
@@ -3661,7 +3694,7 @@ export default function App() {
                             ? "正在删除…"
                             : validation && !validation.valid
                               ? "校验未通过，不能执行"
-                              : <><span className="collector-dim">已选中</span>{unchecked.size > 0 && <span className="collector-dim"> · {unchecked.size} 项待勾选</span>}</>}
+                              : <><span className="collector-dim">已选中</span>{unchecked.size > 0 && <span className="collector-dim"> · {unchecked.size} 项待勾选</span>}{reclaimCurrent && reclaimCurrent.sharedExcluded > 0 && <span className="collector-dim"> · {formatBytes(reclaimCurrent.sharedExcluded)} 与未收集的对象共享，不计入</span>}{reclaimCurrent?.unknown && <span className="collector-dim"> · 部分对象的可回收量未知，显示上界</span>}</>}
                   </span>
                   {/* One action, and it deletes outright -- the trash is on the same
                       volume, so moving there reclaims nothing. Nothing is rerouted and

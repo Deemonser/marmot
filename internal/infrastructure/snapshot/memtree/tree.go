@@ -49,6 +49,17 @@ type tree struct {
 	// between the top-level publish and the end of the walk (ADR-0014/0027);
 	// they just pay one O(n) pass.
 	grouped bool
+	// batchDepth > 0 means a refresh batch is open (ADR-0072 §3 / ADR-0075 §4):
+	// re-reads mark the child index stale instead of invalidating it, and the
+	// one rebuild happens when the batch closes. Without this every changed
+	// directory in a batch cost a full group() through the next path lookup --
+	// measured 16 directories = 2.36 s on a 2.7M-node tree.
+	batchDepth int
+	groupStale bool
+
+	// reclaim is ADR-0074's side table: the files whose reclaimable size is not
+	// simply what they occupy. See reclaim.go.
+	reclaim reclaimTable
 
 	rootNodeID int64
 
@@ -103,6 +114,7 @@ func (t *tree) insert(nodes []scan.Node) error {
 		if err != nil {
 			return err
 		}
+		t.noteReclaim(node.ID, node, &entry)
 		*t.records.at(node.ID) = entry
 		if node.ParentID == 0 {
 			t.rootNodeID = node.ID
@@ -188,6 +200,8 @@ func (t *tree) applySizes(sizes map[int64]scan.DirectorySize) error {
 // place. Nothing is duplicated, so the peak is one child array (4 bytes per
 // node), not a second copy of every entry (ADR-0056 §4).
 func (t *tree) finish(state, failure string, nodeCount, fileCount, directoryCount, bytes, issues int64) {
+	// One sort for the side table, same as group() for the children (ADR-0074 §3).
+	t.reclaim.seal()
 	// No trim here any more: the table and the arena are paged, so the slack a
 	// finished result carries is at most one page each rather than up to half the
 	// table, and buying it back with a full copy is no longer worth 225.55 MB of
@@ -247,6 +261,30 @@ func (t *tree) group() {
 		})
 	}
 	t.grouped = true
+}
+
+// markGroupsStale is what a re-read calls instead of `grouped = false`: outside
+// a batch it is the same thing; inside one the index stays usable (new nodes
+// are reached by ID, removed ones were taken out in place) and is rebuilt once
+// at the end.
+func (t *tree) markGroupsStale() {
+	if t.batchDepth > 0 {
+		t.groupStale = true
+		return
+	}
+	t.grouped = false
+}
+
+func (t *tree) beginBatch() { t.batchDepth++ }
+
+func (t *tree) endBatch() {
+	if t.batchDepth > 0 {
+		t.batchDepth--
+	}
+	if t.batchDepth == 0 && t.groupStale {
+		t.groupStale = false
+		t.grouped = false
+	}
 }
 
 func (t *tree) ensureGrouped() {

@@ -73,7 +73,11 @@ type Recommendation struct {
 	// ReclaimableBytes is always the snapshot's own figure. A model's arithmetic
 	// is never trusted here (ADR-0061 §7.4).
 	ReclaimableBytes int64
-	Recovery         Recovery
+	// ReclaimableUnknown says the figure above is the allocated size because the
+	// volume did not report what deleting the object would give back
+	// (ADR-0074 §4); the UI shows it as an upper bound.
+	ReclaimableUnknown bool
+	Recovery           Recovery
 	// Risk is a conclusion, never an input: Assess derives it from the fact
 	// fields below and is the only writer (ADR-0067, DDD invariant 10a).
 	Risk Risk

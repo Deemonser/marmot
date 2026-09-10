@@ -24,6 +24,20 @@ package scanner
 #define MARMOT_NATIVE_CHILD_CAP 4096
 #define MARMOT_NATIVE_BUFFER_SIZE (256 * 1024)
 
+// A batch flush in the middle of a bulk page would hand this worker's page
+// buffer to a child directory (the inline overflow path below re-uses it) while
+// the parent still has records to read out of it. It cannot happen, and this
+// pins the reason: the smallest possible record is 4 bytes of length + a
+// 20-byte attribute_set_t + an 8-byte attrreference for the name the parser
+// requires + 4 bytes of padded name, so a page holds fewer than BATCH_CAP
+// records and batch_count -- reset at the end of every page -- never reaches
+// the cap mid-page. R-077 §5.3 suspected a live hazard here and measured zero
+// occurrences; the arithmetic is why. Lower the cap or raise the buffer and
+// this fails to compile until the inline path gets a buffer of its own.
+#define MARMOT_NATIVE_MIN_RECORD_BYTES 36
+_Static_assert(MARMOT_NATIVE_BATCH_CAP * MARMOT_NATIVE_MIN_RECORD_BYTES > MARMOT_NATIVE_BUFFER_SIZE,
+	"a bulk page could hold BATCH_CAP records: a mid-page flush would alias the page buffer with the inline child read");
+
 typedef struct {
 	uint64_t parent_id;
 	uint64_t node_id;
@@ -40,6 +54,13 @@ typedef struct {
 	// machine: a 342 MB file in the Preboot cryptex has a private size of zero.
 	int64_t private_size;
 	int has_private;
+	// clone_id names the data stream; files that are full clones of each other
+	// share it. clone_refcnt is how many full clones share this file's blocks
+	// (1 = not cloned). Together they define the clone group ADR-0074 attributes
+	// shared blocks to, once, and only when the whole group is collected.
+	uint64_t clone_id;
+	uint32_t clone_refcnt;
+	int has_clone;
 	int64_t mod_seconds;
 	int64_t mod_nanoseconds;
 	uint32_t mount_status;
@@ -306,6 +327,48 @@ static char *marmot_native_join(const char *parent, size_t parent_length, const 
 	return result;
 }
 
+// Older kernels validate `forkattr` against their own ATTR_CMNEXT_VALIDMASK and
+// fail the whole call when it carries a bit they do not know.
+// ATTR_CMNEXT_CLONE_REFCNT (0x1000) is the newest bit we ask for, and the app
+// supports macOS 12 (build/darwin/Info.plist), so the clone attributes cannot
+// be requested unconditionally: on such a kernel EVERY directory read would
+// fail and the scan would produce an empty tree.
+//
+// Rather than probe, the readers ask for everything and give up the clone
+// attributes the first time a call rejects them, once per process: one wasted
+// syscall per in-flight reader on an old kernel, none on a current one.
+// Measured 2026-09-10 by asking for a bit outside this kernel's VALIDMASK: the
+// answer is ERANGE (34), not EINVAL, so both are treated as "this kernel will
+// not take these attributes" -- an ERANGE from any other cause simply fails
+// again on the retry and is reported as before. `reclaimable` then reports
+// clone groups as unknown, which is what it does for any volume that withholds
+// the attributes (ADR-0074 §4).
+static int marmot_native_clone_attrs_enabled = 1;
+
+static int marmot_native_clone_attrs_on(void) {
+	return __atomic_load_n(&marmot_native_clone_attrs_enabled, __ATOMIC_RELAXED);
+}
+
+// Idempotent: every reader that asked for the clone attributes and got the
+// error retries once on its own, so no thread loses its directory to another
+// thread winning a race to flip the flag.
+static void marmot_native_clone_attrs_disable(void) {
+	__atomic_store_n(&marmot_native_clone_attrs_enabled, 0, __ATOMIC_RELAXED);
+}
+
+// ..._clone_rejected says whether an error means "this kernel does not take
+// these attributes". An older kernel validates forkattr against its own
+// ATTR_CMNEXT_VALIDMASK; measured, it answers ERANGE rather than EINVAL.
+static int marmot_native_clone_rejected(int err) {
+	return err == ERANGE || err == EINVAL;
+}
+
+static attrgroup_t marmot_native_clone_forkattr(void) {
+	attrgroup_t attrs = ATTR_CMNEXT_PRIVATESIZE;
+	if (marmot_native_clone_attrs_on()) attrs |= ATTR_CMNEXT_CLONEID | ATTR_CMNEXT_CLONE_REFCNT;
+	return attrs;
+}
+
 static void marmot_native_request(struct attrlist *request) {
 	memset(request, 0, sizeof(*request));
 	request->bitmapcount = ATTR_BIT_MAP_COUNT;
@@ -313,9 +376,13 @@ static void marmot_native_request(struct attrlist *request) {
 		ATTR_CMN_OBJTYPE | ATTR_CMN_MODTIME | ATTR_CMN_FILEID;
 	request->dirattr = ATTR_DIR_MOUNTSTATUS;
 	request->fileattr = ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE | ATTR_FILE_DATALENGTH;
-	// Extended attributes ride the same bulk call, so the reclaimable size costs
-	// no extra syscall. Requires FSOPT_ATTR_CMN_EXTENDED at the call site.
-	request->forkattr = ATTR_CMNEXT_PRIVATESIZE;
+	// Extended attributes ride the same bulk call, so the reclaimable size and
+	// the clone group cost no extra syscall. Requires FSOPT_ATTR_CMN_EXTENDED at
+	// the call site (ADR-0074).
+	// ADR-0074 gate 2, measured 2026-09-10 in three alternating pairs on the real
+	// volume: with the clone attributes 17.7 / 24.5 / 18.3 s, without 23.7 / 27.3 /
+	// 23.7 s. No measurable cost; the spread is the machine's.
+	request->forkattr = marmot_native_clone_forkattr();
 }
 
 static int marmot_native_read_u32(const char *base, size_t offset, size_t length, uint32_t *value) {
@@ -398,6 +465,19 @@ static int marmot_native_read_record(const char *record, size_t length, marmot_n
 	if ((fork & ATTR_CMNEXT_PRIVATESIZE) != 0) {
 		if (!marmot_native_read_i64(record, offset, length, &out->private_size)) return 0;
 		out->has_private = 1;
+		offset += sizeof(int64_t);
+	}
+	// Extended fields also arrive in bit order: CLONEID (0x100) before
+	// CLONE_REFCNT (0x1000). Both or neither: a volume without clone mapping
+	// leaves both bits clear and the group is unknown, not "no clones".
+	if ((fork & ATTR_CMNEXT_CLONEID) != 0) {
+		if (!marmot_native_read_i64(record, offset, length, (int64_t *)&out->clone_id)) return 0;
+		offset += sizeof(uint64_t);
+	}
+	if ((fork & ATTR_CMNEXT_CLONE_REFCNT) != 0) {
+		if (!marmot_native_read_u32(record, offset, length, &out->clone_refcnt)) return 0;
+		offset += sizeof(uint32_t);
+		out->has_clone = (fork & ATTR_CMNEXT_CLONEID) != 0;
 	}
 	return 1;
 }
@@ -472,11 +552,18 @@ static void marmot_native_process_task(marmot_native_state *state, marmot_native
 	}
 	struct attrlist request;
 	marmot_native_request(&request);
+	int asked_clone = (request.forkattr & ~(attrgroup_t)ATTR_CMNEXT_PRIVATESIZE) != 0;
 	size_t batch_count = 0;
 	for (;;) {
 		if (state->queue.cancelled) break;
 		errno = 0;
 		int count = getattrlistbulk(fd, &request, buffer, MARMOT_NATIVE_BUFFER_SIZE, FSOPT_ATTR_CMN_EXTENDED);
+		if (count < 0 && asked_clone && marmot_native_clone_rejected(errno)) {
+			marmot_native_clone_attrs_disable();
+			marmot_native_request(&request);
+			asked_clone = 0;
+			continue;
+		}
 		if (count < 0) {
 			char message[128];
 			snprintf(message, sizeof(message), "getattrlistbulk: errno %d", errno);
@@ -1038,8 +1125,6 @@ func (native *nativeScanContext) addNodes(raw []C.marmot_native_entry, includesR
 		// the reclaimable figure is the right input for the advice layer, which is
 		// where the question it answers is actually asked. Wiring it there needs
 		// the two-number model, and that is a decision, not a patch.
-		_ = entry.has_private
-
 		confidence := "exact"
 		if uint32(entry.common_attrs)&(bulkCommonDevid|bulkCommonFileID|bulkCommonModtime) != (bulkCommonDevid | bulkCommonFileID | bulkCommonModtime) {
 			confidence = "partial"
@@ -1048,6 +1133,20 @@ func (native *nativeScanContext) addNodes(raw []C.marmot_native_entry, includesR
 			confidence = "partial"
 		}
 		node := Node{ID: int64(entry.node_id), ParentID: int64(entry.parent_id), Path: path, Name: name, Kind: kind, LogicalSize: logicalSize, AllocatedSize: allocatedSize, OwnedAllocated: allocatedSize, VolumeID: native.volumeID, Confidence: confidence, SizeBasis: "darwin_getattrlistbulk_native_v1", Device: uint64(entry.device), Inode: uint64(entry.file_id), ModifiedAt: time.Unix(int64(entry.mod_seconds), int64(entry.mod_nanoseconds)), HasChildren: kind == "directory"}
+		if kind != "directory" {
+			// The reclaim facts (ADR-0074). Not substituted for allocatedSize --
+			// see the note above -- but carried so the tree can answer "what
+			// comes back" separately from "what it occupies".
+			node.LinkCount = uint32(entry.link_count)
+			node.HasPrivate = entry.has_private != 0
+			if node.HasPrivate {
+				node.PrivateSize = max(int64(entry.private_size), 0)
+			}
+			if entry.has_clone != 0 {
+				node.CloneID = uint64(entry.clone_id)
+				node.CloneRefCount = uint32(entry.clone_refcnt)
+			}
+		}
 		if kind == "directory" {
 			node.LogicalSize = 0
 			node.AllocatedSize = 0

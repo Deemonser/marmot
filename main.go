@@ -51,20 +51,27 @@ func main() {
 	if err != nil {
 		log.Printf("app cache directory unavailable, skipping legacy cleanup: %v", err)
 	}
+	seedDir := ""
+	if legacyCacheDir != "" {
+		// One seed file, fixed name, under the app's own cache directory (ADR-0075 §5).
+		seedDir = filepath.Join(legacyCacheDir, "seed")
+	}
 	core := marmotapp.NewService(marmotapp.Dependencies{
-		LegacyCacheDir: legacyCacheDir,
-		Store:          store,
-		Scanner:        scanner.Scanner{MountResolver: adapter.ListMounts},
-		FileSystem:     adapter,
-		Permissions:    adapter,
-		Trash:          adapter,
-		Volumes:        adapter,
-		Preview:        adapter,
-		Icons:          adapter,
-		VolumeWatcher:  adapter,
-		FileEvents:     adapter,
-		Credentials:    adapter,
-		ScanTotals:     adapter,
+		LegacyCacheDir:   legacyCacheDir,
+		SeedDir:          seedDir,
+		Store:            store,
+		Scanner:          scanner.Scanner{MountResolver: adapter.ListMounts},
+		FileSystem:       adapter,
+		Permissions:      adapter,
+		Trash:            adapter,
+		Volumes:          adapter,
+		Preview:          adapter,
+		Icons:            adapter,
+		VolumeWatcher:    adapter,
+		FileEvents:       adapter,
+		FileEventHistory: adapter,
+		Credentials:      adapter,
+		ScanTotals:       adapter,
 		// The composition root is where a transport is chosen; the application
 		// layer only ever sees the port.
 		AdvisorFactory: buildAdvisor,

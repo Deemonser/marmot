@@ -21,3 +21,7 @@ func openDirectoryAt(int, string) (int, error) {
 }
 
 func closeDirectoryFD(int) {}
+
+// CloneFactsAvailable is false off Darwin: the clone attributes are an APFS
+// notion read through getattrlist (ADR-0074).
+func CloneFactsAvailable() bool { return false }

@@ -83,6 +83,14 @@ export function GetPermissionStatus(): $CancellablePromise<$models.PermissionSta
     return $Call.ByID(37670297);
 }
 
+/**
+ * GetReclaimable is asked for the selected set as a whole whenever the
+ * selection changes; the badge shows its answer, not a sum of the rows.
+ */
+export function GetReclaimable(snapshotID: number, nodeIDs: number[] | null): $CancellablePromise<$models.ReclaimableSummary> {
+    return $Call.ByID(191044847, snapshotID, nodeIDs);
+}
+
 export function GetScanStatus(taskID: string): $CancellablePromise<$models.ScanStatus> {
     return $Call.ByID(173246179, taskID);
 }

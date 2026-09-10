@@ -56,6 +56,8 @@ type Service struct {
 	// fileEvents is optional: without it the result stays as scanned until the
 	// user re-reads or re-scans (ADR-0072).
 	fileEvents       ports.FileEventWatcher
+	historian        ports.FileEventHistorian
+	seedDir          string
 	liveMu           sync.Mutex
 	live             *liveUpdater
 	plans            map[string]*cleanupPlan
@@ -107,9 +109,14 @@ type Dependencies struct {
 	VolumeWatcher ports.VolumeWatcher
 	// FileEvents reports directories whose contents changed, so a finished
 	// result can follow the disk (ADR-0072). Optional.
-	FileEvents  ports.FileEventWatcher
-	Credentials ports.CredentialStore
-	ScanTotals  ports.ScanTotals
+	FileEvents ports.FileEventWatcher
+	// FileEventHistory replays the journal from a recorded position and SeedDir
+	// is where the one seed file lives; together they enable warm starts
+	// (ADR-0075). Both optional: without either, every scan is a full scan.
+	FileEventHistory ports.FileEventHistorian
+	SeedDir          string
+	Credentials      ports.CredentialStore
+	ScanTotals       ports.ScanTotals
 	// AdvisorFactory is injected rather than imported so the application layer
 	// stays free of transport code (PROJECT-STRUCTURE dependency rule).
 	AdvisorFactory AdvisorFactory
@@ -147,8 +154,16 @@ type scanTask struct {
 	// slow walk can be read back phase by phase instead of as one total.
 	startedAt        time.Time
 	progressLoggedAt time.Time
-	cancel           context.CancelFunc
-	affectedParents  map[int64]struct{}
+	// seedEventID is the FSEvents position taken before this scan started, the
+	// one its seed will carry; seedCalibration and fullScanSeconds are inherited
+	// from the seed that was there before, if any. warm says the task is being
+	// brought up from a seed rather than walked (ADR-0075).
+	seedEventID     uint64
+	seedCalibration scan.SeedCalibration
+	fullScanSeconds float64
+	warm            bool
+	cancel          context.CancelFunc
+	affectedParents map[int64]struct{}
 }
 
 type ScanOptions struct {
@@ -181,6 +196,9 @@ type ScanStatus struct {
 	// ExpectedTotalNodes is the previous completed walk's final node count, the
 	// other half of the progress fraction; 0 when there is no node history.
 	ExpectedTotalNodes int64 `json:"expectedTotalNodes"`
+	// Warm: the result is being brought up from a seed and a journal replay
+	// rather than walked (ADR-0075). The UI shows a neutral note, not a scan.
+	Warm bool `json:"warm"`
 }
 
 // ProjectedEntry is one arc below the current level. It carries only what the
@@ -218,6 +236,7 @@ type ScanProgress struct {
 	VolumeUsedBytes    uint64 `json:"volumeUsedBytes"`
 	ExpectedTotalBytes int64  `json:"expectedTotalBytes"`
 	ExpectedTotalNodes int64  `json:"expectedTotalNodes"`
+	Warm               bool   `json:"warm"`
 }
 
 type PermissionStatus struct {
@@ -398,7 +417,11 @@ func NewService(deps Dependencies) *Service {
 	if emit == nil {
 		emit = func(string, any) {}
 	}
-	return &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, icons: deps.Icons, iconCache: make(map[string]string), volumeWatcher: deps.VolumeWatcher, fileEvents: deps.FileEvents, credentials: deps.Credentials, scanTotals: deps.ScanTotals, advisorFactory: deps.AdvisorFactory, legacyCacheDir: deps.LegacyCacheDir, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
+	service := &Service{store: deps.Store, scanner: deps.Scanner, files: deps.FileSystem, permissions: deps.Permissions, trash: deps.Trash, volumes: deps.Volumes, preview: deps.Preview, icons: deps.Icons, iconCache: make(map[string]string), volumeWatcher: deps.VolumeWatcher, fileEvents: deps.FileEvents, historian: deps.FileEventHistory, seedDir: deps.SeedDir, credentials: deps.Credentials, scanTotals: deps.ScanTotals, advisorFactory: deps.AdvisorFactory, legacyCacheDir: deps.LegacyCacheDir, tasks: make(map[string]*scanTask), plans: make(map[string]*cleanupPlan), emit: emit}
+	// A crash between writing and renaming a seed leaves its temporary behind;
+	// nothing else ever cleans it (ADR-0075 §5).
+	service.sweepSeedTemp()
+	return service
 }
 
 // BeginRecovery lets the Wails window become visible before large legacy cache
@@ -1052,6 +1075,11 @@ func (s *Service) StartScan(options ScanOptions) (ScanStatus, error) {
 	if s.scanTotals != nil {
 		task.expectedTotal = s.scanTotals.LoadScanTotal(root)
 	}
+	// Before the walk, not after: a change during the scan must replay next
+	// time (ADR-0075 §3).
+	if s.historian != nil {
+		task.seedEventID = s.historian.CurrentFileEventID()
+	}
 	s.mu.Lock()
 	s.tasks[taskID] = task
 	s.mu.Unlock()
@@ -1100,6 +1128,11 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 		task.mu.Lock()
 		task.volumeUsed = volumeUsed
 		task.mu.Unlock()
+	}
+	// A seed for this root, brought up to date by a replay, is the whole scan
+	// (ADR-0075). Any doubt and it falls through to the walk below.
+	if s.tryWarmStart(ctx, task, volumeItems) {
+		return
 	}
 
 	type persistEvent struct {
@@ -1504,6 +1537,11 @@ func (s *Service) runScan(ctx context.Context, task *scanTask) {
 	}
 	if finalState == "completed" || finalState == "completed_with_issues" {
 		s.startLiveUpdate(task.snapshotID, task.root)
+		// The finished tree becomes the next start's seed (ADR-0075 §1). In the
+		// background: the user is already looking at the result.
+		if header, ok := s.seedHeaderForScan(task, time.Since(scanStarted)); ok {
+			go s.writeSeed(task.snapshotID, header)
+		}
 	}
 	log.Printf("scan %s finished: state=%s elapsed=%s walk=%s tail=%s nodes=%d files=%d dirs=%d bytes=%d issues=%d",
 		task.taskID, finalState, time.Since(scanStarted).Round(time.Millisecond),
@@ -1837,6 +1875,77 @@ func (s *Service) scanRunning() bool {
 // way an arc below the current level can be collected. Capabilities come from
 // mapEntry, the same place the walked level gets them, so a projected arc gains
 // nothing the current level would not already grant.
+// ReclaimableSummary is ADR-0074's figure for the collector: what deleting the
+// selected set together gives back. Bytes is certain; UpperBound is the most
+// that could come back when some member's attributes are unknown; SharedExcluded
+// is what stays because a hardlink or clone group is not wholly selected.
+type ReclaimableSummary struct {
+	SnapshotID     int64 `json:"snapshotId"`
+	Bytes          int64 `json:"bytes"`
+	UpperBound     int64 `json:"upperBound"`
+	SharedExcluded int64 `json:"sharedExcluded"`
+	Unknown        bool  `json:"unknown"`
+	UnknownBytes   int64 `json:"unknownBytes"`
+	Files          int64 `json:"files"`
+}
+
+// GetReclaimable answers for the whole selection at once, because the members'
+// figures do not add (ADR-0074 §2): two clones of one stream reclaim the stream
+// once, and only together. Arithmetic on the tree in memory, no I/O.
+func (s *Service) GetReclaimable(snapshotID int64, nodeIDs []int64) (ReclaimableSummary, error) {
+	result, err := s.store.Reclaimable(snapshotID, nodeIDs)
+	if err != nil {
+		return ReclaimableSummary{}, err
+	}
+	return ReclaimableSummary{
+		SnapshotID: snapshotID, Bytes: result.Bytes, UpperBound: result.UpperBound,
+		SharedExcluded: result.SharedExcluded, Unknown: result.Unknown, UnknownBytes: result.UnknownBytes,
+		Files: result.Files,
+	}, nil
+}
+
+// applyReclaimable puts ADR-0074's figures on an analysis: per item, what
+// deleting that object alone gives back; and on the advice as a whole, what
+// deleting all of them together does (ADR-0074 §6, superseding ADR-0061 §7.4's
+// owned_allocated). The total is asked for as one set rather than summed,
+// because two suggestions can hold the two halves of one clone group and its
+// shared extent comes back once, only when both go.
+//
+// A store that cannot answer leaves the allocated figures in place, which is
+// what this layer reported before ADR-0074; unknown attributes keep the
+// allocated figure too and say so, so nothing here silently becomes zero.
+func (s *Service) applyReclaimable(snapshotID int64, advice *Advice) {
+	ids := make([]int64, 0, len(advice.Items))
+	for index := range advice.Items {
+		ids = append(ids, advice.Items[index].NodeID)
+		result, err := s.store.Reclaimable(snapshotID, []int64{advice.Items[index].NodeID})
+		if err != nil {
+			continue
+		}
+		if result.Unknown {
+			advice.Items[index].ReclaimableUnknown = true
+			continue
+		}
+		advice.Items[index].ReclaimableBytes = result.Bytes
+	}
+	advice.TotalBytes = 0
+	for _, item := range advice.Items {
+		advice.TotalBytes += item.ReclaimableBytes
+	}
+	advice.TotalUpperBound = advice.TotalBytes
+	if len(ids) == 0 {
+		return
+	}
+	total, err := s.store.Reclaimable(snapshotID, ids)
+	if err != nil {
+		return
+	}
+	advice.TotalBytes = total.Bytes
+	advice.TotalUpperBound = total.UpperBound
+	advice.TotalSharedExcluded = total.SharedExcluded
+	advice.TotalUnknown = total.Unknown
+}
+
 func (s *Service) GetNodeEntry(snapshotID, nodeID int64) (MapEntry, error) {
 	if snapshotID <= 0 || nodeID <= 0 {
 		return MapEntry{}, errors.New("snapshot and node are required")
@@ -2330,7 +2439,7 @@ func (s *Service) emitProgress(task *scanTask) {
 	task.affectedParents = make(map[int64]struct{})
 	task.mu.Unlock()
 	s.logProgress(task, status)
-	s.emit("scan-progress", ScanProgress{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: status.Issues, Error: status.Error, SnapshotVersion: version, AffectedParentIDs: affected, CountedBytes: status.CountedBytes, VolumeUsedBytes: status.VolumeUsedBytes, ExpectedTotalBytes: status.ExpectedTotalBytes, ExpectedTotalNodes: status.ExpectedTotalNodes})
+	s.emit("scan-progress", ScanProgress{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: status.Issues, Error: status.Error, SnapshotVersion: version, AffectedParentIDs: affected, CountedBytes: status.CountedBytes, VolumeUsedBytes: status.VolumeUsedBytes, ExpectedTotalBytes: status.ExpectedTotalBytes, ExpectedTotalNodes: status.ExpectedTotalNodes, Warm: status.Warm})
 }
 
 // progressLogEvery throttles the progress line: the emitter runs at up to 5 Hz,
@@ -2381,7 +2490,7 @@ func (t *scanTask) countedBytesLocked() int64 {
 }
 
 func (t *scanTask) statusLocked() ScanStatus {
-	return ScanStatus{TaskID: t.taskID, SnapshotID: t.snapshotID, Root: t.root, State: t.state, Phase: t.phase, Nodes: t.nodes, Files: t.files, Directories: t.directories, Bytes: t.bytes, Issues: append([]string(nil), t.issues...), Error: t.error, CountedBytes: t.countedBytesLocked(), VolumeUsedBytes: t.volumeUsed, ExpectedTotalBytes: t.expectedTotal.Bytes, ExpectedTotalNodes: t.expectedTotal.Nodes}
+	return ScanStatus{TaskID: t.taskID, SnapshotID: t.snapshotID, Root: t.root, State: t.state, Phase: t.phase, Nodes: t.nodes, Files: t.files, Directories: t.directories, Bytes: t.bytes, Issues: append([]string(nil), t.issues...), Error: t.error, CountedBytes: t.countedBytesLocked(), VolumeUsedBytes: t.volumeUsed, ExpectedTotalBytes: t.expectedTotal.Bytes, ExpectedTotalNodes: t.expectedTotal.Nodes, Warm: t.warm}
 }
 
 func mapResult(result scan.MapResult) MapResult {

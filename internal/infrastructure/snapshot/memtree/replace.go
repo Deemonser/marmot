@@ -132,6 +132,7 @@ func (t *tree) replaceSubtree(keep int64, nodes []scan.Node, sizes map[int64]sca
 		if err != nil {
 			return scan.SubtreeReplacement{}, err
 		}
+		t.noteReclaim(id, node, &entry)
 		*t.records.at(id) = entry
 		idMap[node.ID] = id
 		fresh.nodes++
@@ -201,7 +202,7 @@ func (t *tree) replaceSubtree(keep int64, nodes []scan.Node, sizes map[int64]sca
 	t.fileCount += fresh.files - old.files
 	t.directoryCount += fresh.directories - old.directories
 	t.bytes += allocatedDelta
-	t.grouped = false
+	t.markGroupsStale()
 	t.version++
 	return scan.SubtreeReplacement{
 		Nodes: fresh.nodes, Files: fresh.files, Directories: fresh.directories,

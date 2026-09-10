@@ -30,6 +30,41 @@ type Node struct {
 	Inode          uint64
 	ModifiedAt     time.Time
 	HasChildren    bool
+	// The reclaim facts (ADR-0074). LinkCount is how many paths share this
+	// inode. PrivateSize is ATTR_CMNEXT_PRIVATESIZE: the bytes shared with no
+	// other file, which is what deleting this one file alone gives back;
+	// HasPrivate says the volume reported it at all. CloneID names the data
+	// stream and CloneRefCount how many full clones share it (1 = not cloned).
+	// None of this changes AllocatedSize or OwnedAllocated: those answer "how
+	// much does it occupy", these answer "how much comes back", and the two are
+	// kept apart on purpose (DDD 37b).
+	LinkCount     uint32
+	PrivateSize   int64
+	HasPrivate    bool
+	CloneID       uint64
+	CloneRefCount uint32
+}
+
+// Reclaimable is ADR-0074's answer for a SET of nodes: what deleting all of
+// them together gives back. It is defined on the set and not per node because
+// shared blocks -- a hardlink group, a clone group -- come back only when every
+// member goes, so two nodes' figures do not add.
+type Reclaimable struct {
+	// Bytes is what would certainly come back: every member's private size plus
+	// the shared blocks of groups whose every member is in the set.
+	Bytes int64
+	// SharedExcluded is shared blocks that stay because some member of their
+	// group is not in the set (or is outside the scan altogether), plus blocks
+	// shared with something no deletion reaches, such as a snapshot.
+	SharedExcluded int64
+	// Unknown is set when some member's volume did not report the attributes;
+	// UnknownBytes is their allocated size, counted at face value in UpperBound.
+	Unknown      bool
+	UnknownBytes int64
+	// UpperBound is Bytes + SharedExcluded + UnknownBytes: the most that could
+	// come back. It equals the old allocated sum when nothing is shared.
+	UpperBound int64
+	Files      int64
 }
 
 type Issue struct {
@@ -268,4 +303,36 @@ type SubtreeRemoval struct {
 	// Version is the snapshot version after the removal, so a client can tell
 	// this apart from the state it last drew.
 	Version int64
+}
+
+// SeedHeader identifies a seed (ADR-0075): a finished tree written to disk with
+// the FSEvents position it was scanned at. A seed is accepted only when Root,
+// Device and JournalUUID all match the volume being scanned and the replay from
+// EventID is complete and lossless; otherwise it is deleted and a full scan
+// runs. It is never queried as it lies on disk (DDD 37e).
+type SeedHeader struct {
+	Root        string
+	Device      uint64
+	JournalUUID string
+	// EventID is FSEventsGetCurrentEventId() taken BEFORE the scan that produced
+	// the tree, so a change during that scan replays next time (ADR-0075 §3).
+	EventID   uint64
+	WrittenAt time.Time
+	// Calibration is what the last replay on this machine measured; the next
+	// start uses it to predict its own cost before replaying (ADR-0075 §5).
+	Calibration SeedCalibration
+	// FullScanSeconds is how long the last full scan of this root took: the
+	// budget a warm start must stay well inside to be worth attempting.
+	FullScanSeconds float64
+}
+
+// SeedCalibration is the machine's measured ratios for predicting a warm start:
+// directory events per FSEvents ID, replay milliseconds per event, and splice
+// milliseconds per changed directory. Zero means "not measured yet"; the
+// application substitutes R-078's defaults.
+type SeedCalibration struct {
+	EventsPerID      float64
+	DirsPerEvent     float64
+	ReplayMsPerEvent float64
+	SpliceMsPerDir   float64
 }

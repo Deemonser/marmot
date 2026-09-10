@@ -22,6 +22,13 @@ typedef struct {
 	uint32_t link_count;
 	int64_t alloc_size;
 	int64_t data_length;
+	// Reclaim attributes (ADR-0074), same set as the native scanner so a
+	// directory re-read does not turn its files' reclaimable size unknown.
+	int64_t private_size;
+	int has_private;
+	uint64_t clone_id;
+	uint32_t clone_refcnt;
+	int has_clone;
 	int64_t mod_seconds;
 	int64_t mod_nanoseconds;
 	uint32_t mount_status;
@@ -47,6 +54,48 @@ static int marmot_bulk_rewind(int fd) {
 	return lseek(fd, 0, SEEK_SET) < 0 ? -errno : 0;
 }
 
+// Older kernels validate `forkattr` against their own ATTR_CMNEXT_VALIDMASK and
+// fail the whole call when it carries a bit they do not know.
+// ATTR_CMNEXT_CLONE_REFCNT (0x1000) is the newest bit we ask for, and the app
+// supports macOS 12 (build/darwin/Info.plist), so the clone attributes cannot
+// be requested unconditionally: on such a kernel EVERY directory read would
+// fail and the scan would produce an empty tree.
+//
+// Rather than probe, the readers ask for everything and give up the clone
+// attributes the first time a call rejects them, once per process: one wasted
+// syscall per in-flight reader on an old kernel, none on a current one.
+// Measured 2026-09-10 by asking for a bit outside this kernel's VALIDMASK: the
+// answer is ERANGE (34), not EINVAL, so both are treated as "this kernel will
+// not take these attributes" -- an ERANGE from any other cause simply fails
+// again on the retry and is reported as before. `reclaimable` then reports
+// clone groups as unknown, which is what it does for any volume that withholds
+// the attributes (ADR-0074 §4).
+static int marmot_clone_attrs_enabled = 1;
+
+static int marmot_clone_attrs_on(void) {
+	return __atomic_load_n(&marmot_clone_attrs_enabled, __ATOMIC_RELAXED);
+}
+
+// Idempotent: every reader that asked for the clone attributes and got the
+// error retries once on its own, so no thread loses its directory to another
+// thread winning a race to flip the flag.
+static void marmot_clone_attrs_disable(void) {
+	__atomic_store_n(&marmot_clone_attrs_enabled, 0, __ATOMIC_RELAXED);
+}
+
+// ..._clone_rejected says whether an error means "this kernel does not take
+// these attributes". An older kernel validates forkattr against its own
+// ATTR_CMNEXT_VALIDMASK; measured, it answers ERANGE rather than EINVAL.
+static int marmot_clone_rejected(int err) {
+	return err == ERANGE || err == EINVAL;
+}
+
+static attrgroup_t marmot_clone_forkattr(void) {
+	attrgroup_t attrs = ATTR_CMNEXT_PRIVATESIZE;
+	if (marmot_clone_attrs_on()) attrs |= ATTR_CMNEXT_CLONEID | ATTR_CMNEXT_CLONE_REFCNT;
+	return attrs;
+}
+
 static void marmot_bulk_request(struct attrlist *request) {
 	memset(request, 0, sizeof(*request));
 	request->bitmapcount = ATTR_BIT_MAP_COUNT;
@@ -54,6 +103,7 @@ static void marmot_bulk_request(struct attrlist *request) {
 		ATTR_CMN_OBJTYPE | ATTR_CMN_MODTIME | ATTR_CMN_FILEID;
 	request->dirattr = ATTR_DIR_MOUNTSTATUS;
 	request->fileattr = ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE | ATTR_FILE_DATALENGTH;
+	request->forkattr = marmot_clone_forkattr();
 }
 
 static const char *marmot_bulk_entry_name(const marmot_bulk_entry *entry) {
@@ -78,6 +128,7 @@ static int marmot_read_record(const char *record, size_t length, marmot_bulk_ent
 	const uint32_t common = returned->commonattr;
 	const uint32_t dir = returned->dirattr;
 	const uint32_t file = returned->fileattr;
+	const uint32_t fork = returned->forkattr;
 	size_t offset = 24;
 	memset(out, 0, sizeof(*out));
 	out->link_count = 1;
@@ -136,6 +187,22 @@ static int marmot_read_record(const char *record, size_t length, marmot_bulk_ent
 	}
 	if ((file & ATTR_FILE_DATALENGTH) != 0) {
 		if (!marmot_read_i64(record, offset, length, &out->data_length)) return 0;
+		offset += sizeof(int64_t);
+	}
+	// Extended group last, in bit order: PRIVATESIZE, CLONEID, CLONE_REFCNT.
+	if ((fork & ATTR_CMNEXT_PRIVATESIZE) != 0) {
+		if (!marmot_read_i64(record, offset, length, &out->private_size)) return 0;
+		out->has_private = 1;
+		offset += sizeof(int64_t);
+	}
+	if ((fork & ATTR_CMNEXT_CLONEID) != 0) {
+		if (!marmot_read_i64(record, offset, length, (int64_t *)&out->clone_id)) return 0;
+		offset += sizeof(uint64_t);
+	}
+	if ((fork & ATTR_CMNEXT_CLONE_REFCNT) != 0) {
+		if (!marmot_read_u32(record, offset, length, &out->clone_refcnt)) return 0;
+		offset += sizeof(uint32_t);
+		out->has_clone = (fork & ATTR_CMNEXT_CLONEID) != 0;
 	}
 	return 1;
 }
@@ -143,8 +210,16 @@ static int marmot_read_record(const char *record, size_t length, marmot_bulk_ent
 static int marmot_bulk_read(int fd, void *buffer, size_t buffer_size, marmot_bulk_entry *out, int max_entries) {
 	struct attrlist request;
 	marmot_bulk_request(&request);
+	int asked_clone = (request.forkattr & ~(attrgroup_t)ATTR_CMNEXT_PRIVATESIZE) != 0;
 
-	int count = getattrlistbulk(fd, &request, buffer, buffer_size, 0);
+	errno = 0;
+	int count = getattrlistbulk(fd, &request, buffer, buffer_size, FSOPT_ATTR_CMN_EXTENDED);
+	if (count < 0 && asked_clone && marmot_clone_rejected(errno)) {
+		marmot_clone_attrs_disable();
+		marmot_bulk_request(&request);
+		errno = 0;
+		count = getattrlistbulk(fd, &request, buffer, buffer_size, FSOPT_ATTR_CMN_EXTENDED);
+	}
 	if (count < 0) return -errno;
 	if (count == 0) return 0;
 	const char *bytes = (const char *)buffer;
@@ -167,9 +242,17 @@ static int marmot_bulk_too_many_entries(void) {
 static int marmot_bulk_read_directory_fd(int fd, void *buffer, size_t buffer_size, marmot_bulk_entry *out, int max_entries) {
 	struct attrlist request;
 	marmot_bulk_request(&request);
+	int asked_clone = (request.forkattr & ~(attrgroup_t)ATTR_CMNEXT_PRIVATESIZE) != 0;
 	int parsed = 0;
 	for (;;) {
-		int count = getattrlistbulk(fd, &request, buffer, buffer_size, 0);
+		errno = 0;
+		int count = getattrlistbulk(fd, &request, buffer, buffer_size, FSOPT_ATTR_CMN_EXTENDED);
+		if (count < 0 && asked_clone && marmot_clone_rejected(errno)) {
+			marmot_clone_attrs_disable();
+			marmot_bulk_request(&request);
+			asked_clone = 0;
+			continue;
+		}
 		if (count < 0) return -errno;
 		if (count == 0) return parsed;
 		const char *bytes = (const char *)buffer;
@@ -317,6 +400,17 @@ func closeDirectoryFD(fd int) {
 	}
 }
 
+// CloneFactsAvailable says whether this kernel accepted the clone attributes.
+// It is only meaningful after at least one directory has been read: the
+// readers ask for them and give them up on the first rejection (see the note
+// on marmot_clone_attrs_enabled). False means clone groups cannot be
+// identified, so a set holding both halves of a clone reports the shared
+// extent as excluded rather than reclaimed -- conservative, never inflated
+// (ADR-0074 §4).
+func CloneFactsAvailable() bool {
+	return C.marmot_clone_attrs_on() != 0
+}
+
 func decodeBulkEntries(rawEntries []C.marmot_bulk_entry, count int) ([]directoryEntry, error) {
 	result := make([]directoryEntry, 0, count)
 	for index := 0; index < count; index++ {
@@ -349,6 +443,10 @@ func decodeBulkEntries(rawEntries []C.marmot_bulk_entry, count int) ([]directory
 			device:        uint64(raw.device),
 			inode:         uint64(raw.file_id),
 			linkCount:     uint64(raw.link_count),
+			privateSize:   max(int64(raw.private_size), 0),
+			hasPrivate:    raw.has_private != 0,
+			cloneID:       uint64(raw.clone_id),
+			cloneRefCount: uint32(raw.clone_refcnt),
 			modifiedAt:    time.Unix(int64(raw.mod_seconds), int64(raw.mod_nanoseconds)),
 			isDirectory:   raw.objtype == 2,
 			isSymlink:     raw.objtype == 5,

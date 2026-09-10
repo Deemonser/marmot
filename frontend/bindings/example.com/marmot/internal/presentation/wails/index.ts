@@ -33,6 +33,7 @@ export type {
     NodeView,
     PermissionStatus,
     ProjectedEntry,
+    ReclaimableSummary,
     RereadResult,
     ScanOptions,
     ScanProgress,

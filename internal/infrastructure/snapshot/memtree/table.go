@@ -6,7 +6,8 @@ import (
 	"time"
 )
 
-// record is one node, packed (ADR-0056 §1). 56 bytes, and deliberately without
+// record is one node, packed (ADR-0056 §1). 64 bytes (56 of fields, aligned to
+// 8; TestRecordStaysPacked pins it), and deliberately without
 // two things the obvious layout would carry:
 //
 //   - no node ID: the ID *is* the index into the table. The scanner numbers nodes
@@ -38,6 +39,14 @@ type record struct {
 
 const (
 	flagHasChildren uint8 = 1 << 0
+	// flagReclaimUnknown: the volume did not report the reclaim attributes for
+	// this file, so its reclaimable size is unknown (ADR-0074 §4).
+	flagReclaimUnknown uint8 = 1 << 1
+	// flagReclaimException: this file has an entry in the reclaim side table --
+	// its private size differs from allocated, or it is hardlinked, or it is a
+	// member of a clone group. A file with neither flag reclaims exactly what it
+	// occupies, and the side table is never consulted for it.
+	flagReclaimException uint8 = 1 << 2
 )
 
 // codeTable interns the handful of distinct strings the scanner repeats on every

@@ -44,6 +44,45 @@ func (s *Store) CreateSnapshot(taskID, root string) (int64, error) {
 	return id, nil
 }
 
+// BeginRefreshBatch / EndRefreshBatch bracket a run of RefreshDirectory /
+// ReplaceSubtree calls so the child index is rebuilt once at the end instead of
+// after every changed directory (see tree.markGroupsStale).
+func (s *Store) BeginRefreshBatch(snapshotID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, err := s.treeFor(snapshotID)
+	if err != nil {
+		return err
+	}
+	result.beginBatch()
+	return nil
+}
+
+func (s *Store) EndRefreshBatch(snapshotID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, err := s.treeFor(snapshotID)
+	if err != nil {
+		return err
+	}
+	result.endBatch()
+	return nil
+}
+
+// ResetSnapshot empties a snapshot's tree in place, keeping its ID: what a warm
+// start does when the seed it loaded turns out unusable, so the scan that
+// follows writes into the snapshot the caller was already told about.
+func (s *Store) ResetSnapshot(snapshotID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, err := s.treeFor(snapshotID)
+	if err != nil {
+		return err
+	}
+	s.trees[snapshotID] = newTree(old.taskID, old.root)
+	return nil
+}
+
 func (s *Store) treeFor(snapshotID int64) (*tree, error) {
 	result, ok := s.trees[snapshotID]
 	if !ok {
@@ -262,6 +301,19 @@ func (s *Store) Children(snapshotID, parentID int64, limit, offset int) ([]scan.
 		return nil, err
 	}
 	return (&treeQuery{snapshotID: snapshotID, tree: result}).mapChildren(parentID, limit, offset)
+}
+
+// Reclaimable is ADR-0074 §2 for a set of nodes; see tree.reclaimable.
+func (s *Store) Reclaimable(snapshotID int64, nodeIDs []int64) (scan.Reclaimable, error) {
+	// Lock, not RLock: the walk uses the child grouping and seals the side
+	// table, both of which it may have to build.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, err := s.treeFor(snapshotID)
+	if err != nil {
+		return scan.Reclaimable{}, err
+	}
+	return result.reclaimable(nodeIDs), nil
 }
 
 func (s *Store) Map(query scan.MapQuery) (scan.MapResult, error) {

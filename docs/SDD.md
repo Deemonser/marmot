@@ -112,6 +112,7 @@ ScanCoordinator
 - 缓存必须有 TTL、版本号、容量上限和失效策略；
 - 扫描取消必须有明确的发布边界，不能在取消后继续发布新快照；
 - 硬链接按卷内身份去重；完整克隆通过公开 `getattrlist` metadata 处理，部分共享块标记为未知或估算。
+  两个数（ADR-0074，§6）：`allocated` 供空间图，`reclaimable` 供收集区/计划/建议，按硬链接组与克隆组归属共享区段。
 - 不跟随符号链接；挂载卷、系统快照、FileProvider 占位项和权限错误使用独立状态。
 - macOS 使用 `getfsstat(MNT_NOWAIT)` 获取挂载表；扫描根范围内的嵌套挂载点不递归，Data 不因
   `/System/Volumes/Data` 被追加而与 firmlink 重复。
@@ -353,20 +354,54 @@ Application 事件队列的容量和 writer 聚合批次由 [R-028](research/R-0
 >
 > 内存事实源的实际约束见本节前面的"扫描结果只存在于内存"与"内存布局"。
 
+### 5.5 热启动：快照种子与 FSEvents 历史回放（ADR-0075）
+
+扫描以 `completed` / `completed_with_issues` 结束后，Application 异步把 `memtree` 的记录页与名字 arena 页**原样**写到
+应用缓存目录下一个固定文件名（每个扫描根一份，文件名取根路径的稳定散列；临时文件写完 `fsync` 后 `rename` 替换）。
+头部：格式版本、扫描**开始前**取的 `FSEventsGetCurrentEventId()`、根路径、设备号、FSEvents 日志 UUID
+（`FSEventsCopyUUIDForDevice`）、根节点 ID、四个编码表、卷数字、issue 列表、以及上次回放实测的
+（事件数 / ID 跨度）与（耗时 / 事件数）两个自校准参数。子节点分组数组不落盘（`group()` 约 0.2 s 重建）。
+
+源页选中一个根时：
+
+1. 存在种子且头部四项（根、设备、UUID、格式版本）匹配，否则全扫。
+2. `span = 当前 eventID − 种子.eventID`；按自校准参数估算回放耗时，超过"全扫的三分之一"（初值：跨度 3 M ID）→
+   删种子、全扫，**不启回放**。
+3. 并行：读种子（`internal/infrastructure/snapshot/memtree`，R-078 实测 0.25 – 0.30 s 含 `group()`）；
+   `ports.FileEventHistory` 从 `种子.eventID` 回放到 `HistoryDone`，硬超时 6 s。
+4. 回放出现 `EventIdsWrapped / UserDropped / KernelDropped / RootChanged` 任一、超时、或变更目录数超上限 → 丢弃已读种子、全扫。
+5. 通过：种子升级为当前快照；回放清单转成与 §13h 同形的一批 `ports.FileEvent`（去尾斜杠，`MustScanSubDirs` 按目录取或），
+   **走 §13h 同一段拼接代码**；一次 `group()`、一次 `statfs`；进入结果页；随后照 §13h 开实时监听。
+
+约束：种子不是查询源（§7），不出现在任何 UI；进度条在种子路径上显示中性文案（"正在核对变化…"），不显示扫描进度；
+放弃原因写日志（跨度 / 标志 / 头部 / 超时）。格式版本必须随 `record` 布局、编码表、目录尺寸语义的变化递增，
+并有测试钉住"格式版本与记录布局一致"。缓存目录里种子恰好一份，`<= 512 MiB`，切换根删除旧种子，启动清理 `.tmp`。
+门禁见 ADR-0075。R-078 的预算：闲置 ≤ 6 h 约 1 – 2.5 s，24 h 约 9 – 13 s，7 天必须全扫。
+
 ## 6. 空间数据模型
 
 节点不能只有一个 `size` 字段，至少需要：
 
 ```text
 logical_size       文件逻辑长度
-allocated_size     卷上实际占用估计
-owned_allocated    去重后的归属占用
+allocated_size     卷上实际占用估计（表观分配，ATTR_FILE_ALLOCSIZE）
+owned_allocated    与 allocated_size 恒等（R-053）；硬链接第二条起为 0；空间图用它
+reclaimable        可回收量（ADR-0074）：旁表，不扩 64 字节记录
 volume_id          节点所在挂载卷身份
 size_confidence    精确 / 估算 / 部分 / 未知
 size_basis         计算口径和版本
 ```
 
 Treemap/Sunburst 默认使用 `owned_allocated`；不可得时必须降级并在界面标明口径。
+
+**两个数（ADR-0074）。** `allocated` 回答"占多少地方"，`reclaimable` 回答"删了拿回多少"；两者不得互相替代
+（ADR-0052 §2 / R-065 §2.1）。`reclaimable` 对**集合** S 定义：`Σ private(f)` + `Σ shared(g)`，后者只对
+"全部成员都在 S 内"的共享组 g 计入。共享组两种：硬链接组以 `(device, inode)` 为身份、`ATTR_FILE_LINKCOUNT` 为组大小、
+共享区段为该 inode 的 `allocated`；克隆组以 `ATTR_CMNEXT_CLONEID` 为身份、`ATTR_CMNEXT_CLONE_REFCNT` 为组大小、
+共享区段为 `allocated − private`。三个扩展属性随同一次 `getattrlistbulk(FSOPT_ATTR_CMN_EXTENDED)` 返回，无额外系统调用。
+存储为**旁表**：只记 `private ≠ allocated` 的文件与 `refcnt > 1` 的克隆成员（节点 ID → 私有大小、克隆 ID、组大小），
+目录上滚一个"私有之和"；旁表计入后稳态内存仍须 `<= 280 MiB`（ADR-0058 门禁 4），否则退为收集时按需读（ADR-0074 方案 B）。
+扩展属性缺失（封印系统快照卷不返回）的对象 `reclaimable` 为**未知**，不得当 0 也不得当满额。
 
 ## 7. 快照和查询
 
@@ -404,8 +439,12 @@ Treemap/Sunburst 默认使用 `owned_allocated`；不可得时必须降级并在
 
 **扫描结果只存在于内存（ADR-0055）。** 没有快照文件、没有 manifest、没有索引、没有缓存预算、没有剪除。
 枚举结束时结果就地变为可查询，扫描即结束——此前"可见终态"与"durable 发布完成"两个事实塌缩为一个。
-启动时内存里没有结果，源页只提供"扫描"；**不得**从任何磁盘残留恢复，也不得暗示结果可恢复。
+启动时内存里没有结果，源页只提供"扫描"；**不得**从任何磁盘残留**查询**，也不得暗示结果可恢复。
 代价如实呈现：崩溃即全失。
+
+**种子不是第二个存储（ADR-0075）。** §5.5 的种子文件不可查询、不出现在 UI、不参与清理计划校验；它唯一的出路是
+经回放校验后整份升级为本节的内存树，或整份删除。升级后的树与冷扫得到的树走同一个 `SnapshotStore`、同一套查询、
+同一个实时监听，任何代码都不得区分两者。
 
 **内存布局（ADR-0056，第 1 条由 ADR-0057 §3 替代）。** `internal/infrastructure/snapshot/memtree`：
 
@@ -427,7 +466,8 @@ Treemap/Sunburst 默认使用 `owned_allocated`；不可得时必须降级并在
   那份副本正是 2× 峰值的来源。分组**按需重建**：插入与改写 roll-up 使其失效，查询时重建一次
   （`O(n)`，实测 `0.04s`），这样 `TopLevelPublish` 之后的后端可查询边界（ADR-0014/0027）仍然成立。
 - **roll-up 直接写回记录**，不另建目录尺寸表；`allocatedSize` 与 `ownedAllocated` 合成一个字段
-  （二者恒等，R-053），引入 `privatesize`（ADR-0052 §2）需要**新增**字段而不是复用它。
+  （二者恒等，R-053），引入 `privatesize`（ADR-0052 §2）需要**新增**字段而不是复用它——ADR-0074 以**旁表**承载
+  `reclaimable`，记录仍是 64 字节。
 
 **扫描器侧的对应约束（ADR-0057 §3）**：按节点 ID 索引的结构一律是稠密数组而不是 map。
 节点 ID 由单一计数器分配（根为 `1`），所以 `dirOrdinal[nodeID]` 直接给出目录序号，
@@ -736,6 +776,11 @@ Shell。原生 bridge 位于 Platform 层并遵守 AppKit 主线程和 Wails 窗
 Collector 只是前端会话内的选择视图，最终必须映射为可审查的 `CleanupPlan`；加入 Collector 不
 触发文件操作。聚合项、卷根、扫描根、特殊文件和权限不明对象不能加入计划。该边界由
 [ADR-0015](adr/0015-macOS预览Finder定位与收集区平台边界.md) 锁定。
+
+**收集区的数字是 `reclaimable`，不是 `allocated`（ADR-0074）。** 徽标、倒计时文案、删除后的"已释放"汇总三处同一口径，
+由后端对**整个已选集合**计算：先按硬链接组与克隆组归并，再算"私有之和 + 整组在集合内的共享区段"；前端不再逐条 `reduce`。
+集合含 `reclaimable` 未知的成员时显示上界 `≤ N`。收集了一组克隆里的一份时徽标为 0，并附一行说明
+（"与未收集的对象共享"）。
 
 ## 10. 清理安全
 
@@ -1433,6 +1478,9 @@ dropped / dirty / version`。
 前端至多每 1.5 s 重查一次当前层；拖拽、倒计时、删除中、Map 忙时不重绘，事后补一次；收集区行按保留 ID 刷新，
 消失者移出并提示。创建计划前：跟随中且无丢事件则跳过 §10 的重读，否则照旧。
 
+**同一段拼接代码有第二个调用方（ADR-0075）**：热启动时 FSEvents 历史回放得到的目录清单，转成同形的一批事件后走
+本节的路径，父先于子、找不到即跳过、`MustScanSubDirs` 深读，一批一次 `group()`。不得为种子写第二套拼接。
+
 **删除前的身份核对不变**（ADR-0071 §1）：监听是异步的、可能丢事件，"删的是不是那个对象"只能在动手那一刻由
 一次 `lstat` 回答。硬链接在浅刷新里按全量计（链表是每次扫描一份），与扫描口径有出入，直到下次扫描或深读。
 事件路径与树路径同形（Data 卷以 firmlink 形态 `/Users/...` 报回，`/tmp` 报为 `/private/tmp`），无需转换。
@@ -1562,7 +1610,7 @@ ADR-0068 §3 之前是两张表两趟，而两张表都含 `**/` 模式，于是
    标签**一致——渲染与标签索引共用同一次遍历，两者不得漂移；
 2. `cleanup.DeleteBlock(path)` 为空，否则降级为"仅说明"并标注拒绝原因；
 3. 建议之间无父子重叠（`cleanup.HasOverlappingPaths`）；
-4. 可回收字节一律以快照 `owned_allocated` 覆盖模型给的数字；
+4. 可回收字节一律以快照的 `reclaimable`（ADR-0074）覆盖模型给的数字；`reclaimable` 未知时退回 `owned_allocated` 并在事实里标注；
 5. 未通过的丢弃并计数，UI 显示被丢弃的条数；
 6. 模型回复里若带 `risk` 字段，忽略而非拒绝；风险等级只由 §14.5h 推导（ADR-0067）。
 

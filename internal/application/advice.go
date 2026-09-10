@@ -290,10 +290,19 @@ type AdviceItem struct {
 type Advice struct {
 	SnapshotID int64
 	Items      []AdviceItem
-	// TotalBytes is the sum over items. The items never overlap, so this is a
-	// real total and not an upper bound.
-	TotalBytes int64
-	RuleItems  int
+	// TotalBytes is what deleting every suggested object TOGETHER would give
+	// back, asked of the tree as one set (ADR-0074 §2). Not a sum over the
+	// items: they never overlap as paths, but two of them can still hold the
+	// two halves of one clone or hardlink group, whose shared extent comes back
+	// once and only when both go. TotalSharedExcluded is what stays because
+	// some group's other members are not among the suggestions; TotalUnknown
+	// says some object's volume did not report its reclaimable size, in which
+	// case TotalUpperBound is the honest ceiling and TotalBytes the floor.
+	TotalBytes          int64
+	TotalUpperBound     int64
+	TotalSharedExcluded int64
+	TotalUnknown        bool
+	RuleItems           int
 	// AdvisorItems stays zero until an Advisor is wired in; the rule layer is
 	// the floor that works without one.
 	AdvisorItems int
@@ -336,7 +345,11 @@ func (s *Service) GetCleanupAdvice(snapshotID int64) (Advice, error) {
 	if err != nil {
 		return Advice{}, err
 	}
-	return adviceFromPack(snapshotID, pack), nil
+	advice := adviceFromPack(snapshotID, pack)
+	// The pack's figures are allocated sizes; the collector-grade answer is what
+	// deleting these objects gives back (ADR-0074 §6).
+	s.applyReclaimable(snapshotID, &advice)
+	return advice, nil
 }
 
 // RuleFindings is the floor: what the catalog knows, produced without any model

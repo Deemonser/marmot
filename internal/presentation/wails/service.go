@@ -42,6 +42,8 @@ type ScanStatus struct {
 	// Zero on the first-ever scan of a root.
 	ExpectedTotalBytes int64 `json:"expectedTotalBytes"`
 	ExpectedTotalNodes int64 `json:"expectedTotalNodes"`
+	// Warm: brought up from a seed and a journal replay, not walked (ADR-0075).
+	Warm bool `json:"warm"`
 }
 
 // ProjectedEntry is one arc below the current level. It carries only what the
@@ -97,6 +99,7 @@ type ScanProgress struct {
 	VolumeUsedBytes    uint64 `json:"volumeUsedBytes"`
 	ExpectedTotalBytes int64  `json:"expectedTotalBytes"`
 	ExpectedTotalNodes int64  `json:"expectedTotalNodes"`
+	Warm               bool   `json:"warm"`
 }
 
 type PermissionStatus struct {
@@ -264,8 +267,11 @@ type AdviceItem struct {
 	RuleName         string `json:"ruleName"`
 	Category         string `json:"category"`
 	ReclaimableBytes int64  `json:"reclaimableBytes"`
-	Recovery         string `json:"recovery"`
-	Risk             string `json:"risk"`
+	// ReclaimableUnknown: the bytes above are the allocated size because the
+	// volume did not say what deleting the object gives back (ADR-0074 §4).
+	ReclaimableUnknown bool   `json:"reclaimableUnknown"`
+	Recovery           string `json:"recovery"`
+	Risk               string `json:"risk"`
 	// RiskReasons are the codes behind the tier (ADR-0067); the frontend
 	// translates them. Activity and IdleDays name the signal, when there is one.
 	RiskReasons  []string `json:"riskReasons"`
@@ -280,11 +286,18 @@ type AdviceItem struct {
 }
 
 type Advice struct {
-	SnapshotID   int64        `json:"snapshotId"`
-	Items        []AdviceItem `json:"items"`
-	TotalBytes   int64        `json:"totalBytes"`
-	RuleItems    int          `json:"ruleItems"`
-	AdvisorItems int          `json:"advisorItems"`
+	SnapshotID int64        `json:"snapshotId"`
+	Items      []AdviceItem `json:"items"`
+	// TotalBytes is the set answer: what deleting every suggestion together
+	// gives back, with a clone or hardlink group's shared extent counted once
+	// and only when the whole group is in the list (ADR-0074 §2). UpperBound
+	// exceeds it when some object's reclaimable size is unknown.
+	TotalBytes          int64 `json:"totalBytes"`
+	TotalUpperBound     int64 `json:"totalUpperBound"`
+	TotalSharedExcluded int64 `json:"totalSharedExcluded"`
+	TotalUnknown        bool  `json:"totalUnknown"`
+	RuleItems           int   `json:"ruleItems"`
+	AdvisorItems        int   `json:"advisorItems"`
 	// RejectedSummary says in words what was refused and why. Shown rather than
 	// hidden: a tool that reports its own model's bad suggestions is easier to
 	// trust than one that quietly shows fewer rows.
@@ -425,8 +438,8 @@ func adviceView(advice application.Advice) Advice {
 		items = append(items, AdviceItem{
 			NodeID: item.NodeID, Name: item.Name, Path: item.Path,
 			Source: string(item.Source), RuleName: item.RuleName, Category: item.Category,
-			ReclaimableBytes: item.ReclaimableBytes,
-			Recovery:         string(item.Recovery), Risk: string(item.Risk),
+			ReclaimableBytes: item.ReclaimableBytes, ReclaimableUnknown: item.ReclaimableUnknown,
+			Recovery: string(item.Recovery), Risk: string(item.Risk),
 			RiskReasons: append([]string{}, item.RiskReasons...),
 			Activity:    string(item.Activity), IdleDays: item.IdleDays,
 			Confidence: item.Confidence, Evidence: append([]string{}, item.Evidence...),
@@ -440,6 +453,7 @@ func adviceView(advice application.Advice) Advice {
 	}
 	return Advice{
 		SnapshotID: advice.SnapshotID, Items: items, TotalBytes: advice.TotalBytes,
+		TotalUpperBound: advice.TotalUpperBound, TotalSharedExcluded: advice.TotalSharedExcluded, TotalUnknown: advice.TotalUnknown,
 		RuleItems: advice.RuleItems, AdvisorItems: advice.AdvisorItems, Rejected: rejected,
 		RejectedSummary: advice.RejectedSummary, CorrectionSummary: advice.CorrectionSummary,
 		Corrections:  len(advice.Corrections),
@@ -625,6 +639,32 @@ func aggregateMapEntries(entries []MapEntry) MapEntry {
 	return aggregate
 }
 
+// ReclaimableSummary mirrors the application type: ADR-0074's figure for the
+// collector's whole selection. Bytes is certain, UpperBound the most that could
+// come back, SharedExcluded what stays because a group is not wholly selected.
+type ReclaimableSummary struct {
+	SnapshotID     int64 `json:"snapshotId"`
+	Bytes          int64 `json:"bytes"`
+	UpperBound     int64 `json:"upperBound"`
+	SharedExcluded int64 `json:"sharedExcluded"`
+	Unknown        bool  `json:"unknown"`
+	UnknownBytes   int64 `json:"unknownBytes"`
+	Files          int64 `json:"files"`
+}
+
+// GetReclaimable is asked for the selected set as a whole whenever the
+// selection changes; the badge shows its answer, not a sum of the rows.
+func (s *Service) GetReclaimable(snapshotID int64, nodeIDs []int64) (ReclaimableSummary, error) {
+	result, err := s.application.GetReclaimable(snapshotID, nodeIDs)
+	if err != nil {
+		return ReclaimableSummary{}, err
+	}
+	return ReclaimableSummary{
+		SnapshotID: result.SnapshotID, Bytes: result.Bytes, UpperBound: result.UpperBound,
+		SharedExcluded: result.SharedExcluded, Unknown: result.Unknown, UnknownBytes: result.UnknownBytes, Files: result.Files,
+	}, nil
+}
+
 // GetNodeEntry is how the frontend collects an arc from a ring below the current
 // level: the projection it drew that arc from carries no path and no
 // capabilities, so the node has to be looked up by ID before anything may act on
@@ -786,11 +826,11 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 }
 
 func scanStatus(status application.ScanStatus) ScanStatus {
-	return ScanStatus{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: append([]string{}, status.Issues...), Error: status.Error, CountedBytes: status.CountedBytes, VolumeUsedBytes: status.VolumeUsedBytes, ExpectedTotalBytes: status.ExpectedTotalBytes, ExpectedTotalNodes: status.ExpectedTotalNodes}
+	return ScanStatus{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: append([]string{}, status.Issues...), Error: status.Error, CountedBytes: status.CountedBytes, VolumeUsedBytes: status.VolumeUsedBytes, ExpectedTotalBytes: status.ExpectedTotalBytes, ExpectedTotalNodes: status.ExpectedTotalNodes, Warm: status.Warm}
 }
 
 func ScanProgressView(progress application.ScanProgress) ScanProgress {
-	return ScanProgress{TaskID: progress.TaskID, SnapshotID: progress.SnapshotID, Root: progress.Root, State: progress.State, Phase: progress.Phase, Nodes: progress.Nodes, Files: progress.Files, Directories: progress.Directories, Bytes: progress.Bytes, Issues: append([]string{}, progress.Issues...), Error: progress.Error, SnapshotVersion: progress.SnapshotVersion, AffectedParentIDs: append([]int64{}, progress.AffectedParentIDs...), CountedBytes: progress.CountedBytes, VolumeUsedBytes: progress.VolumeUsedBytes, ExpectedTotalBytes: progress.ExpectedTotalBytes, ExpectedTotalNodes: progress.ExpectedTotalNodes}
+	return ScanProgress{TaskID: progress.TaskID, SnapshotID: progress.SnapshotID, Root: progress.Root, State: progress.State, Phase: progress.Phase, Nodes: progress.Nodes, Files: progress.Files, Directories: progress.Directories, Bytes: progress.Bytes, Issues: append([]string{}, progress.Issues...), Error: progress.Error, SnapshotVersion: progress.SnapshotVersion, AffectedParentIDs: append([]int64{}, progress.AffectedParentIDs...), CountedBytes: progress.CountedBytes, VolumeUsedBytes: progress.VolumeUsedBytes, ExpectedTotalBytes: progress.ExpectedTotalBytes, ExpectedTotalNodes: progress.ExpectedTotalNodes, Warm: progress.Warm}
 }
 
 func nodeView(node scan.Node) NodeView {

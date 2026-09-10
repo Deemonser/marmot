@@ -41,6 +41,62 @@ type FileEvent struct {
 // batches coalesced by the system over roughly `latency` (ADR-0072). onEvents
 // may be called from any thread; the application layer batches further and
 // resolves each path against its own tree. stop ends the stream.
+// FileEventHistoryReport is what replaying the FSEvents journal from a recorded
+// ID produced (ADR-0075): how much changed, whether the journal could answer
+// reliably, and how long it took. Directories carries every reported path with
+// its event count and whether the system asked for the whole subtree.
+type FileEventHistoryReport struct {
+	Since   uint64
+	FirstID uint64
+	LastID  uint64
+	Events  uint64
+	// Directories maps a directory path (as reported, usually with a trailing
+	// slash) to how many events named it.
+	Directories map[string]uint64
+	// SubtreeRescan lists the directories the journal coalesced: their whole
+	// subtree must be re-read, not just the directory.
+	SubtreeRescan   map[string]struct{}
+	MustScanSubDirs uint64
+	// Any of these being non-zero means the replay is not a reliable record of
+	// what changed and a caller must fall back to a full scan.
+	IDsWrapped    uint64
+	UserDropped   uint64
+	KernelDropped uint64
+	RootChanged   uint64
+	// HistoryDone is false when the replay hit the timeout first.
+	HistoryDone bool
+	Elapsed     time.Duration
+}
+
+// Reliable says whether the journal answered completely and without loss.
+func (r FileEventHistoryReport) Reliable() bool {
+	return r.HistoryDone && r.IDsWrapped == 0 && r.UserDropped == 0 && r.KernelDropped == 0 && r.RootChanged == 0
+}
+
+// FileEventHistorian replays the FSEvents journal from a recorded position and
+// names the journal a position belongs to (ADR-0075). Optional: without it a
+// seed is never written and every scan is a full scan.
+type FileEventHistorian interface {
+	FileEventHistory(root string, since uint64, latency, timeout time.Duration) (FileEventHistoryReport, error)
+	// CurrentFileEventID is the journal's "now".
+	CurrentFileEventID() uint64
+	// FileEventJournalIdentity is the device holding path and the UUID of the
+	// journal that issues its event IDs; a stored ID is void if either changed.
+	FileEventJournalIdentity(path string) (device uint64, uuid string, err error)
+}
+
+// SeedStore writes a finished result as a seed and loads one back (ADR-0075).
+// LoadSeed fills the empty tree a scan just created; the caller then splices
+// the replayed changes and finishes the scan, so a loaded seed is
+// indistinguishable from a scanned tree once it is current. ResetSnapshot
+// empties that tree again when the seed turns out unusable after loading.
+type SeedStore interface {
+	WriteSeed(snapshotID int64, path string, header scan.SeedHeader) (int64, error)
+	ReadSeedHeader(path string) (scan.SeedHeader, error)
+	LoadSeed(snapshotID int64, path string) (scan.SeedHeader, error)
+	ResetSnapshot(snapshotID int64) error
+}
+
 type FileEventWatcher interface {
 	WatchFileEvents(root string, latency time.Duration, onEvents func([]FileEvent)) (stop func(), err error)
 }
@@ -67,6 +123,11 @@ type SnapshotStore interface {
 	// arithmetic on the tree in memory; the age is what the catalog rules with a
 	// staleness condition are evaluated against.
 	SubtreeFacts(int64, int64) (scan.SubtreeFacts, error)
+	// Reclaimable is what deleting a SET of nodes together gives back (ADR-0074):
+	// private sizes plus the shared blocks of hardlink and clone groups whose
+	// every member is in the set. Defined on the set because members' figures
+	// do not add. Arithmetic on the tree in memory; the collector asks it.
+	Reclaimable(int64, []int64) (scan.Reclaimable, error)
 	Map(scan.MapQuery) (scan.MapResult, error)
 	NodeByID(int64, int64) (scan.Node, error)
 	SnapshotVersion(int64) (int64, error)
