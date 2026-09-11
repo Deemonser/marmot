@@ -124,6 +124,11 @@ const deleteRevealAfterMs = 1500;
 // just after the reveal would flash the ring for a frame or two, which is worse
 // than never showing it.
 const deleteProgressMinMs = 400;
+// How long after a deletion to take the volume list's second reading. The
+// filesystem's used-bytes figure follows an unlink within about 800ms (measured
+// in internal/probe), so this clears it with margin while still landing before
+// the user has finished reading the "空间已释放" notice.
+const storageSettleMs = 1500;
 // Pixels the pointer must travel before a press turns into a drag instead of a
 // click. Below this the wheel still navigates and the list still selects.
 const dragThreshold = 6;
@@ -3179,6 +3184,21 @@ export default function App() {
       // do it reports removed === 0, and then a re-scan is the only honest way
       // back into step.
       if (moved.length > 0) {
+        // The volume list is a second reading of the same disk, taken live from
+        // the filesystem rather than from the snapshot, and a deletion changes
+        // what it says. It used to be re-read only when a scan FINISHED, which
+        // was enough while every cleanup ended in a re-scan; the in-place update
+        // below removed that scan and with it the refresh, so the result page
+        // showed the space back and the source page behind it still showed the
+        // disk as full. Re-read here instead, where the space actually changed.
+        //
+        // Twice, because the filesystem's own figure lags the unlink a little.
+        // Measured (internal/probe, TestStorageSourceUsageFollowsTheDisk): a
+        // 600 MB deletion appears in it between 0 and 800ms later. The first
+        // read usually has it; the second is for when it does not, and costs a
+        // getattrlist per volume.
+        void loadStorageSources();
+        window.setTimeout(() => { void loadStorageSources(); }, storageSettleMs);
         const page = pageRef.current;
         if (applied.removed > 0 && page && loadMapRef.current) {
           void loadMapRef.current(page, "replace", undefined, false);
