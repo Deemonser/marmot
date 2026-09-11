@@ -3,6 +3,9 @@ package wails
 import (
 	"context"
 	"encoding/json"
+	"log"
+	"reflect"
+	"strings"
 	"time"
 
 	"example.com/marmot/internal/application"
@@ -827,6 +830,44 @@ func (s *Service) ExecuteCleanupPlan(planID string, version int64) (CleanupPlan,
 
 func scanStatus(status application.ScanStatus) ScanStatus {
 	return ScanStatus{TaskID: status.TaskID, SnapshotID: status.SnapshotID, Root: status.Root, State: status.State, Phase: status.Phase, Nodes: status.Nodes, Files: status.Files, Directories: status.Directories, Bytes: status.Bytes, Issues: append([]string{}, status.Issues...), Error: status.Error, CountedBytes: status.CountedBytes, VolumeUsedBytes: status.VolumeUsedBytes, ExpectedTotalBytes: status.ExpectedTotalBytes, ExpectedTotalNodes: status.ExpectedTotalNodes, Warm: status.Warm}
+}
+
+// EventView is the event side of the translation every method result already
+// gets: an application payload in, the view type the event was registered with
+// out.
+//
+// It is not tidying. RegisterEvent records the exact Go type each event name
+// carries, and the emitter CANCELS an event whose data is a different type --
+// the window is told nothing, and the only trace is a line in the error handler.
+// So a payload that reaches Emit still wearing its application type never
+// leaves the process. That is what kept the delete ring at 0% for a whole
+// deletion: "cleanup-progress" was registered as the view type and emitted as
+// the application one, so not one progress event was ever delivered.
+//
+// Every registered event's payload goes through here, and a new event is a new
+// case. Inside a case the conversion is shape-for-shape and the compiler checks
+// it: a field added on one side and not the other stops the build. What the
+// compiler cannot see is a case that was never written -- the new payload just
+// falls to the default and is dropped exactly as before -- so that is what the
+// default reports, and what TestRegisteredEventsAcceptTheirViews proves for the
+// events that exist today.
+func EventView(data any) any {
+	switch payload := data.(type) {
+	case application.ScanProgress:
+		return ScanProgressView(payload)
+	case application.CleanupProgress:
+		return CleanupProgress(payload)
+	case application.LiveUpdate:
+		return LiveUpdate(payload)
+	default:
+		if typ := reflect.TypeOf(data); typ != nil && strings.HasSuffix(typ.PkgPath(), "/internal/application") {
+			// Returning it unchanged is what the emitter will refuse, so this line
+			// is the whole difference between a dropped event and a dropped event
+			// somebody can find. It names the type, which is the fix.
+			log.Printf("事件负载 %s 没有对应的视图类型，该事件会被丢弃：请在 EventView 中补一个 case", typ)
+		}
+		return data
+	}
 }
 
 func ScanProgressView(progress application.ScanProgress) ScanProgress {

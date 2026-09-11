@@ -1,10 +1,54 @@
 package wails
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"strings"
 	"testing"
+
+	"example.com/marmot/internal/application"
 )
+
+// The one failure EventView cannot hand to the compiler: a payload from the
+// application layer with no case of its own. It is returned unchanged, the
+// emitter then cancels the event, and the feature that depended on it simply
+// never moves. The log line is the only thing standing between that and an
+// afternoon of reading the frontend, so it is worth a test of its own.
+func TestEventViewReportsAnApplicationPayloadWithNoCase(t *testing.T) {
+	var logged bytes.Buffer
+	restore := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(restore) })
+
+	// Not an event payload today, which is the point: it stands for the one that
+	// gets emitted tomorrow without a case being added here.
+	if got := EventView(application.LiveUpdateStatus{}); got != any(application.LiveUpdateStatus{}) {
+		t.Errorf("EventView changed an unhandled payload to %#v; it must pass through", got)
+	}
+	if !strings.Contains(logged.String(), "application.LiveUpdateStatus") {
+		t.Errorf("an unconverted application payload was not reported; the log said %q", logged.String())
+	}
+}
+
+// Types that are nobody's business here go through untouched and unremarked --
+// the check is scoped to the application package, not to everything.
+func TestEventViewLeavesForeignValuesAlone(t *testing.T) {
+	var logged bytes.Buffer
+	restore := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(restore) })
+
+	if got := EventView(nil); got != nil {
+		t.Errorf("EventView(nil) = %#v, want nil", got)
+	}
+	if got := EventView("plain"); got != "plain" {
+		t.Errorf("EventView(%q) = %#v, want it unchanged", "plain", got)
+	}
+	if logged.Len() > 0 {
+		t.Errorf("nothing from the application package was passed, but the log said %q", logged.String())
+	}
+}
 
 func TestTrimMapPayloadDropsProjectionBeforeCompactingEntries(t *testing.T) {
 	children := make([]ProjectedEntry, 0, 120)

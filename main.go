@@ -114,12 +114,14 @@ func main() {
 			ApplicationShouldTerminateAfterLastWindowClosed: true,
 		},
 	})
+	// Through the view translation, always. The event names registered above
+	// declare the type each one carries, and the emitter CANCELS anything whose
+	// data is a different type -- the window hears nothing and the only trace is
+	// a line in the application's error handler. So passing an application
+	// payload straight through does not emit a slightly wrong event; it emits
+	// nothing at all.
 	emit = func(name string, data any) {
-		if progress, ok := data.(marmotapp.ScanProgress); ok {
-			app.Event.Emit(name, wails.ScanProgressView(progress))
-			return
-		}
-		app.Event.Emit(name, data)
+		app.Event.Emit(name, wails.EventView(data))
 	}
 	// After emit exists: the first thing the watcher does is emit.
 	core.StartVolumeWatch()
