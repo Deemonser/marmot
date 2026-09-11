@@ -19,6 +19,17 @@ export function countdownFraction(remainingMs: number, totalMs: number): number 
   return Math.min(1, Math.max(0, remainingMs / totalMs));
 }
 
+// ringRadius is where the arc is drawn, and it is not a free choice: the arc IS
+// the badge's outer ring, redrawn. The badge is 50px with a 2px border under
+// `box-sizing: border-box`, so that border's centreline sits at 25 - 1 = 24, and
+// the stroke has to land on it rather than beside it. The ring used to be given
+// `inset: -2px` and a 2.5px stroke over a 44-unit viewBox, which put its
+// centreline at 24.5 and its outer edge a pixel PAST the badge -- a second,
+// fatter ring hovering outside the first, with the real one showing through
+// underneath. The SVG is now a 50-unit viewBox at inset 0, which makes one user
+// unit one pixel: these numbers and the stylesheet's are the same numbers.
+export const ringRadius = 24;
+
 // ringOffset is the stroke-dashoffset for a full-circumference dash array: 0
 // draws the whole ring, the circumference draws none of it.
 export function ringOffset(fraction: number, radius: number): number {

@@ -720,10 +720,21 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
 .collector-bar .collector-caption { flex: 1 1 auto; color: #d6d7db; font-size: 12px; text-align: right; }
 .collector-bar .danger-button, .collector-bar .quiet-button { order: -1; }
 .collector-badge .collector-count { display: grid; justify-items: center; line-height: 1; }
-.collector-badge-unit { display: block; margin-top: 2px; color: #a9abb3; font-size: 9px; font-weight: 400; letter-spacing: .02em; line-height: 1; }
+/* Small enough to read as the number's unit rather than as a second number.
+   The extra tracking comes with the smaller size, not instead of it: uppercase
+   letterforms close up as they shrink, and "GB" at 8px without it reads as one
+   shape. */
+.collector-badge-unit { display: block; margin-top: 2px; color: #a9abb3; font-size: 8px; font-weight: 400; letter-spacing: .04em; line-height: 1; }
 /* At rest the caption is two tones, measured off the reference: the unit a
    shade lighter than the words after it. Messages (deleting, refused) keep
    the plain caption colour, because they are things to read, not a label. */
+/* The captions that appear and change on their own -- the countdown warning and
+   the delete progress line -- must not wrap. A second line grows the bar, and
+   with it the whole dock, at the one moment the user is reading it and reaching
+   for 停止. The countdown's wording is cut to fit the narrowest window, so this
+   only holds the line; the progress line carries a file name of any length, and
+   that is what the ellipsis is for. */
+.collector-caption.is-oneline { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .collector-caption .collector-unit { color: #a9abb3; font-weight: 400; }
 .collector-caption .collector-dim { color: #7e8189; }
 
@@ -738,13 +749,31 @@ h2 { margin-bottom: 0; color: #f1f1f3; font-size: 17px; font-weight: 500; }
    span mounts once and only its text changes after that, so this runs once. */
 .collector-bar .collector-count { animation: count-pop .32s cubic-bezier(.2, .9, .3, 1.25) both; }
 @keyframes count-pop { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-.collector-bar .collector-target.is-counting { border-color: #4a4b51; }
+/* Both phases turn the ring into a track and let the arc be the only coloured
+   part of it. Without this the deleting badge kept its blue border and drew a
+   blue arc on top: a solid blue circle whose only sign of progress was the
+   hairline step where the dash began. The arc, not the ring, is what moves. */
+.collector-bar .collector-target.is-counting, .collector-bar .collector-target.is-deleting { border-color: #4a4b51; }
 .collector-bar .collector-count { position: relative; z-index: 1; color: #e9e9f1; font-size: 16px; font-weight: 300; letter-spacing: -.01em; }
+/* Exactly the badge's own border ring, no bigger and no smaller: the arc
+   REPLACES that stretch of ring rather than hovering outside it.
+   The size is explicit and MUST stay explicit. Both `inset` and a percentage
+   size resolve against the containing block's PADDING box, which is inside the
+   2px border, so `calc(100% + 4px)` is what puts this box back on the 50px
+   border box. Leaving the size auto and letting the four insets stretch it is
+   the obvious simplification and it is wrong: <svg> is a replaced element, and
+   WebKit -- the engine this app actually ships on -- then sizes it to the
+   padding box (46px) instead of stretching, so the ring is drawn 2px small and
+   `rotate(-90deg)` about its own centre throws it 2px up and left. Chrome
+   stretches it and shows nothing wrong, so a headless-Chrome check will not
+   catch this; measure in WKWebView.
+   50px square makes the 50-unit viewBox one unit per pixel, so r=24 and
+   stroke-width 2 are the border's own centreline and thickness. */
 .collector-ring { position: absolute; inset: -2px; width: calc(100% + 4px); height: calc(100% + 4px); transform: rotate(-90deg); }
 /* No transition: the offset is driven per frame from the countdown's own
    deadline. A 1s ease over a value that steps once a second is what made the ring
    lag the digit it is supposed to agree with. */
-.collector-ring circle { fill: none; stroke: #cf5b4f; stroke-width: 2.5; }
+.collector-ring circle { fill: none; stroke: #cf5b4f; stroke-width: 2; }
 /* Different phase, different colour: the red ring is a warning that something is
    about to happen and can still be stopped; this one is work in progress that
    cannot. */

@@ -3,7 +3,7 @@ import { paintMorph, clearMorphStyles, planMorph, arcPath, morphDuration, morphA
 import type { ArcGeom, MorphPlan } from "./morph";
 import { childEndAngle, subBand, rootHueBand, sunburstAggregate, sunburstHiddenSpace, sunburstEndAngle, previewDwellMs, previewLeaveMs } from "./sunburst";
 import type { HueBand } from "./sunburst";
-import { countdownDigit, countdownFraction, deleteFraction, progressHoldMs, ringOffset } from "./countdown";
+import { countdownDigit, countdownFraction, deleteFraction, progressHoldMs, ringOffset, ringRadius } from "./countdown";
 import { factsLine, hasVerdict, recoveryLabel } from "./describe";
 import { analysisAdmits, autoStageable, draggedColor, riskColor } from "./advice";
 import { useNotice, NoticeToast } from "./useNotice";
@@ -1835,6 +1835,15 @@ export default function App() {
   }, [reclaimSnapshotId, selectedIdsKey, collector]);
   const reclaimCurrent = reclaim && reclaim.snapshotId === reclaimSnapshotId ? reclaim : null;
   const badgeBytes = reclaimCurrent ? (reclaimCurrent.unknown ? reclaimCurrent.upperBound : reclaimCurrent.bytes) : collectorBytes;
+  // The two qualifications on the amount. They used to be written out in the
+  // bar, which made a line three clauses long for something the user reads at a
+  // glance, so they hang off "已选中" instead -- the word that names the amount
+  // carries the small print about it. Not dropped outright: "≤" on the badge is
+  // otherwise a prefix with nothing anywhere to explain it.
+  const badgeNotes = [
+    reclaimCurrent && reclaimCurrent.sharedExcluded > 0 ? `${formatBytes(reclaimCurrent.sharedExcluded)} 与未收集的对象共享，不计入` : "",
+    reclaimCurrent?.unknown ? "部分对象的可回收量未知，显示的是上界" : "",
+  ].filter(Boolean).join("；");
   function toggleChecked(entry: MapEntry) {
     const key = entryKey(entry);
     setUnchecked((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
@@ -3665,13 +3674,13 @@ export default function App() {
                         a falling fraction retreats the arc anticlockwise and a rising
                         one grows it clockwise. Nothing to keep in sync between them. */}
                     {(countdown !== null || showDeleteProgress) && (
-                      <svg className={"collector-ring" + (showDeleteProgress ? " is-deleting" : "")} viewBox="0 0 44 44">
+                      <svg className={"collector-ring" + (showDeleteProgress ? " is-deleting" : "")} viewBox="0 0 50 50">
                         <circle
-                          cx="22"
-                          cy="22"
-                          r="20"
-                          strokeDasharray={2 * Math.PI * 20}
-                          strokeDashoffset={ringOffset(showDeleteProgress ? deleteProgress : ringFraction, 20)}
+                          cx="25"
+                          cy="25"
+                          r={ringRadius}
+                          strokeDasharray={2 * Math.PI * ringRadius}
+                          strokeDashoffset={ringOffset(showDeleteProgress ? deleteProgress : ringFraction, ringRadius)}
                         />
                       </svg>
                     )}
@@ -3683,18 +3692,39 @@ export default function App() {
                           : <>{reclaimCurrent?.unknown ? "≤" : ""}{formatBytes(badgeBytes).split(" ")[0]}<span className="collector-badge-unit">{formatBytes(badgeBytes).split(" ")[1]}</span></>}
                     </span>
                   </button>
-                  <span className="collector-caption">
+                  {/* The two states the bar passes through on its own -- counting down,
+                      then deleting -- are held to one line. Both change while the user
+                      is watching, and a caption that grows a second line moves the
+                      badge and the 停止 button under the pointer. */}
+                  <span className={"collector-caption" + (countdown !== null || showDeleteProgress ? " is-oneline" : "")}>
                     {drag?.blocked
                       ? drag.blocked
                       : countdown !== null
-                        ? <>倒计时结束后，选中的文件将被<strong className="destructive-note">直接删除，无法撤销</strong></>
+                        /* Short enough to stay on one line at the narrowest window the
+                           app allows. The longer wording wrapped, and a two-line warning
+                           grew the bar under the pointer at the one moment the user is
+                           reading it and deciding whether to press 停止. What was dropped
+                           ("选中的文件") the panel above is already showing. */
+                        ? <>倒计时结束后<strong className="destructive-note">直接删除，无法撤销</strong></>
                         : showDeleteProgress && cleanupAt
-                          ? `正在删除 ${Math.min(cleanupAt.done + 1, cleanupAt.total)}/${cleanupAt.total}：${cleanupAt.current.split("/").pop()}`
+                          /* The last event names no item -- it is the run reporting that
+                             it is over, not that it has reached something -- so the name
+                             and its colon go with it rather than leaving the line
+                             hanging on "：" for the final stretch. */
+                          ? `正在删除 ${Math.min(cleanupAt.done + 1, cleanupAt.total)}/${cleanupAt.total}`
+                            + (cleanupAt.current ? `：${cleanupAt.current.split("/").pop()}` : "")
                           : deleting
                             ? "正在删除…"
                             : validation && !validation.valid
                               ? "校验未通过，不能执行"
-                              : <><span className="collector-dim">已选中</span>{unchecked.size > 0 && <span className="collector-dim"> · {unchecked.size} 项待勾选</span>}{reclaimCurrent && reclaimCurrent.sharedExcluded > 0 && <span className="collector-dim"> · {formatBytes(reclaimCurrent.sharedExcluded)} 与未收集的对象共享，不计入</span>}{reclaimCurrent?.unknown && <span className="collector-dim"> · 部分对象的可回收量未知，显示上界</span>}</>}
+                              /* Two clauses, no more: what still needs ticking, and the
+                                 label for the amount. "已选中" is last because the badge
+                                 sits at the RIGHT end of the bar -- a label reads next to
+                                 the number it names, and with it first the line said
+                                 "已选中 · 43 项待勾选" and then a size the words had
+                                 already run past. The small print about the amount is on
+                                 that label's tooltip (badgeNotes). */
+                              : <>{unchecked.size > 0 && <span className="collector-dim">{unchecked.size} 项待勾选 · </span>}<span className="collector-dim" title={badgeNotes || undefined}>已选中</span></>}
                   </span>
                   {/* One action, and it deletes outright -- the trash is on the same
                       volume, so moving there reclaims nothing. Nothing is rerouted and
